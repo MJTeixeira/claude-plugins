@@ -1,7 +1,9 @@
-// Worktree materialization (machine-product refactor P2): the driver injects
-// session tooling — .claude/settings.local.json (allowlist + guard hook wired
-// to the runtime by absolute path), skills, agents — into every session and
-// meta worktree at spawn/refresh. Injected paths are excluded from git via a
+// Worktree materialization (machine-product refactor P2, slimmed by G3): the
+// driver injects .claude/settings.local.json (allowlist + guard hook wired to
+// the runtime by absolute path) into every session and meta worktree at
+// spawn/refresh. Skills and agents are NOT copied anymore — sessions get them
+// from the machine-installed code4food plugins (provisioned from the runtime
+// clone; see deploy-runtime). Injected paths are excluded from git via a
 // managed block in the repo's SHARED .git/info/exclude (git resolves
 // info/exclude to the common dir; per-worktree exclude files are ignored),
 // so they never ride commits or quarantines.
@@ -30,8 +32,8 @@ test("session worktrees get settings.local.json: allowlist presets + guard wired
   const world = makeFactory(t, { config: { stack: "node" } });
   queueSessions(world, [{
     script: `cp .claude/settings.local.json "$STUB_DIR/seen-settings.json" &&
-ls .claude/skills > "$STUB_DIR/seen-skills.txt" &&
-ls .claude/agents > "$STUB_DIR/seen-agents.txt" &&
+(ls .claude/skills 2>/dev/null || echo ABSENT) > "$STUB_DIR/seen-skills.txt" &&
+(ls .claude/agents 2>/dev/null || echo ABSENT) > "$STUB_DIR/seen-agents.txt" &&
 ${REPORT({ taskId: null, status: "no-tasks", summary: "none" })}`,
     stdout: RESULT_OK,
     exit: 0,
@@ -59,15 +61,15 @@ ${REPORT({ taskId: null, status: "no-tasks", summary: "none" })}`,
   assert.ok(cmd.includes(runtimeGuard), `guard not wired to the runtime by absolute path: ${cmd}`);
   assert.ok(fs.existsSync(runtimeGuard), "runtime guard file itself is missing");
 
-  const skills = readSeen(world, "seen-skills.txt");
-  assert.match(skills, /tdd/, "dev skillset not injected");
-  assert.match(skills, /backlog/, "backlog skill not injected");
-  assert.doesNotMatch(skills, /unity|godot/, "engine skills injected without engine markers");
-  assert.doesNotMatch(skills, /factory-setup/, "factory-setup is machine tooling, not session tooling");
-  assert.match(readSeen(world, "seen-agents.txt"), /code-reviewer\.md/, "code-reviewer agent not injected");
+  // G3: skills and agents come from the machine-installed plugins, never
+  // from worktree copies — a copy would shadow/duplicate the plugin versions.
+  assert.equal(readSeen(world, "seen-skills.txt").trim(), "ABSENT",
+    "skills were copied into the worktree — plugins provide them now");
+  assert.equal(readSeen(world, "seen-agents.txt").trim(), "ABSENT",
+    "agents were copied into the worktree — plugins provide them now");
 });
 
-test("a Unity project marker injects the unity engine allowlist + skill", (t) => {
+test("a Unity project marker injects the unity engine allowlist (skills come from plugins)", (t) => {
   const world = makeFactory(t, { config: { stack: "dotnet" } });
   // detectEngines keys off ProjectSettings/ProjectVersion.txt (Unity) —
   // must be committed so the worktree, cloned from origin, carries it.
@@ -82,7 +84,6 @@ test("a Unity project marker injects the unity engine allowlist + skill", (t) =>
 
   queueSessions(world, [{
     script: `cp .claude/settings.local.json "$STUB_DIR/seen-settings.json" &&
-ls .claude/skills > "$STUB_DIR/seen-skills.txt" &&
 ${REPORT({ taskId: null, status: "no-tasks", summary: "none" })}`,
     stdout: RESULT_OK,
     exit: 0,
@@ -93,7 +94,6 @@ ${REPORT({ taskId: null, status: "no-tasks", summary: "none" })}`,
 
   const allow = JSON.parse(readSeen(world, "seen-settings.json")).permissions?.allow ?? [];
   assert.ok(allow.includes("Bash(unity:*)"), `unity engine preset not injected on a Unity project: ${allow}`);
-  assert.match(readSeen(world, "seen-skills.txt"), /unity/, "unity engine skill not injected on a Unity project");
 });
 
 test("injected tooling is invisible to git and never rides session commits", (t) => {
@@ -101,7 +101,6 @@ test("injected tooling is invisible to git and never rides session commits", (t)
   queueSessions(world, [{
     // `test -f` first: this test only proves anything if injection happened.
     script: `test -f .claude/settings.local.json &&
-test -d .claude/skills/backlog &&
 git checkout -b factory/t-001 &&
 echo "the feature" > feature.txt &&
 git add -A &&
@@ -128,7 +127,7 @@ ${REPORT({ taskId: "T-001", status: "review", summary: "built", pr: "https://git
     `injected tooling rode the session commit:\n${tree}`);
 });
 
-test("repo-tracked skill copies win over injection", (t) => {
+test("repo-tracked skill copies are left alone and nothing is injected beside them", (t) => {
   const world = makeFactory(t);
   // Transition shape: the repo still carries a committed copy of a skill.
   const tracked = path.join(world.project, ".claude", "skills", "tdd");
@@ -150,8 +149,9 @@ ${REPORT({ taskId: null, status: "no-tasks", summary: "none" })}`,
   assert.equal(r.code, 0, `driver exited ${r.code}\n${r.stdout}\n${r.stderr}`);
 
   assert.equal(readSeen(world, "seen-tdd.md"), "OWNER COPY\n",
-    "materialization overwrote a repo-tracked skill copy");
-  assert.match(readSeen(world, "seen-skills.txt"), /backlog/, "untracked skills still injected");
+    "materialization touched a repo-tracked skill copy");
+  assert.equal(readSeen(world, "seen-skills.txt").trim(), "tdd",
+    "materialization injected skills beside the tracked copy");
 });
 
 // A repo that TRACKS an injected path (someone committed settings.local.json)
@@ -235,7 +235,7 @@ test("meta worktree is materialized for triage; metadata commits carry no inject
     // Triage runs in the persistent meta worktree: it edits work data
     // (driver commits it) and must see the same injected tooling as sessions.
     script: `cp .claude/settings.local.json "$STUB_DIR/seen-settings.json" &&
-ls .claude/skills > "$STUB_DIR/seen-skills.txt" &&
+(ls .claude/skills 2>/dev/null || echo ABSENT) > "$STUB_DIR/seen-skills.txt" &&
 echo "- triage note" >> .factory/backlog/index.md`,
     stdout: RESULT_OK,
     exit: 0,
@@ -246,7 +246,8 @@ echo "- triage note" >> .factory/backlog/index.md`,
 
   const settings = JSON.parse(readSeen(world, "seen-settings.json"));
   assert.ok((settings.permissions?.allow ?? []).includes("mcp__factory"), "meta worktree has no injected allowlist");
-  assert.match(readSeen(world, "seen-skills.txt"), /backlog/, "meta worktree has no injected skills");
+  assert.equal(readSeen(world, "seen-skills.txt").trim(), "ABSENT",
+    "skills were copied into the meta worktree — plugins provide them now");
 
   // The triage edit was committed and pushed — without the injected tooling.
   assert.match(gitIn(world.origin, "log", "--format=%s", "main"), /triage: backlog update/);

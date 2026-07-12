@@ -234,3 +234,91 @@ test("doctor fails on a dirty machine runtime tree", (t) => {
   assert.equal(r.code, 1, `stdout:\n${r.stdout}\nstderr:\n${r.stderr}`);
   assert.match(r.stdout, /✗ machine runtime — .*dirty/i);
 });
+
+// ---------- code4food plugins (G3) ----------
+// Sessions load skills from the machine-installed plugins, provisioned from
+// the runtime clone. Doctor fails on a machine whose plugins are missing or
+// version-drifted from the runtime — sessions there run stale (or no) skills.
+const fakeRuntime = (world, versions = { skillset: "1.1.0", factory: "1.1.0" }) => {
+  const runtime = path.join(world.home, ".factory", "runtime");
+  fs.mkdirSync(path.join(runtime, ".claude-plugin"), { recursive: true });
+  fs.mkdirSync(path.join(runtime, "factory", ".claude-plugin"), { recursive: true });
+  gitIn(runtime, "init", "-b", "main");
+  fs.writeFileSync(path.join(runtime, ".claude-plugin", "marketplace.json"),
+    JSON.stringify({ name: "code4food", plugins: [] }) + "\n");
+  fs.writeFileSync(path.join(runtime, ".claude-plugin", "plugin.json"),
+    JSON.stringify({ name: "code4food-skillset", version: versions.skillset }) + "\n");
+  fs.writeFileSync(path.join(runtime, "factory", ".claude-plugin", "plugin.json"),
+    JSON.stringify({ name: "code4food-factory", version: versions.factory }) + "\n");
+  gitIn(runtime, "add", "-A");
+  gitIn(runtime, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "runtime");
+  return runtime;
+};
+
+const installPluginRecords = (world, runtime, versions) => {
+  const dir = path.join(world.home, ".claude", "plugins");
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, "known_marketplaces.json"), JSON.stringify({
+    code4food: { source: { source: "directory", path: runtime }, installLocation: runtime },
+  }) + "\n");
+  fs.writeFileSync(path.join(dir, "installed_plugins.json"), JSON.stringify({
+    plugins: {
+      "code4food-skillset@code4food": [{ scope: "user", version: versions.skillset }],
+      "code4food-factory@code4food": [{ scope: "user", version: versions.factory }],
+    },
+  }) + "\n");
+};
+
+test("doctor is green when installed plugins match the runtime versions", (t) => {
+  const world = makeFactory(t);
+  const runtime = fakeRuntime(world);
+  installPluginRecords(world, runtime, { skillset: "1.1.0", factory: "1.1.0" });
+
+  const r = runDriver(world, "doctor");
+
+  assert.equal(r.code, 0, `stdout:\n${r.stdout}\nstderr:\n${r.stderr}`);
+  assert.match(r.stdout, /✓ plugin code4food-skillset/);
+  assert.match(r.stdout, /✓ plugin code4food-factory/);
+});
+
+test("plugin version drift from the runtime fails doctor with the deploy hint", (t) => {
+  const world = makeFactory(t);
+  const runtime = fakeRuntime(world, { skillset: "1.2.0", factory: "1.1.0" });
+  installPluginRecords(world, runtime, { skillset: "1.0.0", factory: "1.1.0" });
+
+  const r = runDriver(world, "doctor");
+
+  assert.equal(r.code, 1, `stdout:\n${r.stdout}\nstderr:\n${r.stderr}`);
+  assert.match(r.stdout, /✗ plugin code4food-skillset — installed 1\.0\.0.*1\.2\.0.*deploy-runtime/);
+  assert.match(r.stdout, /✓ plugin code4food-factory/);
+});
+
+test("unprovisioned plugins on a runtime machine fail doctor with the manual provisioning hint", (t) => {
+  const world = makeFactory(t);
+  fakeRuntime(world);
+
+  const r = runDriver(world, "doctor");
+
+  assert.equal(r.code, 1, `stdout:\n${r.stdout}\nstderr:\n${r.stderr}`);
+  assert.match(r.stdout, /✗ code4food plugins — .*claude plugin marketplace add/);
+});
+
+test("a marketplace pointing anywhere but the runtime fails doctor", (t) => {
+  const world = makeFactory(t);
+  const runtime = fakeRuntime(world);
+  installPluginRecords(world, path.join(world.home, "somewhere-else"), { skillset: "1.1.0", factory: "1.1.0" });
+
+  const r = runDriver(world, "doctor");
+
+  assert.equal(r.code, 1, `stdout:\n${r.stdout}\nstderr:\n${r.stderr}`);
+  assert.match(r.stdout, /✗ code4food plugins — marketplace points at/);
+});
+
+test("no machine runtime → plugin check skips (dev-checkout run)", (t) => {
+  const world = makeFactory(t);
+
+  const r = runDriver(world, "doctor");
+
+  assert.equal(r.code, 0, `stdout:\n${r.stdout}\nstderr:\n${r.stderr}`);
+  assert.match(r.stdout, /– code4food plugins/);
+});

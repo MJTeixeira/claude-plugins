@@ -36,14 +36,14 @@ branches, no checkouts, no commits, no merges.
     ask via the `open_question` MCP tool instead of guessing — the driver
     dedupes it and files/updates the GitHub issue itself.
 
-## 2. Fold into the backlog (per the `backlog` skill format)
+## 2. Fold into the backlog (per the `code4food-factory:backlog` skill format)
 
 - New requirement/request → new task(s) in the right epic with acceptance
   criteria + Verify; note the source (issue #, inbox file, Jira key). If it
   contradicts the spec, don't guess: ask via `open_question` instead.
 - A good `Verify:` line DRIVES THE PRODUCT, not the test suite again: a
   curl against the changed endpoint, a headless engine run, the CLI with
-  real arguments (see the `verify` skill's recipes). `npm test` is what CI
+  real arguments (see the `code4food-skillset:verify` skill's recipes). `npm test` is what CI
   already proves — fix any task whose Verify line only re-runs it, along
   with your other backlog edits.
 - **Stamp `- Gate: human (<reason>)`** on any task whose acceptance criteria
@@ -115,7 +115,7 @@ task whose machine part is done.
 
 BEFORE writing the plan: every non-done task in the ACTIVE milestone must
 carry `Model:` and `Effort:` hints. Any task missing them is a defect —
-read the task against the spec, assign per the rubric in the backlog
+read the task against the spec, assign per the rubric in the `code4food-factory:backlog`
 skill, and fix the task file with your other backlog edits. Never paper
 over a gap with a blanket default; if you genuinely cannot judge a task
 from the spec, that is an `open_question` call, not a guess.

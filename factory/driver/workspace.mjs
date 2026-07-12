@@ -83,10 +83,10 @@ export const detectStack = (dir) => {
   return null;
 };
 
-// Engine skills live in skills/ next to the core ones but are only injected
-// where the engine is detected (marker anywhere ≤2 dirs deep — Unity/Godot
-// projects often sit in a subdir like unity/<Name>/ or game/).
-export const ENGINE_SKILLS = ["unity", "godot"];
+// Engine detection gates the engine ALLOWLIST presets (skills all come from
+// the machine-installed plugins; their descriptions gate themselves). Marker
+// anywhere ≤2 dirs deep — Unity/Godot projects often sit in a subdir like
+// unity/<Name>/ or game/.
 export const detectEngines = (dir) => {
   const SKIP = new Set([".git", "node_modules", "Library", ".factory", ".claude", ".docs"]);
   const engines = new Set();
@@ -126,26 +126,10 @@ export const parseAnswerFile = (p) => {
 const git = (cwd, args) =>
   execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
 
-// The session skill set — same skills sessions effectively had when the repo
-// carried them: the dev skillset (engine skills only where detected) plus the
-// factory's backlog skill. factory-setup is machine tooling, not session
-// tooling. Directories only: a stray .DS_Store must not become a "skill".
-export const sessionSkills = (runtimeRoot, engines) => {
-  const out = [];
-  const skillsSrc = path.join(runtimeRoot, "skills");
-  for (const e of fs.readdirSync(skillsSrc, { withFileTypes: true })) {
-    if (!e.isDirectory()) continue;
-    if (ENGINE_SKILLS.includes(e.name) && !engines.includes(e.name)) continue;
-    out.push({ name: e.name, src: path.join(skillsSrc, e.name) });
-  }
-  out.push({ name: "backlog", src: path.join(runtimeRoot, "factory", "skills", "backlog") });
-  return out;
-};
-
 // Every skill name the factory ever deployed into project repos (engine
 // skills and factory-setup included) — the removal list for migrate's repo
-// cleanup. Broader than sessionSkills on purpose: cleanup must catch copies
-// regardless of what the current project would get injected.
+// cleanup AND for scrubbing pre-G3 injected copies out of persistent
+// worktrees: cleanup must catch copies regardless of provenance.
 export const factorySkillNames = (runtimeRoot) => [
   ...fs.readdirSync(path.join(runtimeRoot, "skills"), { withFileTypes: true })
     .filter((e) => e.isDirectory()).map((e) => e.name),
@@ -262,20 +246,21 @@ export const materializeWorkspace = ({ worktree, runtimeRoot, config = {} }) => 
     git(worktree, ["update-index", "--skip-worktree", "--", ".claude/settings.local.json"]);
   }
 
-  for (const { name, src } of sessionSkills(runtimeRoot, engines)) {
+  // G3: skills and the code-reviewer agent come from the machine-installed
+  // code4food plugins, never from worktree copies. Persistent worktrees (meta)
+  // may still carry pre-G3 injected copies — scrub any untracked ones, or they
+  // shadow/duplicate the plugin versions in every triage session.
+  for (const name of factorySkillNames(runtimeRoot)) {
     const rel = `.claude/skills/${name}`;
-    if (tracked(rel)) continue;
     const dest = path.join(worktree, ".claude", "skills", name);
-    fs.rmSync(dest, { recursive: true, force: true });
-    fs.cpSync(src, dest, { recursive: true });
-    injected.push(rel);
+    if (!tracked(rel) && fs.existsSync(dest)) fs.rmSync(dest, { recursive: true, force: true });
   }
-
   const agentRel = ".claude/agents/code-reviewer.md";
-  if (!tracked(agentRel)) {
-    fs.mkdirSync(path.join(worktree, ".claude", "agents"), { recursive: true });
-    fs.cpSync(path.join(runtimeRoot, "agents", "code-reviewer.md"), path.join(worktree, agentRel));
-    injected.push(agentRel);
+  if (!tracked(agentRel) && fs.existsSync(path.join(worktree, agentRel))) {
+    fs.rmSync(path.join(worktree, agentRel), { force: true });
+  }
+  for (const dir of [".claude/skills", ".claude/agents"]) {
+    try { fs.rmdirSync(path.join(worktree, dir)); } catch { /* non-empty (owner content) or absent */ }
   }
 
   writeExcludeBlock(worktree, injected);

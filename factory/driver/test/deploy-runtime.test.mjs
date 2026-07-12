@@ -18,7 +18,7 @@ const git = (cwd, ...args) =>
 // factory/ tree, a ~/.factory/runtime clone under a fake HOME, and a
 // registry. deploy-runtime is exercised as the runtime's own copy — the
 // deployed version runs the deploy of the next one.
-const makeRuntimeWorld = (t) => {
+const makeRuntimeWorld = (t, { withPlugins = false } = {}) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "runtime-test-"));
   t?.after(() => fs.rmSync(root, { recursive: true, force: true }));
 
@@ -31,6 +31,11 @@ const makeRuntimeWorld = (t) => {
     recursive: true,
     filter: (src) => !src.split(path.sep).includes("test"),
   });
+  // withPlugins: the runtime ships the plugin marketplace (post-G3 shape) —
+  // deploy's plugin sync only engages on such runtimes.
+  if (withPlugins) {
+    fs.cpSync(path.join(REPO, ".claude-plugin"), path.join(seed, ".claude-plugin"), { recursive: true });
+  }
   git(seed, "add", "-A");
   git(seed, "commit", "-q", "-m", "seed runtime");
 
@@ -80,7 +85,7 @@ const registerFactory = (world, factoryWorld) => {
   return path.join(factoryWorld.root, "bin");
 };
 
-const runDeploy = (world, { extraPath = "" } = {}) => {
+const runDeploy = (world, { extraPath = "", pathOverride = null } = {}) => {
   const r = spawnSync(
     process.execPath,
     [path.join(world.runtime, "factory", "driver", "deploy-runtime.mjs")],
@@ -90,11 +95,34 @@ const runDeploy = (world, { extraPath = "" } = {}) => {
       env: {
         ...process.env,
         HOME: world.home,
-        PATH: extraPath ? `${extraPath}:${process.env.PATH}` : process.env.PATH,
+        CLAUDE_STUB_LOG: path.join(world.root, "claude-calls.log"),
+        PATH: pathOverride ?? (extraPath ? `${extraPath}:${process.env.PATH}` : process.env.PATH),
       },
     }
   );
   return { code: r.status, stdout: r.stdout ?? "", stderr: r.stderr ?? "" };
+};
+
+// A stub `claude` CLI for the plugin-sync step: records every invocation,
+// exits per a scenario table keyed on "<subcommand words>".
+const stubClaude = (world, failing = []) => {
+  const dir = path.join(world.root, "claude-bin");
+  fs.mkdirSync(dir, { recursive: true });
+  const p = path.join(dir, "claude");
+  fs.writeFileSync(p, `#!/bin/sh
+echo "$@" >> "$CLAUDE_STUB_LOG"
+case "$*" in
+${failing.map((f) => `  "${f}"*) exit 1 ;;`).join("\n")}
+  *) exit 0 ;;
+esac
+`);
+  fs.chmodSync(p, 0o755);
+  return dir;
+};
+
+const claudeCalls = (world) => {
+  const p = path.join(world.root, "claude-calls.log");
+  return fs.existsSync(p) ? fs.readFileSync(p, "utf8").trim().split("\n") : [];
 };
 
 const runtimeHead = (world) => git(world.runtime, "rev-parse", "HEAD");
@@ -153,6 +181,95 @@ test("a driver-only deploy prints no dashboard restart hint", (t) => {
 
   assert.equal(r.code, 0, `stdout:\n${r.stdout}\nstderr:\n${r.stderr}`);
   assert.doesNotMatch(r.stdout, /dashboard\.mjs changed/i);
+});
+
+// G3: skills reach sessions through the machine-installed code4food plugins,
+// so a deploy must leave plugins synced with the runtime it just advanced —
+// and a plain run on an already-current runtime must provision them too
+// (bootstrap idempotence). Sync failures WARN loudly but never fail the
+// deploy: the runtime has already advanced, and doctor flags version drift.
+test("advance syncs plugins from the runtime marketplace via the claude CLI", (t) => {
+  const world = makeRuntimeWorld(t, { withPlugins: true });
+  const factory = makeFactory(t);
+  const binDir = registerFactory(world, factory);
+  const claudeBin = stubClaude(world);
+  commitOnOrigin(world, (seed) => {
+    fs.appendFileSync(path.join(seed, "factory", "driver", "factory.mjs"), "// deploy-test marker\n");
+  });
+
+  const r = runDeploy(world, { extraPath: `${claudeBin}:${binDir}` });
+
+  assert.equal(r.code, 0, `stdout:\n${r.stdout}\nstderr:\n${r.stderr}`);
+  const calls = claudeCalls(world);
+  assert.ok(calls.some((c) => c.includes("plugin marketplace update code4food")),
+    `marketplace not refreshed: ${calls.join(" | ")}`);
+  assert.ok(calls.some((c) => c.includes("plugin update code4food-skillset@code4food")),
+    `skillset plugin not updated: ${calls.join(" | ")}`);
+  assert.ok(calls.some((c) => c.includes("plugin update code4food-factory@code4food")),
+    `factory plugin not updated: ${calls.join(" | ")}`);
+  assert.match(r.stdout, /plugins synced/i);
+});
+
+test("an up-to-date runtime still syncs plugins — deploy-runtime is the bootstrap verb", (t) => {
+  const world = makeRuntimeWorld(t, { withPlugins: true });
+  const claudeBin = stubClaude(world);
+
+  const r = runDeploy(world, { extraPath: claudeBin });
+
+  assert.equal(r.code, 0, `stdout:\n${r.stdout}\nstderr:\n${r.stderr}`);
+  assert.match(r.stdout, /up to date/i);
+  assert.ok(claudeCalls(world).some((c) => c.includes("plugin update code4food-skillset@code4food")),
+    `plugins not synced on the no-op path: ${claudeCalls(world).join(" | ")}`);
+});
+
+test("unknown marketplace / uninstalled plugins fall back to add + install", (t) => {
+  const world = makeRuntimeWorld(t, { withPlugins: true });
+  const claudeBin = stubClaude(world, [
+    "plugin marketplace update code4food",
+    "plugin update code4food-skillset@code4food",
+    "plugin update code4food-factory@code4food",
+  ]);
+
+  const r = runDeploy(world, { extraPath: claudeBin });
+
+  assert.equal(r.code, 0, `stdout:\n${r.stdout}\nstderr:\n${r.stderr}`);
+  const calls = claudeCalls(world);
+  assert.ok(calls.some((c) => c.includes("plugin marketplace add") && c.includes(world.runtime)),
+    `marketplace add fallback missing: ${calls.join(" | ")}`);
+  assert.ok(calls.some((c) => c.includes("plugin install code4food-skillset@code4food")),
+    `plugin install fallback missing: ${calls.join(" | ")}`);
+  assert.ok(calls.some((c) => c.includes("plugin install code4food-factory@code4food")),
+    `plugin install fallback missing: ${calls.join(" | ")}`);
+});
+
+test("missing claude CLI warns loudly but the deploy still succeeds", (t) => {
+  const world = makeRuntimeWorld(t, { withPlugins: true });
+
+  // PATH without any real claude: system dirs only (git/sh live there;
+  // node is invoked by absolute path).
+  const r = runDeploy(world, { pathOverride: "/usr/bin:/bin" });
+
+  assert.equal(r.code, 0, `stdout:\n${r.stdout}\nstderr:\n${r.stderr}`);
+  assert.match(r.stdout, /plugins NOT synced/i);
+});
+
+test("a failing plugin sync warns but never fails an already-advanced deploy", (t) => {
+  const world = makeRuntimeWorld(t, { withPlugins: true });
+  const factory = makeFactory(t);
+  const binDir = registerFactory(world, factory);
+  const claudeBin = stubClaude(world, [
+    "plugin marketplace update code4food",
+    "plugin marketplace add",
+  ]);
+  const target = commitOnOrigin(world, (seed) => {
+    fs.appendFileSync(path.join(seed, "factory", "driver", "factory.mjs"), "// deploy-test marker\n");
+  });
+
+  const r = runDeploy(world, { extraPath: `${claudeBin}:${binDir}` });
+
+  assert.equal(r.code, 0, `stdout:\n${r.stdout}\nstderr:\n${r.stderr}`);
+  assert.equal(runtimeHead(world), target, "sync failure must not roll back or block the advance");
+  assert.match(r.stdout, /plugins NOT synced/i);
 });
 
 test("candidate with a syntax error is refused and the runtime stays put", (t) => {

@@ -34,9 +34,11 @@ Portable: the same driver runs on macOS, Linux/VPS, and Windows.
 - **One runtime per machine** (O6, NOTES item 46): driver, prompts, watchdog,
   and dashboard all run from `~/.factory/runtime/` — a clone of this repo
   that advances ONLY through `deploy-runtime.mjs` (syntax gate + fleet
-  doctor gate). Nothing driver-shaped is copied into projects, and session
-  tooling (allowlist, skills, the guard hook) is INJECTED into each session
-  worktree at spawn from the runtime — never committed.
+  doctor gate). Nothing driver-shaped is copied into projects; the session
+  allowlist + guard hook are INJECTED into each session worktree at spawn
+  from the runtime (never committed), and skills come from the
+  machine-installed code4food plugins, provisioned from the runtime clone
+  by deploy-runtime (versions match the runtime — doctor checks it).
 - **Humans are async**: the agent never waits. Sessions ask questions via the
   `open_question` MCP tool; the DRIVER dedupes them and files/updates the
   `needs-human` GitHub issues itself; answers get folded in by the next
@@ -49,14 +51,17 @@ Portable: the same driver runs on macOS, Linux/VPS, and Windows.
    ```sh
    git clone <this-repo-url> ~/.factory/runtime
    ```
-2. **Global skills** — the conversational setup entry point and the backlog
-   vocabulary, available in ANY project on the machine:
+2. **Plugins** — the skillset (dev workflow, verify, handoff, …) and the
+   factory skills (factory-setup interview, backlog vocabulary), available
+   in ANY project on the machine. Provisioned by the same deploy verb:
    ```sh
-   cp -R ~/.factory/runtime/factory/skills/factory-setup ~/.claude/skills/
-   cp -R ~/.factory/runtime/factory/skills/backlog ~/.claude/skills/
+   node ~/.factory/runtime/factory/driver/deploy-runtime.mjs
    ```
-   (These are machine tooling — the per-project `install.sh` skillset no
-   longer bundles them.)
+   (it registers `~/.factory/runtime` as a local plugin marketplace and
+   installs/updates `code4food-skillset` + `code4food-factory` at user
+   scope; by hand: `claude plugin marketplace add ~/.factory/runtime &&
+   claude plugin install code4food-skillset@code4food
+   code4food-factory@code4food`).
 3. **Telegram plumbing** (optional but recommended): bot token + chat id in
    `~/.factory/telegram.env`, and `notify-fail.sh` in `~/.factory/` for the
    `factory-onfailure@.service` outer net (see Monitoring).
