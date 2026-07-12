@@ -154,8 +154,11 @@ export const stripFactorySettings = (settings) => {
     if (!Object.keys(out.permissions).length) delete out.permissions;
   }
   if (Array.isArray(out.hooks?.PreToolUse)) {
+    // Both guard generations go: the factory's worktree guard wiring and the
+    // install.sh-era branch guard (the skillset plugin ships that hook now).
     out.hooks.PreToolUse = out.hooks.PreToolUse.filter(
-      (e) => !(e.hooks ?? []).some((h) => String(h.command ?? "").includes(".factory/hooks/guard.mjs")));
+      (e) => !(e.hooks ?? []).some((h) => String(h.command ?? "").includes(".factory/hooks/guard.mjs")
+        || String(h.command ?? "").includes("protected-branch-guard.mjs")));
     if (!out.hooks.PreToolUse.length) delete out.hooks.PreToolUse;
     if (!Object.keys(out.hooks).length) delete out.hooks;
   }

@@ -59,12 +59,25 @@ const makeLegacyWorld = (t, { config = {} } = {}) => {
   }
   fs.mkdirSync(path.join(project, ".claude", "agents"), { recursive: true });
   fs.writeFileSync(path.join(project, ".claude", "agents", "code-reviewer.md"), "# reviewer\n");
+  // install.sh-era per-project tooling (G3: the plugins ship all of it now,
+  // except the statusline — that stays project-side by design).
+  fs.mkdirSync(path.join(project, ".claude", "commands"), { recursive: true });
+  fs.writeFileSync(path.join(project, ".claude", "commands", "commit.md"), "# /commit\n");
+  fs.mkdirSync(path.join(project, ".claude", "hooks"), { recursive: true });
+  fs.writeFileSync(path.join(project, ".claude", "hooks", "protected-branch-guard.mjs"), "// install.sh-era guard copy\n");
+  fs.writeFileSync(path.join(project, ".claude", "statusline.sh"), "#!/bin/sh\necho status\n");
+  fs.writeFileSync(path.join(project, ".claude", "settings.local.json"), JSON.stringify({ machineInjected: true }) + "\n");
+  // Forced: dev machines commonly global-gitignore settings.local.json — the
+  // transition-era repos this models (witchhat/blacklist) force-added it.
+  git(project, "add", "-f", "--", ".claude/settings.local.json");
   fs.writeFileSync(path.join(project, ".claude", "settings.json"), JSON.stringify({
     permissions: { allow: ["Read", "Bash(git:*)", "mcp__factory", "Bash(npm:*)", "Bash(make:*)"] },
+    statusLine: { type: "command", command: ".claude/statusline.sh", padding: 0 },
     hooks: {
       PreToolUse: [
         { matcher: "Bash", hooks: [{ type: "command", command: "echo owner-hook" }] },
         { matcher: "Edit|MultiEdit|Write|NotebookEdit|Bash", hooks: [{ type: "command", command: 'node "$CLAUDE_PROJECT_DIR/.factory/hooks/guard.mjs"' }] },
+        { matcher: "Bash", hooks: [{ type: "command", command: 'node "$CLAUDE_PROJECT_DIR/.claude/hooks/protected-branch-guard.mjs"' }] },
       ],
     },
   }, null, 2) + "\n");
@@ -191,12 +204,63 @@ test("migrate removes the project-side tooling scaffold from the repo (work data
   }
   // The owner's own skill is not the factory's to remove.
   assert.notEqual(git(world.project, "ls-files", "--", ".claude/skills/owners-own"), "");
-  // Work data untouched; CLAUDE.md byte-identical (P4 owns doc changes).
+  // Work data untouched; owner text in CLAUDE.md untouched (the managed
+  // block between markers is refreshed — covered by its own test below).
   assert.notEqual(git(world.project, "ls-files", "--", ".factory/backlog/index.md"), "");
   assert.notEqual(git(world.project, "ls-files", "--", ".factory/spec/goal.md"), "");
-  assert.equal(fs.readFileSync(path.join(world.project, "CLAUDE.md"), "utf8"), claudeMdBefore);
+  assert.match(fs.readFileSync(path.join(world.project, "CLAUDE.md"), "utf8"), /^# Owner notes/,
+    "owner text outside the managed block must survive");
+  void claudeMdBefore;
   // Removal is committed, not left dirty.
   assert.equal(git(world.project, "status", "--porcelain"), "");
+});
+
+test("migrate retires install.sh-era .claude tooling — the plugins ship it now; statusline stays", (t) => {
+  const world = makeLegacyWorld(t);
+
+  const r = runMigrate(world);
+
+  assert.equal(r.code, 0, `stdout:\n${r.stdout}\nstderr:\n${r.stderr}`);
+  for (const rel of [".claude/commands/commit.md", ".claude/hooks/protected-branch-guard.mjs", ".claude/settings.local.json"]) {
+    assert.equal(git(world.project, "ls-files", "--", rel), "", `${rel} still tracked`);
+    assert.equal(fs.existsSync(path.join(world.project, rel)), false, `${rel} still on disk`);
+  }
+  // The statusline is NOT plugin-provided — it stays, file and settings key.
+  assert.notEqual(git(world.project, "ls-files", "--", ".claude/statusline.sh"), "", "statusline.sh must stay tracked");
+  const settings = JSON.parse(fs.readFileSync(path.join(world.project, ".claude", "settings.json"), "utf8"));
+  assert.equal(settings.statusLine?.command, ".claude/statusline.sh", "statusLine settings key must survive the strip");
+  // The install.sh guard wiring left settings.json along with the file.
+  const cmds = (settings.hooks?.PreToolUse ?? []).flatMap((e) => (e.hooks ?? []).map((h) => h.command));
+  assert.ok(!cmds.some((c) => String(c).includes("protected-branch-guard.mjs")),
+    `install.sh guard wiring survived the strip: ${cmds}`);
+  assert.equal(git(world.project, "status", "--porcelain"), "");
+});
+
+test("migrate refreshes the LEAN-WORKFLOW managed block from the runtime — owner text untouched", (t) => {
+  const world = makeLegacyWorld(t);
+
+  const r = runMigrate(world);
+
+  assert.equal(r.code, 0, `stdout:\n${r.stdout}\nstderr:\n${r.stderr}`);
+  const text = fs.readFileSync(path.join(world.project, "CLAUDE.md"), "utf8");
+  assert.match(text, /^# Owner notes/, "owner text before the block must survive");
+  assert.match(text, /code4food-skillset/, "block not refreshed to the namespaced runtime copy");
+  assert.doesNotMatch(text, /^block$/m, "stale block content survived the refresh");
+  assert.equal(git(world.project, "status", "--porcelain", "CLAUDE.md"), "", "the refresh must be committed");
+});
+
+test("a CLAUDE.md without the managed markers is never touched", (t) => {
+  const world = makeLegacyWorld(t);
+  fs.writeFileSync(path.join(world.project, "CLAUDE.md"), "# Owner-only instructions\nno markers here\n");
+  git(world.project, "add", "CLAUDE.md");
+  git(world.project, "commit", "-q", "-m", "owner claude.md");
+  git(world.project, "push", "-q", "origin", "main");
+
+  const r = runMigrate(world);
+
+  assert.equal(r.code, 0, `stdout:\n${r.stdout}\nstderr:\n${r.stderr}`);
+  assert.equal(fs.readFileSync(path.join(world.project, "CLAUDE.md"), "utf8"),
+    "# Owner-only instructions\nno markers here\n");
 });
 
 test("migrate strips factory entries from settings.json — owner entries stay", (t) => {
