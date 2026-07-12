@@ -36,7 +36,7 @@ summary.
    applies (resume it). A HANDOFF for a DIFFERENT task outranks the plan:
    work the HANDOFF task and note the stale plan in your report. If the
    assigned task is already done/merged, report `completed` (no PR) and
-   stop. Otherwise: follow the `backlog` skill to pick your ONE task
+   stop. Otherwise: follow the `code4food-factory:backlog` skill to pick your ONE task
    (HANDOFF outranks the backlog; apply the state overlay on top of the
    backlog files when judging eligibility).
 3. The moment you have your task, call `report_status` (status
@@ -52,8 +52,8 @@ summary.
   `factory/<task-id>-<slug>` (create it here; if HANDOFF names a branch,
   `git fetch origin <branch>` and continue there). Push with `-u` as soon
   as the branch exists — origin is the only place your work survives you.
-- Follow the project workflow (lean skillset): size the work, TDD, then the
-  `verify` skill — drive the real product headlessly (tests prove the diff;
+- Follow the project workflow (code4food-skillset plugin): size the work, TDD, then the
+  `code4food-skillset:verify` skill — drive the real product headlessly (tests prove the diff;
   driving the product proves the task), run the task's `Verify` commands,
   and put the evidence in your report. You never load `finishing`; verify
   IS your pre-PR check.
@@ -115,7 +115,7 @@ summary.
   poll CI**. The driver watches checks, merges on green, and flips the
   backlog status inside the merge commit. Checks already green when you
   look? Still end at `review`; the driver's merge is minutes away. At a
-  milestone boundary follow the gate procedure in the `backlog` skill.
+  milestone boundary follow the gate procedure in the `code4food-factory:backlog` skill.
 - Keep PR bodies tight: what/why/how-verified in ~20 lines. A PR essay
   written at turn 79 is how finished work gets bookkept as a death.
 - No remote configured (local-only repo): commit on the branch, report
@@ -124,9 +124,9 @@ summary.
 ## End of session (ALWAYS, even on failure — your last acts)
 
 1. Task incomplete but progressing → write `.docs/HANDOFF.md` per the
-   `handoff` skill (committed on your branch). Task done → delete any
+   `code4food-skillset:handoff` skill (committed on your branch). Task done → delete any
    HANDOFF for it.
-2. Update `.docs/` per the docs skill (touched areas, Commands if changed) —
+2. Update `.docs/` per the `code4food-skillset:docs` skill (touched areas, Commands if changed) —
    on your branch, part of the PR.
 3. Call `report_status` one last time — taskId, your settled status
    (`completed|review|incomplete|blocked|no-tasks`), a 2-3 sentence

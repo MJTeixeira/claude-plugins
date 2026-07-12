@@ -1457,6 +1457,42 @@ const runDoctor = () => {
     }
   }
 
+  // 5b. code4food plugins (G3) — sessions load their skills from the
+  //     machine-installed plugins, provisioned from the runtime clone by
+  //     deploy-runtime. Missing or version-drifted plugins mean sessions run
+  //     with no (or stale) skills, so this fails with the fix spelled out.
+  {
+    const RUNTIME = path.join(os.homedir(), ".factory", "runtime");
+    if (!fs.existsSync(path.join(RUNTIME, ".git"))) {
+      check("skip", "code4food plugins", "no machine runtime (dev-checkout run)");
+    } else if (!fs.existsSync(path.join(RUNTIME, ".claude-plugin", "marketplace.json"))) {
+      check("skip", "code4food plugins", "runtime ships no plugin marketplace (pre-G3)");
+    } else if (process.env.FACTORY_DEPLOY_GATE) {
+      check("skip", "code4food plugins", "provisioned by the running deploy after the gate");
+    } else {
+      const provisionHint = `claude plugin marketplace add ${RUNTIME} && claude plugin install code4food-skillset@code4food code4food-factory@code4food`;
+      const mkt = readJson(path.join(os.homedir(), ".claude", "plugins", "known_marketplaces.json"))?.code4food;
+      const installed = readJson(path.join(os.homedir(), ".claude", "plugins", "installed_plugins.json"))?.plugins;
+      const mktPath = mkt?.source?.path ?? mkt?.installLocation;
+      if (!mkt) {
+        check("fail", "code4food plugins", `marketplace not registered — provision: ${provisionHint}`);
+      } else if (path.resolve(String(mktPath ?? "")) !== path.resolve(RUNTIME)) {
+        check("fail", "code4food plugins", `marketplace points at ${mktPath ?? "?"}, not the runtime — remove it, then provision: ${provisionHint}`);
+      } else {
+        for (const [name, rel] of [
+          ["code4food-skillset", path.join(".claude-plugin", "plugin.json")],
+          ["code4food-factory", path.join("factory", ".claude-plugin", "plugin.json")],
+        ]) {
+          const want = readJson(path.join(RUNTIME, rel))?.version;
+          const rec = installed?.[`${name}@code4food`]?.[0];
+          if (!rec) check("fail", `plugin ${name}`, `not installed — run deploy-runtime.mjs (or: ${provisionHint})`);
+          else if (want && rec.version !== want) check("fail", `plugin ${name}`, `installed ${rec.version}, runtime ships ${want} — run deploy-runtime.mjs`);
+          else check("ok", `plugin ${name}`, String(rec.version ?? ""));
+        }
+      }
+    }
+  }
+
   // 6. .env keys required by enabled features
   const needed = [];
   if (cfg.notify?.telegram) needed.push("TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID");

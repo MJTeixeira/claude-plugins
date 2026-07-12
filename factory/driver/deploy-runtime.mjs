@@ -13,7 +13,7 @@
 //
 //   git clone <repo-url> ~/.factory/runtime
 
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -93,6 +93,48 @@ const refuse = async (why) => {
   process.exit(1);
 };
 
+// ---------- plugins (G3) ----------
+// Sessions get their skills from the machine-installed code4food plugins,
+// sourced from THIS runtime clone as a local marketplace — so every deploy
+// (and every plain run: this is also the bootstrap verb) leaves the plugins
+// synced with the runtime. `plugin update` is a no-op unless a plugin.json
+// version was bumped; unknown marketplace / uninstalled plugins fall back to
+// add/install. Failures only WARN: by this point the runtime has already
+// advanced (or was current), and doctor flags version drift until a sync
+// lands.
+const PLUGINS = ["code4food-skillset", "code4food-factory"];
+const syncPlugins = () => {
+  // A runtime that ships no marketplace manifest (pre-G3) has nothing to
+  // provision from — stay quiet rather than churn the claude CLI.
+  if (!fs.existsSync(path.join(RUNTIME, ".claude-plugin", "marketplace.json"))) return;
+  const claude = (...args) =>
+    spawnSync("claude", ["plugin", ...args], { encoding: "utf8", timeout: 120_000, stdio: ["ignore", "pipe", "pipe"] });
+  const firstLine = (r) => (r.stderr || r.stdout || String(r.error?.message ?? "")).split("\n").find((l) => l.trim()) ?? "";
+
+  const refresh = claude("marketplace", "update", "code4food");
+  if (refresh.error?.code === "ENOENT") {
+    log(`⚠ plugins NOT synced — claude CLI not on PATH; by hand: claude plugin marketplace add ${RUNTIME} && claude plugin install ${PLUGINS.map((p) => `${p}@code4food`).join(" ")}`);
+    return;
+  }
+  if (refresh.status !== 0) {
+    const add = claude("marketplace", "add", RUNTIME);
+    if (add.status !== 0) {
+      log(`⚠ plugins NOT synced — marketplace add failed: ${firstLine(add)}`);
+      return;
+    }
+  }
+  for (const p of PLUGINS) {
+    const upd = claude("update", `${p}@code4food`);
+    if (upd.status === 0) continue;
+    const inst = claude("install", `${p}@code4food`);
+    if (inst.status !== 0) {
+      log(`⚠ plugins NOT synced — ${p}: ${firstLine(inst)}`);
+      return;
+    }
+  }
+  log(`plugins synced with the runtime (${PLUGINS.join(", ")})`);
+};
+
 // ---------- resolve the candidate ----------
 if (!fs.existsSync(path.join(RUNTIME, ".git"))) {
   log(`no runtime at ${RUNTIME} — bootstrap it first: git clone <repo-url> ${RUNTIME}`);
@@ -111,6 +153,7 @@ try { candidate = git(["rev-parse", "--verify", `${ref}^{commit}`]); } catch {
 
 if (candidate === head) {
   log(`runtime up to date at ${head.slice(0, 7)} (${ref})`);
+  syncPlugins();
   process.exit(0);
 }
 
@@ -143,6 +186,41 @@ try { git(["merge-base", "--is-ancestor", "HEAD", candidate]); } catch {
 
 const count = git(["rev-list", "--count", `${head}..${candidate}`]);
 log(`candidate ${ref} = ${candidate.slice(0, 7)} (${count} commit(s) ahead of ${head.slice(0, 7)}) — running gates`);
+
+// Best-effort provisioning from the CURRENT runtime before gating: a
+// never-provisioned machine becomes usable even if the advance below is
+// refused. Not load-bearing for the gate — the candidate's doctor skips
+// the plugin check under FACTORY_DEPLOY_GATE (this deploy provisions
+// plugins itself right after the advance).
+syncPlugins();
+
+// Gate 0 — plugin-content honesty: cached plugins only refresh on a
+// version bump (`plugin update` is a no-op at the same version), so a
+// candidate that changes plugin content without bumping the owning
+// plugin.json would deploy green while every session keeps running the
+// old cached skills, forever and silently. Refuse it instead.
+{
+  const versionAt = (rev, manifest) => {
+    try { return JSON.parse(git(["show", `${rev}:${manifest}`])).version ?? null; }
+    catch { return null; /* manifest absent at that rev (pre-plugins) */ }
+  };
+  const changed = git(["diff", "--name-only", `${head}..${candidate}`]).split("\n").filter(Boolean);
+  const PLUGIN_CONTENT = [
+    { manifest: ".claude-plugin/plugin.json", owns: /^(skills|commands|agents|hooks|statusline)\/|^claude-md-block\.md$|^\.claude-plugin\// },
+    { manifest: "factory/.claude-plugin/plugin.json", owns: /^factory\/(skills|commands)\/|^factory\/\.claude-plugin\// },
+  ];
+  const stale = [];
+  for (const { manifest, owns } of PLUGIN_CONTENT) {
+    const before = versionAt(head, manifest);
+    const after = versionAt(candidate, manifest);
+    if (after === null) continue; // candidate ships no such plugin — nothing cached to go stale
+    const touched = changed.filter((f) => owns.test(f) && f !== manifest);
+    if (touched.length && before === after) stale.push(`${manifest} stays at ${after} while its content changed (${touched[0]}${touched.length > 1 ? ` +${touched.length - 1}` : ""})`);
+  }
+  if (stale.length) {
+    await refuse(`plugin content changed without a version bump — sessions would keep the old cached skills: ${stale.join("; ")}`);
+  }
+}
 
 // ---------- gates (against the candidate, in a throwaway worktree) ----------
 const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "factory-deploy-"));
@@ -180,8 +258,12 @@ try {
     for (const [project, meta] of factories) {
       const name = meta?.name ?? path.basename(project);
       try {
+        // FACTORY_DEPLOY_GATE: the candidate's doctor must not judge plugin
+        // provisioning — that is THIS deploy's own next step (post-advance
+        // sync), so gating on it would be circular. Every later doctor run
+        // checks it for real.
         execFileSync(process.execPath, [path.join(wt, "factory", "driver", "factory.mjs"), "doctor", "--project", project],
-          { encoding: "utf8", timeout: 180_000, stdio: ["ignore", "pipe", "pipe"] });
+          { encoding: "utf8", timeout: 180_000, stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, FACTORY_DEPLOY_GATE: "1" } });
         log(`gate: doctor ${name} — ok`);
       } catch (e) {
         const out = `${e.stdout ?? ""}${e.stderr ?? ""}`;
@@ -213,6 +295,7 @@ fs.writeFileSync(path.join(os.homedir(), ".factory", "runtime-deploy.json"), JSO
   factoriesChecked: Object.keys(registry?.factories ?? {}).length,
 }, null, 2) + "\n");
 log(`runtime advanced ${head.slice(0, 7)} → ${candidate.slice(0, 7)} (${count} commit(s))`);
+syncPlugins();
 // The dashboard is the one long-lived process running this checkout — a
 // deploy advances the files under it, but the process keeps serving the old
 // code until someone restarts it (timers re-exec per fire and self-heal).

@@ -16,8 +16,8 @@ present; ask questions rather than guessing.
 ## Output
 
 Write `.factory/backlog/index.md` and one `.factory/backlog/<epic>.md` per
-epic, in exactly the format defined in the `backlog` skill
-(`.claude/skills/backlog/SKILL.md`). Rules:
+epic, in exactly the format defined in the `code4food-factory:backlog` skill
+(a machine-installed plugin skill — load it with the Skill tool). Rules:
 
 1. **Milestones**: use the spec's milestones if present; otherwise propose
    2-5 ordered stages where each ends in something runnable/demoable. First
@@ -30,7 +30,7 @@ epic, in exactly the format defined in the `backlog` skill
    testable acceptance criteria, a concrete `Verify` command, `Deps`, and the
    `Reqs:` ids it satisfies (if the spec has REQ ids). EVERY task also gets
    `Model:` and `Effort:` (and `Turns:` where warranted), assigned per the
-   rubric in the backlog skill by actually judging the task against the
+   rubric in the `code4food-factory:backlog` skill by actually judging the task against the
    spec — a backlog where everything reads sonnet/medium means you didn't
    judge, and one where everything reads opus means you inflated. When
    torn between tiers, take the higher one (wasted sessions cost more than

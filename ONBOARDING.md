@@ -71,18 +71,19 @@ The factory runs from a machine-resident runtime, not from your project:
 
 ```sh
 git clone https://github.com/MJTeixeira/claude-plugins ~/.factory/runtime
+node ~/.factory/runtime/factory/driver/deploy-runtime.mjs
 ```
 
-and install the factory plugin (its `factory-setup` and `backlog` skills
-make "set up a factory here" and the backlog vocabulary available in any
-project on the machine):
+The second command provisions the plugins from the runtime clone (both the
+skillset and the factory skills — "set up a factory here" and the backlog
+vocabulary work in any project on the machine) and is also the update verb
+(section 6). On a factory machine, get the plugins this way rather than
+via `/plugin marketplace add MJTeixeira/claude-plugins` — the two sources
+would fight over the `code4food` marketplace name, and doctor requires the
+marketplace to point at the runtime clone so sessions run exactly the
+deployed skill versions.
 
-```
-/plugin install code4food-factory@code4food
-```
-
-Every scheduler and worktree-injected tool execs/copies from that runtime;
-it advances only through `deploy-runtime.mjs` (section 6). Optional now, needed later: Telegram creds
+Every scheduler and worktree-injected tool execs/copies from that runtime. Optional now, needed later: Telegram creds
 in `~/.factory/telegram.env`, the watchdog timer + dashboard service
 (templates in `factory/schedulers/` — see `factory/FACTORY.md`
 "Machine setup").
@@ -135,8 +136,9 @@ the machine-side `config.json` + `.env` under `~/.factory/projects/<key>/`
 (it prints the exact path — git can't clean or leak it there), marks the
 workspace trusted, registers the factory for the dashboard, and finishes
 with a doctor run. Setup is done when doctor is green. Session tooling
-(allowlist, skills, guard hook) is injected into each session's worktree
-at spawn from the runtime — nothing to commit, nothing to drift.
+(allowlist, guard hook) is injected into each session's worktree at spawn
+from the runtime, and skills come from the machine-installed plugins —
+nothing to commit, nothing to drift.
 
 ### 2.2 Write specs
 
