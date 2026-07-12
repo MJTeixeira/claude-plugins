@@ -1,0 +1,29 @@
+# Factory dashboard as a persistent service (Linux/VPS).
+# Runs from the machine runtime (O6) — bootstrap it first:
+#   git clone <repo-url> ~/.factory/runtime
+# This unit is machine-agnostic: port/listen/token live in
+# ~/.factory/dashboard.json, not here (keeps the token out of `ps` argv).
+# Install (user unit — survives reboots with lingering enabled):
+#   1. Create ~/.factory/dashboard.json first, e.g.:
+#        { "listen": "tailscale", "token": "<secret>" }
+#      chmod 600 ~/.factory/dashboard.json      # the token is a secret at rest
+#      ("listen": "tailscale" resolves this machine's tailnet IPv4 at startup;
+#       or give an explicit IP. Omit "token" and the dashboard is read-only.)
+#   2. cp factory-dashboard.service ~/.config/systemd/user/
+#   3. systemctl --user daemon-reload && systemctl --user enable --now factory-dashboard
+#   4. loginctl enable-linger $USER      # keeps user units running after logout
+[Unit]
+Description=Factory dashboard
+After=network-online.target tailscaled.service
+
+[Service]
+# Same trap as factory@.service: systemd user services get a minimal PATH,
+# and the dashboard shells out to `gh` (~/.local/bin) for PR/issue status and
+# to `git`/`tailscale` for version currency + tailnet-IP resolution.
+Environment=PATH=%h/.local/bin:%h/.local/opt/node/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ExecStart=/usr/bin/env node %h/.factory/runtime/factory/driver/dashboard.mjs
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

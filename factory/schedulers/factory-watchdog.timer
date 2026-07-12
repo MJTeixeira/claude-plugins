@@ -1,0 +1,13 @@
+# Daily fleet doctor sweep — pairs with factory-watchdog.service.
+# 10:00 local: after the morning windows, so a broken factory is reported
+# the same day it failed to run.
+[Unit]
+Description=Factory fleet watchdog schedule
+
+[Timer]
+OnCalendar=*-*-* 10:00
+Persistent=true
+Unit=factory-watchdog.service
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,10 @@
+# Factory cron entries — copy into `crontab -e`, fix the project path.
+# PATH must include node, claude, and gh (cron gets a minimal PATH).
+# The driver is the machine runtime (O6): bootstrap once with
+#   git clone <repo-url> ~/.factory/runtime
+# --scheduled: doctor preflight — a misconfigured factory aborts loudly
+# instead of half-running (NOTES item 25).
+PATH=/home/YOU/.local/bin:/usr/local/bin:/usr/bin:/bin
+30 8  * * 1-5  node $HOME/.factory/runtime/factory/driver/factory.mjs triage --project /path/to/project --scheduled >> /path/to/project/.factory/log/cron.out 2>&1
+0  9  * * 1-5  node $HOME/.factory/runtime/factory/driver/factory.mjs dev    --project /path/to/project --scheduled >> /path/to/project/.factory/log/cron.out 2>&1
+30 13 * * 1-5  node $HOME/.factory/runtime/factory/driver/factory.mjs report --project /path/to/project --scheduled >> /path/to/project/.factory/log/cron.out 2>&1

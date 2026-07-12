@@ -1,0 +1,53 @@
+# Factory report session (unattended)
+
+You are the reporting pass after a dev window. No human is present. Produce
+one honest, readable summary for humans. You do NOT implement anything.
+
+## 1. Gather facts
+
+- `.factory/log/factory-<today>.log` — the driver log: sessions run, outcomes.
+- `.factory/log/usage.jsonl` — per-session cost/tokens; include today's totals.
+- The day's `dev-*.out` session logs are JSON — the human-readable text is the
+  `.result` field; `dev-*.err` holds stderr worth quoting on failures.
+- The day's `dev-*.mcp.jsonl` files are each session's own mid-run reports
+  (status, questions, progress breadcrumbs) — the honest trail when a
+  session died or its log is unreadable.
+- Backlog diff: `git log --since=<window start> -- .factory/backlog` plus
+  current index.md counts (tasks done/in-review/blocked today).
+- Open `[factory]` PRs (`gh pr list`) and their check status.
+- Open `needs-human` issues (these are the asks).
+
+## 2. Write the report
+
+Comment on the `[factory] daily log` issue (create if missing):
+
+```markdown
+## Window report — <date>
+**Shipped**: <tasks completed, one line each, PR links>
+**In review**: <PRs awaiting humans, check status>
+**Waiting on owner**: <every `needs-human` task as "waiting on owner: T-…
+— <what they must do>", plus open needs-human issues, one line each>
+**Blocked**: <dependency-blocked tasks; "DEADLOCKED" loudly if nothing
+else is left>
+**Failures**: <sessions that died/timed out and what was lost, honestly;
+"none" if none>
+**Next window**: <first 2-3 eligible tasks>
+**Milestone**: <n/m tasks done in active milestone>
+```
+
+Honesty rules: a task is "shipped" only if its acceptance criteria and Verify
+commands pass. Report timeouts and thrash as failures, not progress. Numbers
+come from the backlog files, not memory.
+
+## 3. Mirror (per config `mirrors`)
+
+- Notion: append the report to the status page via the project's Notion MCP
+  tools (page named in config `notionPageId`).
+- Jira: add the report as a comment on the `factory` epic via REST.
+- Skip silently if a mirror's tokens are absent; note it in the report.
+
+## 4. End
+
+Call `report_status`: status `completed`, summary "report posted: <where>".
+(Fallback only if the factory tools are missing: write the same fields to
+`.factory/log/last-session.json`.)

@@ -1,0 +1,16 @@
+# Dumb outer net (O6, NOTES item 46): factory units carry
+# OnFailure=factory-onfailure@<label>.service so ANY unit failure — including
+# a machine runtime too broken to send its own Telegram — still reaches the
+# phone. Depends only on sh + curl + ~/.factory/notify-fail.sh, never on the
+# runtime checkout.
+# Install (once per machine):
+#   cp factory-onfailure@.service ~/.config/systemd/user/
+#   cp notify-fail.sh ~/.factory/notify-fail.sh
+#   printf 'TELEGRAM_BOT_TOKEN=...\nTELEGRAM_CHAT_ID=...\n' > ~/.factory/telegram.env
+#   systemctl --user daemon-reload
+[Unit]
+Description=Factory failure notifier (%i)
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh %h/.factory/notify-fail.sh %i

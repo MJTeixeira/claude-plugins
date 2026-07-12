@@ -1,0 +1,13 @@
+# Starts factory@dev.service on schedule. Copy/edit for triage (OnCalendar=Mon..Fri 08:30)
+# and report (Mon..Fri 13:30) as factory-triage.timer / factory-report.timer,
+# each with Unit=factory@<mode>.service.
+[Unit]
+Description=Factory dev window schedule
+
+[Timer]
+OnCalendar=Mon..Fri 09:00
+Persistent=false
+Unit=factory@dev.service
+
+[Install]
+WantedBy=timers.target

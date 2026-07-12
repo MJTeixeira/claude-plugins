@@ -1,0 +1,30 @@
+# systemd template unit (Linux/VPS alternative to cron — better logging via journalctl).
+# NOTE: init.mjs generates a filled per-project variant of this in
+# .factory/schedulers/ — prefer that. This template is for hand-installs.
+# Install: copy factory@.service, factory-dev.timer (etc.), and
+# factory-onfailure@.service to ~/.config/systemd/user/
+# Edit WorkingDirectory and the --project path first. Then:
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now factory-dev.timer
+# Instance name (%i) is the mode: factory@dev.service, factory@triage.service, factory@report.service
+[Unit]
+Description=Factory %i run
+# Dumb outer net (O6): any unit failure — including a machine runtime too
+# broken to send its own Telegram — still reaches the phone.
+# %n = this unit's full name, so the notifier's journalctl hint is exact.
+OnFailure=factory-onfailure@%n.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/path/to/project
+# systemd user services get a minimal PATH (no ~/.local/bin, no .bashrc) —
+# without this line the driver dies with "spawn claude ENOENT" and sessions
+# can't find gh/node/npm. Include every dir claude, gh, and node live in.
+Environment=PATH=%h/.local/bin:%h/.local/opt/node/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+# --scheduled: doctor preflight — a misconfigured factory aborts with a
+# Telegram notification instead of half-running (NOTES item 25).
+# The driver is the machine runtime (O6): one gated checkout per machine,
+# advanced only by deploy-runtime.mjs. Bootstrap: git clone <repo-url> ~/.factory/runtime
+ExecStart=/usr/bin/env node %h/.factory/runtime/factory/driver/factory.mjs %i --project /path/to/project --scheduled
+# Long dev windows: give the unit room (driver enforces its own window limit)
+TimeoutStartSec=8h

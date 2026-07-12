@@ -1,0 +1,18 @@
+# Fleet watchdog (NOTES item 26): runs doctor across every factory in
+# ~/.factory/registry.json, writes per-factory doctor.json, Telegrams a
+# summary if anything fails. ONE unit per machine, not per factory.
+# Runs from the machine runtime (O6) — bootstrap it first:
+#   git clone <repo-url> ~/.factory/runtime
+# Install: copy this + factory-watchdog.timer + factory-onfailure@.service
+# to ~/.config/systemd/user/, then:
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now factory-watchdog.timer
+[Unit]
+Description=Factory fleet watchdog (doctor all registered factories)
+OnFailure=factory-onfailure@%n.service
+
+[Service]
+Type=oneshot
+Environment=PATH=%h/.local/bin:%h/.local/opt/node/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ExecStart=/usr/bin/env node %h/.factory/runtime/factory/driver/watchdog.mjs
+TimeoutStartSec=30min
