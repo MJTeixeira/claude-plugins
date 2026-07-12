@@ -1101,7 +1101,13 @@ if (mode === "migrate") {
       for (const rel of [".factory/hooks", ".factory/spec-template.md", ".factory/schedulers", "factory.yaml",
         ".factory/driver.mjs", ".factory/prompts",
         ...factorySkillNames(RUNTIME_ROOT).map((n) => `.claude/skills/${n}`),
-        ".claude/agents/code-reviewer.md"]) {
+        ".claude/agents/code-reviewer.md",
+        // install.sh-era per-project tooling — the plugins ship all of it
+        // now (G3); the statusline deliberately stays (not plugin-provided).
+        ".claude/commands/commit.md", ".claude/hooks/protected-branch-guard.mjs",
+        // settings.local.json is machine-injected per spawn — tracked copies
+        // are the leak hazard materialization has to skip-worktree around.
+        ".claude/settings.local.json"]) {
         if (!tracked(rel)) continue;
         // No -f: git refuses when the copy has local modifications — an
         // owner's customization must be kept (loudly), never destroyed.
@@ -1132,6 +1138,33 @@ if (mode === "migrate") {
             fs.writeFileSync(p, JSON.stringify(stripped, null, 2) + "\n");
             g(["add", "--", settingsRel]);
             staged.push(settingsRel);
+          }
+        }
+      }
+      // The LEAN-WORKFLOW managed block in CLAUDE.md is install.sh-era text
+      // whose bare skill names went stale when skills moved into the plugins
+      // (G3: they are namespaced now) — refresh it from the runtime copy.
+      // The markers license exactly this: only text between them changes,
+      // everything outside is the owner's. No markers → not ours to touch.
+      {
+        const cmRel = "CLAUDE.md";
+        const blockSrc = path.join(RUNTIME_ROOT, "claude-md-block.md");
+        const cmPath = path.join(project, cmRel);
+        if (tracked(cmRel) && fs.existsSync(cmPath) && fs.existsSync(blockSrc)) {
+          const text = fs.readFileSync(cmPath, "utf8");
+          const B = "<!-- BEGIN LEAN-WORKFLOW MANAGED BLOCK";
+          const E = "<!-- END LEAN-WORKFLOW MANAGED BLOCK -->";
+          const b = text.indexOf(B);
+          const e = text.indexOf(E);
+          if (b !== -1 && e > b) {
+            const block = fs.readFileSync(blockSrc, "utf8").replace(/\n+$/, "");
+            const next = text.slice(0, b) + block + text.slice(e + E.length);
+            if (next !== text) {
+              fs.writeFileSync(cmPath, next);
+              g(["add", "--", cmRel]);
+              staged.push(cmRel);
+              say("CLAUDE.md: managed workflow block refreshed from the runtime (namespaced skills)");
+            }
           }
         }
       }
