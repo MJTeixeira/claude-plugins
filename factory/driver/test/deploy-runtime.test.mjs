@@ -358,3 +358,56 @@ test("a live window in any registered factory blocks the deploy", (t) => {
   assert.match(r.stdout + r.stderr, /live window/i);
   assert.equal(runtimeHead(world), before);
 });
+
+// Gate 0 — cached plugins only refresh on a version bump, so plugin-content
+// changes without one would deploy green while sessions keep stale skills.
+test("plugin content changed without a version bump is refused", (t) => {
+  const world = makeRuntimeWorld(t, { withPlugins: true });
+  const claudeBin = stubClaude(world);
+  const before = runtimeHead(world);
+  commitOnOrigin(world, (seed) => {
+    fs.mkdirSync(path.join(seed, "skills", "tdd"), { recursive: true });
+    fs.writeFileSync(path.join(seed, "skills", "tdd", "SKILL.md"), "# changed\n");
+  });
+
+  const r = runDeploy(world, { extraPath: claudeBin });
+
+  assert.equal(r.code, 1, `stdout:\n${r.stdout}\nstderr:\n${r.stderr}`);
+  assert.match(r.stdout + r.stderr, /without a version bump/i);
+  assert.equal(runtimeHead(world), before);
+});
+
+test("plugin content change WITH a version bump deploys", (t) => {
+  const world = makeRuntimeWorld(t, { withPlugins: true });
+  const factory = makeFactory(t);
+  const binDir = registerFactory(world, factory);
+  const claudeBin = stubClaude(world);
+  const target = commitOnOrigin(world, (seed) => {
+    fs.mkdirSync(path.join(seed, "skills", "tdd"), { recursive: true });
+    fs.writeFileSync(path.join(seed, "skills", "tdd", "SKILL.md"), "# changed\n");
+    const mf = path.join(seed, ".claude-plugin", "plugin.json");
+    const m = JSON.parse(fs.readFileSync(mf, "utf8"));
+    m.version = "99.0.0";
+    fs.writeFileSync(mf, JSON.stringify(m, null, 2) + "\n");
+  });
+
+  const r = runDeploy(world, { extraPath: `${claudeBin}:${binDir}` });
+
+  assert.equal(r.code, 0, `stdout:\n${r.stdout}\nstderr:\n${r.stderr}`);
+  assert.equal(runtimeHead(world), target);
+});
+
+test("driver-only changes need no version bump — gate 0 stays out of the way", (t) => {
+  const world = makeRuntimeWorld(t, { withPlugins: true });
+  const factory = makeFactory(t);
+  const binDir = registerFactory(world, factory);
+  const claudeBin = stubClaude(world);
+  const target = commitOnOrigin(world, (seed) => {
+    fs.appendFileSync(path.join(seed, "factory", "driver", "factory.mjs"), "// driver change\n");
+  });
+
+  const r = runDeploy(world, { extraPath: `${claudeBin}:${binDir}` });
+
+  assert.equal(r.code, 0, `stdout:\n${r.stdout}\nstderr:\n${r.stderr}`);
+  assert.equal(runtimeHead(world), target);
+});

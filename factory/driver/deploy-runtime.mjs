@@ -187,11 +187,40 @@ try { git(["merge-base", "--is-ancestor", "HEAD", candidate]); } catch {
 const count = git(["rev-list", "--count", `${head}..${candidate}`]);
 log(`candidate ${ref} = ${candidate.slice(0, 7)} (${count} commit(s) ahead of ${head.slice(0, 7)}) — running gates`);
 
-// Pre-gate sync from the CURRENT runtime: the candidate's doctor (gate 2)
-// checks plugin presence/version against the runtime on disk, so a machine
-// that was never provisioned must get its plugins here or the gate could
-// never pass — the gate stays self-satisfying instead of circular.
+// Best-effort provisioning from the CURRENT runtime before gating: a
+// never-provisioned machine becomes usable even if the advance below is
+// refused. Not load-bearing for the gate — the candidate's doctor skips
+// the plugin check under FACTORY_DEPLOY_GATE (this deploy provisions
+// plugins itself right after the advance).
 syncPlugins();
+
+// Gate 0 — plugin-content honesty: cached plugins only refresh on a
+// version bump (`plugin update` is a no-op at the same version), so a
+// candidate that changes plugin content without bumping the owning
+// plugin.json would deploy green while every session keeps running the
+// old cached skills, forever and silently. Refuse it instead.
+{
+  const versionAt = (rev, manifest) => {
+    try { return JSON.parse(git(["show", `${rev}:${manifest}`])).version ?? null; }
+    catch { return null; /* manifest absent at that rev (pre-plugins) */ }
+  };
+  const changed = git(["diff", "--name-only", `${head}..${candidate}`]).split("\n").filter(Boolean);
+  const PLUGIN_CONTENT = [
+    { manifest: ".claude-plugin/plugin.json", owns: /^(skills|commands|agents|hooks|statusline)\/|^claude-md-block\.md$|^\.claude-plugin\// },
+    { manifest: "factory/.claude-plugin/plugin.json", owns: /^factory\/(skills|commands)\/|^factory\/\.claude-plugin\// },
+  ];
+  const stale = [];
+  for (const { manifest, owns } of PLUGIN_CONTENT) {
+    const before = versionAt(head, manifest);
+    const after = versionAt(candidate, manifest);
+    if (after === null) continue; // candidate ships no such plugin — nothing cached to go stale
+    const touched = changed.filter((f) => owns.test(f) && f !== manifest);
+    if (touched.length && before === after) stale.push(`${manifest} stays at ${after} while its content changed (${touched[0]}${touched.length > 1 ? ` +${touched.length - 1}` : ""})`);
+  }
+  if (stale.length) {
+    await refuse(`plugin content changed without a version bump — sessions would keep the old cached skills: ${stale.join("; ")}`);
+  }
+}
 
 // ---------- gates (against the candidate, in a throwaway worktree) ----------
 const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "factory-deploy-"));

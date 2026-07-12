@@ -256,3 +256,35 @@ echo "- triage note" >> .factory/backlog/index.md`,
   assert.doesNotMatch(tree, /settings\.local\.json|\.claude\/skills/,
     `injected tooling rode the metadata commit:\n${tree}`);
 });
+
+test("pre-G3 injected copies in a persistent worktree are scrubbed at the next materialization", (t) => {
+  const world = makeFactory(t);
+  // First triage creates the persistent meta worktree.
+  queueSessions(world, [
+    { script: `echo "- note" >> .factory/backlog/index.md`, stdout: RESULT_OK, exit: 0 },
+    { script: `(ls .claude/skills 2>/dev/null || echo ABSENT) > "$STUB_DIR/seen-skills.txt" &&
+(ls .claude/agents 2>/dev/null || echo ABSENT) > "$STUB_DIR/seen-agents.txt" &&
+echo "- note2" >> .factory/backlog/index.md`, stdout: RESULT_OK, exit: 0 },
+  ]);
+  let r = runDriver(world, "triage");
+  assert.equal(r.code, 0, `driver exited ${r.code}\n${r.stdout}\n${r.stderr}`);
+
+  // Plant the pre-G3 shape into the surviving meta worktree: untracked
+  // injected skill + agent copies, exactly what the old driver left behind.
+  const worktrees = path.join(world.home, ".factory", "worktrees");
+  const key = fs.readdirSync(worktrees)[0];
+  const meta = path.join(worktrees, key, "meta");
+  assert.ok(fs.existsSync(meta), `meta worktree missing under ${worktrees}`);
+  fs.mkdirSync(path.join(meta, ".claude", "skills", "backlog"), { recursive: true });
+  fs.writeFileSync(path.join(meta, ".claude", "skills", "backlog", "SKILL.md"), "stale pre-G3 copy\n");
+  fs.mkdirSync(path.join(meta, ".claude", "agents"), { recursive: true });
+  fs.writeFileSync(path.join(meta, ".claude", "agents", "code-reviewer.md"), "stale agent copy\n");
+
+  r = runDriver(world, "triage");
+  assert.equal(r.code, 0, `driver exited ${r.code}\n${r.stdout}\n${r.stderr}`);
+
+  assert.equal(readSeen(world, "seen-skills.txt").trim(), "ABSENT",
+    "stale pre-G3 skill copies survived materialization in the persistent worktree");
+  assert.equal(readSeen(world, "seen-agents.txt").trim(), "ABSENT",
+    "stale pre-G3 agent copy survived materialization in the persistent worktree");
+});
