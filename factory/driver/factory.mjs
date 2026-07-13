@@ -1574,12 +1574,12 @@ const runDoctor = () => {
     check(d.out !== null ? "ok" : "fail", `docker (${compose} present)`, d.out !== null ? "daemon reachable" : d.err);
   } else check("skip", "docker", "no compose file");
 
-  // 10. plan freshness (missing is fine — sessions self-select)
+  // 10. plan freshness (missing is fine — the next dev window re-triages first)
   const planD = readJson(path.join(stateD, "plan.json"));
-  if (!planD) check("skip", "plan.json", "none — sessions self-select");
+  if (!planD) check("skip", "plan.json", "none — next dev window triages first");
   else {
     const fresh = planD.generatedAt && Date.now() - Date.parse(planD.generatedAt) < 24 * 3600 * 1000;
-    check(fresh ? "ok" : "warn", "plan.json", fresh ? `${planD.queue?.length ?? 0} task(s) queued` : "stale (>24h) — sessions will self-select");
+    check(fresh ? "ok" : "warn", "plan.json", fresh ? `${planD.queue?.length ?? 0} task(s) queued` : "stale (>24h) — next dev window re-triages first");
   }
 
   // 11. dashboard registry
@@ -2544,7 +2544,7 @@ const configPromptNote = () =>
   `\n\n## Factory config (machine-side — this checkout has no .factory/config.json)\n\n` +
   "```json\n" + JSON.stringify(cfg, null, 2) + "\n```\n";
 
-const single = async (name) => {
+const runSingle = async (name) => {
   log(`${name} session starting`);
   writeLock(stateD, { mode: name, startedAt: new Date().toISOString() });
   const sessionLog = path.join(logDir, `${name}-${nowStamp()}.out`);
@@ -2606,8 +2606,10 @@ const single = async (name) => {
       ? `✔ ${name} done${row?.costUsd != null ? ` ($${row.costUsd.toFixed(2)})` : ""}`
       : `⚠ ${name} FAILED (exit ${exitCode}${timedOut ? ", timed out" : ""})`
   );
-  process.exit(exitCode === 0 ? 0 : 1);
+  return exitCode;
 };
+
+const single = async (name) => process.exit((await runSingle(name)) === 0 ? 0 : 1);
 
 if (mode === "triage" || mode === "report") {
   try {
@@ -3032,20 +3034,23 @@ let nextSessionNote = null; // driver-gathered context injected into the next se
   }
 }
 
-// Session plan from this morning's triage: ordered {taskId, model, effort,
-// maxTurns} queue. Missing, malformed, or >24h old → sessions self-select
-// (pre-plan behavior). When the queue runs out mid-window, same fallback.
-const planRaw = readJson(path.join(stateD, "plan.json"));
-const planFresh = planRaw?.generatedAt && Date.now() - Date.parse(planRaw.generatedAt) < 24 * 3600 * 1000;
-const plan = planFresh && Array.isArray(planRaw.queue) && planRaw.queue.length ? planRaw.queue : null;
-if (planRaw && !plan) {
-  // An empty queue is triage saying "nothing eligible" — not a defect
-  // (NOTES item 30). Stale/malformed is the actual defect case.
-  log(planFresh && Array.isArray(planRaw.queue) && planRaw.queue.length === 0
-    ? "plan: triage queued 0 tasks (backlog blocked or empty) — one probe session will confirm"
-    : "plan.json present but stale or malformed — sessions will self-select");
-}
-if (plan) log(`plan: ${plan.length} task(s) queued by triage — ${plan.map((e) => e.taskId).join(", ")}`);
+// Session plan from triage: ordered {taskId, model, effort, maxTurns} queue.
+// Missing, malformed, or >24h old means triage hasn't seen the current state:
+// the window runs a triage first (below, once the repo is ready) and sessions
+// self-select only if that triage fails. A fresh-but-empty queue is triage
+// saying "nothing eligible" — not a defect (NOTES item 30) — and keeps its
+// probe path. When the queue runs out mid-window, sessions self-select: the
+// plan was fresh at window start and the backlog reflects its own sessions.
+const loadPlan = () => {
+  const raw = readJson(path.join(stateD, "plan.json"));
+  const fresh = raw?.generatedAt && Date.now() - Date.parse(raw.generatedAt) < 24 * 3600 * 1000;
+  return {
+    raw,
+    queue: fresh && Array.isArray(raw.queue) && raw.queue.length ? raw.queue : null,
+    answered: Boolean(fresh && Array.isArray(raw.queue)), // fresh plan, even an empty one
+  };
+};
+let { raw: planRaw, queue: plan, answered: planAnswered } = loadPlan();
 let planIdx = 0;
 
 // Sessions start from origin tip in fresh worktrees (O9) — the window's
@@ -3061,6 +3066,8 @@ try {
 // Zero actionable tasks → the window would only burn a paid probe session
 // confirming what the statuses already say. Skip it BEFORE spawning (an empty
 // backlog keeps today's probe — statuses prove nothing about a bare project).
+// This also runs before any auto-triage: statuses are driver-maintained and
+// don't need a triage to be trusted, so a settled factory skips for free.
 {
   const pool = effectiveTasks();
   const derived = pool.length ? deriveFactoryStatus(pool) : { status: "normal" };
@@ -3071,6 +3078,26 @@ try {
     process.exit(0);
   }
 }
+
+// No usable plan → re-plan now instead of letting sessions guess against a
+// state triage never saw (out-of-band merges made this the worst failure
+// mode: sessions picked settled tasks or missed unblocked ones). STOP means
+// the owner halted this factory: don't burn a triage (or land its metadata
+// commit) on a window the loop's first STOP check will end anyway.
+if (!planAnswered && !fs.existsSync(stopFile)) {
+  log(`plan.json ${planRaw ? "stale or malformed" : "missing"} — running triage before the first session`);
+  let triageExit = 1;
+  try {
+    triageExit = await runSingle("triage");
+  } catch (e) {
+    log(`auto-triage errored (${firstLine(e)})`);
+  }
+  ({ raw: planRaw, queue: plan, answered: planAnswered } = loadPlan());
+  if (triageExit !== 0) log("auto-triage failed — sessions will self-select");
+  else if (!planAnswered) log("auto-triage wrote no usable plan — sessions will self-select");
+}
+if (plan) log(`plan: ${plan.length} task(s) queued by triage — ${plan.map((e) => e.taskId).join(", ")}`);
+else if (planAnswered) log("plan: triage queued 0 tasks (backlog blocked or empty) — one probe session will confirm");
 
 log(
   `dev window starting: ${cfg.windowHours}h, cap ${cfg.maxSessionsPerWindow} sessions, ` +
