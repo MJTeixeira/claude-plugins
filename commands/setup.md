@@ -1,6 +1,6 @@
 ---
 description: Wire the lean workflow into this project (CLAUDE.md block + optional statusline)
-allowed-tools: Bash(cat:*), Bash(ls:*), Bash(cp:*), Bash(chmod:*), Bash(jq:*)
+allowed-tools: Bash(ls:*), Bash(grep:*), Read, Write, Edit
 ---
 
 ## Context
@@ -12,20 +12,29 @@ allowed-tools: Bash(cat:*), Bash(ls:*), Bash(cp:*), Bash(chmod:*), Bash(jq:*)
 
 The skills, `/commit` command, code-reviewer agent, and protected-branch guard
 hook already come from this plugin — nothing to copy for those. This command
-wires the two pieces a plugin cannot inject:
+wires the two pieces a plugin cannot inject. Use the Read/Write/Edit tools for
+all file work (not shell copy/merge commands) so this behaves identically on
+macOS, Linux, and Windows:
 
-1. **CLAUDE.md managed block.** Append the full contents of
-   `${CLAUDE_PLUGIN_ROOT}/claude-md-block.md` to the project's `CLAUDE.md`
-   (create the file if missing). Idempotent: if the
-   `BEGIN LEAN-WORKFLOW MANAGED BLOCK` marker already exists, replace
-   everything between (and including) the BEGIN and END marker lines with the
-   fresh copy instead of appending. Never touch content outside the markers.
+1. **CLAUDE.md managed block.** Read `${CLAUDE_PLUGIN_ROOT}/claude-md-block.md`
+   and append its full contents to the project's `CLAUDE.md` (create the file
+   if missing). Idempotent: if the `BEGIN LEAN-WORKFLOW MANAGED BLOCK` marker
+   already exists, replace everything between (and including) the BEGIN and END
+   marker lines with the fresh copy instead of appending. Never touch content
+   outside the markers.
 
 2. **Statusline (only if the user asked for it in the command arguments).**
-   Copy `${CLAUDE_PLUGIN_ROOT}/statusline/statusline.sh` to
-   `.claude/statusline.sh`, `chmod +x` it, and set in `.claude/settings.json`:
-   `{"statusLine": {"type": "command", "command": ".claude/statusline.sh", "padding": 0}}`
-   (merge with jq — preserve other keys).
+   Read `${CLAUDE_PLUGIN_ROOT}/statusline/statusline.js` and Write it to
+   `.claude/statusline.js` (no `chmod` needed — it runs via `node`). Then set in
+   `.claude/settings.json`:
+   `{"statusLine": {"type": "command", "command": "node .claude/statusline.js", "padding": 0}}`
+   Merge into any existing `.claude/settings.json` by reading it, setting the
+   `statusLine` key, and writing it back — preserve every other key. Do NOT use
+   `jq` (it isn't present on Windows); edit the JSON with the Read/Write/Edit
+   tools. Create the file if it's missing. A legacy `.claude/statusline.sh`
+   left over from an older install is now inert (settings.json no longer
+   points at it) — mention it in your report so the user can remove it, but
+   don't fail if it's still there.
 
 Then report what was installed, updated, or already current. Do not commit
 anything.
