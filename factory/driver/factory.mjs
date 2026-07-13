@@ -3081,8 +3081,10 @@ try {
 
 // No usable plan → re-plan now instead of letting sessions guess against a
 // state triage never saw (out-of-band merges made this the worst failure
-// mode: sessions picked settled tasks or missed unblocked ones).
-if (!planAnswered) {
+// mode: sessions picked settled tasks or missed unblocked ones). STOP means
+// the owner halted this factory: don't burn a triage (or land its metadata
+// commit) on a window the loop's first STOP check will end anyway.
+if (!planAnswered && !fs.existsSync(stopFile)) {
   log(`plan.json ${planRaw ? "stale or malformed" : "missing"} — running triage before the first session`);
   let triageExit = 1;
   try {

@@ -95,3 +95,16 @@ test("auto-triage failure falls back to self-select — the window still runs", 
   const inv2 = JSON.parse(fs.readFileSync(path.join(world.stubDir, "invocation-2.json"), "utf8"));
   assert.doesNotMatch(inv2.prompt, /Your task this session:/);
 });
+
+test("STOP file suppresses the auto-triage — a halted factory burns nothing", (t) => {
+  const world = makeFactory(t, { config: { maxSessionsPerWindow: 1 }, plan: null });
+  fs.writeFileSync(path.join(world.stateDir, "STOP"), "");
+  queueSessions(world, [triageStub(), devStub()]);
+
+  const r = runDriver(world, "dev");
+
+  assert.equal(r.code, 0, `driver exited ${r.code}\nstdout:\n${r.stdout}\nstderr:\n${r.stderr}`);
+  assert.doesNotMatch(r.stdout, /running triage before the first session/);
+  assert.match(r.stdout, /STOP file present — ending window/);
+  assert.ok(!fs.existsSync(path.join(world.stubDir, "invocation-1.json")), "a session ran despite STOP");
+});
