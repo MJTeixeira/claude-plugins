@@ -18,7 +18,7 @@ const git = (cwd, ...args) =>
 // One temp world per test: { root, project, origin, home, stubDir, stateDir }
 // The world is post-migration shaped: work data committed in the project
 // repo, config/.env/log machine-side under the fake $HOME.
-export const makeFactory = (t, { config = {}, tasks } = {}) => {
+export const makeFactory = (t, { config = {}, tasks, plan } = {}) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "factory-test-"));
   t?.after(() => fs.rmSync(root, { recursive: true, force: true }));
 
@@ -114,6 +114,17 @@ exit 0
     ) + "\n"
   );
   fs.writeFileSync(path.join(sd, ".env"), `STUB_DIR=${stubDir}\n`);
+
+  // Default: a fresh empty plan ("triage answered: nothing eligible") so dev
+  // windows keep the pre-plan self-select behavior most fixtures rely on and
+  // never auto-triage. `plan: null` = no plan.json (exercises auto-triage);
+  // an object = written verbatim.
+  if (plan !== null) {
+    fs.writeFileSync(
+      path.join(sd, "plan.json"),
+      JSON.stringify(plan ?? { generatedAt: new Date().toISOString(), queue: [] })
+    );
+  }
 
   return { root, project, origin, home, stubDir, factoryDir: f, stateDir: sd };
 };
