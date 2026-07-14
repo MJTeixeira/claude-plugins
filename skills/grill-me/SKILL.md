@@ -16,6 +16,9 @@ and pin it down — don't argue for an agenda.
 - The user asks: "grill me", "poke holes in this", "help me scope this".
 - Skip when one reading survives exploration, or the user says
   "skip the grill".
+- NEVER in unattended sessions (factory windows, headless `-p` runs) —
+  there is no one to answer. Follow your session's own contract instead:
+  in a factory, `open_question` + mark blocked/proceed conservatively.
 
 ## How
 
