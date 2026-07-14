@@ -9,7 +9,7 @@
     {
       "name": "code4food-skillset",
       "description": "Lean dev workflow: task sizing, explore/plan/TDD/verify/finishing discipline, debugging, worktrees, handoff \u2014 plus a code-reviewer agent, /commit, and a protected-branch guard hook.",
-      "version": "1.1.0",
+      "version": "1.2.0",
       "license": "MIT",
       "keywords": [
         "workflow",

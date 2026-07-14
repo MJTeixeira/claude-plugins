@@ -1,0 +1,9 @@
+# Keep LF line endings everywhere, including on Windows checkouts. Scripts and
+# hooks are executed by node/bash; CRLF corrupts shebangs and shell parsing and
+# silently breaks the statusline and hooks on Windows.
+* text=auto eol=lf
+*.sh text eol=lf
+*.mjs text eol=lf
+*.js text eol=lf
+*.json text eol=lf
+*.md text eol=lf
