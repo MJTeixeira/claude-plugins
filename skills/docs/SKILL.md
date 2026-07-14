@@ -63,3 +63,18 @@ in `references/area-template.md`.
 - **Share with subagents**: when spawning Explore or code-reviewer, put the
   relevant `.docs/<area>.md` paths in the prompt.
 - Over budget? Split the area or prune the least-surprising bullets.
+
+## User-facing docs (README, ONBOARDING, CLAUDE.md, docs sites)
+
+`.docs/` serves agents; humans follow README, setup/onboarding guides, and
+CLAUDE.md — and those rot the same way. They matter at every project size,
+not just complex ones.
+
+- At the end of any small/feature change, ask: did this alter something a
+  human follows — install steps, commands, flags, config keys, product
+  claims, architecture described in README/ONBOARDING/CLAUDE.md or a docs
+  site? If yes, update the matching doc **in the same branch**. Grep those
+  files for the terms you changed; don't trust memory of what they say.
+- Reader-repair applies here too: touch a human doc that contradicts current
+  reality, fix it on the spot.
+- Trivial changes skip this exactly like they skip `.docs/`.
