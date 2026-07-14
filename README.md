@@ -46,9 +46,10 @@ What the plugin ships:
 
 - `claude-md-block.md` — a ~55-line router the `setup` command injects into
   the project's CLAUDE.md. Sizes each task and applies only the needed process.
-- `skills/` — eleven core skills (dev-workflow, tdd, debugging, worktrees,
-  finishing, verify, docs, handoff, auth, db-migrations, deploy), each under
-  ~500 words, with details in `references/` files loaded only on demand.
+- `skills/` — twelve core skills (dev-workflow, grill-me, tdd, debugging,
+  worktrees, finishing, verify, docs, handoff, auth, db-migrations, deploy),
+  each under ~500 words, with details in `references/` files loaded only on
+  demand.
 - `skills/unity`, `skills/godot` — engine skills; their descriptions gate them
   to engine work (MCP hang playbook, batchmode/CI gates, headless discipline,
   capture recipes, engine-specific traps).
