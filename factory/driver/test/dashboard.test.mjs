@@ -250,6 +250,9 @@ test("/api/state carries declared state, scaffold currency, and a version cache"
   assert.ok("version" in s, "state carries a version field");
   assert.ok(s.version && typeof s.version === "object", "version is an object");
   assert.ok("sha" in s.version || "error" in s.version, "version has sha or error shape");
+  // The chip shows a human semver, not the git sha — the plugin manifest's
+  // version rides in the cache whenever the checkout resolved a HEAD.
+  if ("sha" in s.version) assert.match(s.version.version, /^\d+\.\d+\.\d+$/, "plugin semver surfaced for the chip");
 
   const fac = s.factories.find((x) => x.path === world.project);
   assert.ok(fac, "factory present in state");
