@@ -315,16 +315,21 @@ const refreshVersion = async () => {
   const branch = (await gitOut(["rev-parse", "--abbrev-ref", "origin/HEAD"]))?.replace(/^origin\//, "") || "main";
   const deploy = readJson(path.join(os.homedir(), ".factory", "runtime-deploy.json"));
   const lastDeploy = deploy?.ts ?? null;
+  // Human-facing version: the factory plugin's semver from the manifest beside
+  // this checkout. The owner reads "v1.1.0", not a git sha — the sha stays only
+  // in the chip's tooltip. Local read, cheap; null if the manifest is absent.
+  const version = readJson(path.join(CHECKOUT_DIR, "..", ".claude-plugin", "plugin.json"))?.version ?? null;
+  const base = { sha, branch, version, lastDeploy };
   if ((await gitOut(["fetch", "origin", branch, "--quiet"])) === null) {
-    versionCache = { sha, branch, error: "fetch failed", lastDeploy };
+    versionCache = { ...base, error: "fetch failed" };
     return;
   }
   const behindStr = await gitOut(["rev-list", "--count", `HEAD..origin/${branch}`]);
   // A failed rev-list means we don't know the distance — render "unknown",
   // never a false "current": the chip's only value is being trustworthy.
-  if (behindStr === null) { versionCache = { sha, branch, error: "rev-list failed", lastDeploy }; return; }
+  if (behindStr === null) { versionCache = { ...base, error: "rev-list failed" }; return; }
   const behind = Number(behindStr);
-  versionCache = { sha, branch, behind, current: behind === 0, lastDeploy };
+  versionCache = { ...base, behind, current: behind === 0 };
 };
 
 const factoryState = (project, meta) => {
@@ -686,12 +691,20 @@ a{color:var(--accent);text-decoration:none}a:hover{text-decoration:underline}
   .nav{padding:6px 10px}
   .kpis{grid-template-columns:repeat(2,1fr)}
   .thead{display:none}
-  .rg{grid-template-columns:1fr auto;gap:6px 10px}
-  .c-pr,.c-se,.c-td{display:none}
-  /* keep the schedule/timers cell on phones — hiding it made the timing
-     feature invisible to a phone-first owner (2026-07-14) */
-  .c-sc{grid-column:1/-1;order:2}
-  .c-he{grid-column:1/-1}
+  /* Phone card: three tight rows in a 2-col grid, not one item per row —
+     name + chevron, then status | progress, then health | schedule. Pairing
+     the short cells keeps the card compact instead of a stack of near-empty
+     lines (2026-07-14). Sessions/today $ stay hidden — they live in the
+     expanded detail. */
+  .rg{grid-template-columns:1fr auto;gap:5px 12px;align-items:center}
+  .c-fac{grid-column:1;grid-row:1;min-width:0}
+  .c-ex{grid-column:2;grid-row:1;align-self:center}
+  .c-st{grid-column:1;grid-row:2;justify-self:start}
+  .c-pr{grid-column:2;grid-row:2;justify-self:end;display:flex}
+  .c-he{grid-column:1;grid-row:3;align-self:center}
+  .c-sc{grid-column:2;grid-row:3;justify-self:end;text-align:right}
+  .c-sc .nw{white-space:normal}
+  .c-se,.c-td{display:none}
   .detail{padding-left:16px}
 }
 @media(max-width:560px){.kpis{grid-template-columns:1fr 1fr}.top h1{font-size:19px}}
@@ -759,13 +772,19 @@ function pill(s){ return '<span class="pill '+esc(s)+'"><span class="pd"></span>
 function pbar(done,total){ var p = total ? Math.round(100*done/total) : 0; return '<span class="pbar"><i style="width:'+p+'%"></i></span>'; }
 function tpill(s){ return '<span class="tpill '+esc(s)+'">'+esc(s)+'</span>'; }
 
+// The runtime-currency chip, phrased for the owner (not git): "Factory runtime
+// · v1.1.0 · up to date". The sha, branch, and last-deploy time move into
+// the tooltip — a phone glance reads the version and whether an update is due,
+// nothing cryptic. The machine it's running on shows in the crumb beside it.
 function versionChip(v){
-  if(!v) return '<span class="ver" title="checking\\u2026"><span class="vd"></span>version \\u2026</span>';
-  var dep = v.lastDeploy ? " \\u00b7 last deploy "+new Date(v.lastDeploy).toLocaleString() : "";
-  if(!v.sha) return '<span class="ver" title="'+esc((v.error||"")+dep)+'"><span class="vd"></span>version unknown</span>';
-  if(v.error) return '<span class="ver" title="git: '+esc(v.error+dep)+'"><span class="vd"></span>factory '+esc(v.sha)+' \\u00b7 unknown</span>';
-  if(v.behind > 0) return '<span class="ver behind" title="run deploy-runtime.mjs to advance'+esc(dep)+'"><span class="vd"></span>factory '+esc(v.sha)+' \\u00b7 '+v.behind+' behind \\u2014 deploy to update</span>';
-  return '<span class="ver ok" title="up to date'+esc(dep)+'"><span class="vd"></span>factory '+esc(v.sha)+' \\u00b7 up to date</span>';
+  if(!v) return '<span class="ver" title="checking\\u2026"><span class="vd"></span>Factory runtime \\u00b7 checking\\u2026</span>';
+  var depTip = v.lastDeploy ? " \\u00b7 last deploy "+new Date(v.lastDeploy).toLocaleString() : "";
+  if(!v.sha) return '<span class="ver" title="'+esc((v.error||"")+depTip)+'"><span class="vd"></span>Factory runtime \\u00b7 version unknown</span>';
+  var head = 'Factory runtime \\u00b7 '+esc(v.version ? "v"+v.version : v.sha);
+  var idTip = "commit "+v.sha+(v.branch?" ("+v.branch+")":"")+depTip;
+  if(v.error) return '<span class="ver" title="'+esc(idTip+" \\u00b7 "+v.error)+'"><span class="vd"></span>'+head+'</span>';
+  if(v.behind > 0) return '<span class="ver behind" title="'+esc(v.behind+" update(s) behind "+(v.branch||"origin")+" \\u2014 deploy to update \\u00b7 "+idTip)+'"><span class="vd"></span>'+head+' \\u00b7 update available</span>';
+  return '<span class="ver ok" title="'+esc("up to date \\u00b7 "+idTip)+'"><span class="vd"></span>'+head+' \\u00b7 up to date</span>';
 }
 
 // Schedule cell: the kind chip, plus the soonest declared fire. Disabled
@@ -920,7 +939,8 @@ function filtersNav(total, fl){
 }
 function sfoot(s){
   var v = s.version||{};
-  var rt = v.sha ? "factory "+esc(v.sha)+(v.behind>0?" \\u00b7 "+v.behind+" behind \\u2014 deploy to update":v.error?" \\u00b7 unknown":" \\u00b7 up to date") : "factory \\u2014";
+  var ver = v.version ? "v"+esc(v.version) : (v.sha ? esc(v.sha) : "\\u2014");
+  var rt = v.sha ? "runtime "+ver+(v.behind>0?" \\u00b7 update available":v.error?" \\u00b7 unknown":" \\u00b7 up to date") : "runtime "+ver;
   return '<span>machine <span class="mono">'+esc(s.host)+'</span></span><span>'+rt+'</span><span>'+(s.canRun?"mutations enabled":"read-only \\u2014 no token")+'</span>';
 }
 
