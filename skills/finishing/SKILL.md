@@ -61,6 +61,11 @@ sensitive feature diff you MAY spawn a second reviewer with a security lens
 Update `.docs/` per the `docs` skill for the areas touched, and delete
 `.docs/HANDOFF.md` if this completes the task it describes.
 
+Then sweep user-facing docs (same skill, "User-facing docs" section): if the
+change altered install steps, commands, flags, config, or behavior described
+in README/ONBOARDING/CLAUDE.md or a docs site, update those in the same
+branch — agent docs and human docs both gate the PR.
+
 ## 5. Commit / PR — only with user consent
 
 If the user asked for a PR (or already approved it in the plan):

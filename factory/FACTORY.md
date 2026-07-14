@@ -49,7 +49,7 @@ Portable: the same driver runs on macOS, Linux/VPS, and Windows.
 1. **The runtime** — every scheduler execs it, every worktree gets its
    tooling from it:
    ```sh
-   git clone <this-repo-url> ~/.factory/runtime
+   git clone https://github.com/MJTeixeira/claude-plugins ~/.factory/runtime
    ```
 2. **Plugins** — the skillset (dev workflow, verify, handoff, …) and the
    factory skills (factory-setup interview, backlog vocabulary), available
@@ -246,6 +246,12 @@ Triage sessions run with `config.json → triageModel` (defaults to `model`;
 quality gates everything downstream, so a factory can run cheap dev sessions
 while giving triage a stronger model — e.g. a game project whose dev tasks
 are cheap but whose planning needs a top-tier model.
+
+Routing policy for the top tier (`fable`, above opus): pin it on
+BEHAVIOR-DEFINING or first-of-kind reasoning tasks where subtly-wrong logic
+is invisible to tests — rubrics, playbooks, judgment prompts,
+architecture-locking spikes. Not for routine infra/CRUD (sonnet) or ordinary
+complexity (opus). Tie-break upward when unsure between tiers.
 
 Task vocabulary has two parking states: `blocked` (dependency/technical —
 machine-clearable, triage re-opens it) and `needs-human` (only the owner
@@ -469,6 +475,23 @@ in `factory/schedulers/`.
   `died` — it doesn't arm the two-deaths breaker, and the driver injects a
   repo snapshot into the next session's prompt so it lands the leftovers
   instead of re-discovering them.
+
+## Piloting gotchas (learned the hard way — don't relearn)
+
+- **Never wrap a window launch in a retry-until-success loop** — a trailing
+  command exiting nonzero re-runs the block and spawns duplicate drivers
+  (three for one project, once). Launch once, verify separately. One driver
+  per project, always.
+- **Don't `pkill -f <project>` over ssh** — the remote command line contains
+  the pattern, so it kills your own shell. Kill by node PID instead.
+- **`/model` switch in an interactive session kills that session's background
+  children** (dev windows, dashboard launched from it). Relaunch them after.
+- **In-flight CI reads as "checks FAILING"** to the merge gate (seen ~5×): a
+  PR whose CI is still running gets a fix-note; the next session finds it
+  green with nothing to fix and merges. Wastes one session, self-heals.
+- **GitHub API timeouts** (`gh pr view failed`, `meta: fetch failed — using
+  local refs`) self-heal via the window-end sweep or next session. Only act
+  if PRs pile up unmerged.
 
 ## Safety notes
 

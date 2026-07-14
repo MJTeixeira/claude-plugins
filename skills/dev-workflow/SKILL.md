@@ -24,6 +24,10 @@ description: Feature-sized work — new behavior, multi-file changes, or ambiguo
 
 ## 2. Plan
 
+If scope is still ambiguous after exploring (you can state two plausible
+versions of "done"), run the `grill-me` skill first and plan against its
+scope contract.
+
 Write a short plan — it is for you (an agent with the exploration context in
 hand), not for a zero-context engineer. Cover: goal, approach, files to touch,
 the list of tests you'll write, and open questions. Use the template in
