@@ -359,6 +359,37 @@ test("/api/state computes nextWindow from a block declaration; manual has none",
   assert.equal(s2.factories.find((x) => x.path === manual.project).nextWindow, null);
 });
 
+test("/api/state exposes nextDev + windowHours so cards can show the dev fire and duration", async (t) => {
+  // Triage earlier than dev: nextWindow is triage (nearest), nextDev is the
+  // dev mode specifically — the phone card renders "next triage 01:30 ·
+  // dev 02:00 · 4h".
+  const world = makeFactory(t, {
+    config: {
+      windowHours: 4,
+      schedule: { kind: "systemd", modes: { triage: { time: "01:30", days: "Mon-Sun" }, dev: { time: "02:00", days: "Mon-Sun" } } },
+    },
+  });
+  register(world);
+  seedTemplate(world);
+  const { base } = await startDashboard(t, world, {});
+  const s = await getState(base);
+  const fac = s.factories.find((x) => x.path === world.project);
+  assert.equal(fac.nextDev.mode, "dev");
+  assert.equal(fac.nextDev.time, "02:00");
+  assert.ok(fac.nextDev.inMinutes >= 0 && fac.nextDev.inMinutes <= 7 * 1440);
+  assert.equal(fac.windowHours, 4);
+
+  // Manual: no fires to compute, but the declared duration still surfaces.
+  const manual = makeFactory(t, { config: { schedule: "manual", windowHours: 3 } });
+  register(manual);
+  seedTemplate(manual);
+  const d2 = await startDashboard(t, manual, {});
+  const s2 = await getState(d2.base);
+  const mfac = s2.factories.find((x) => x.path === manual.project);
+  assert.equal(mfac.nextDev, null);
+  assert.equal(mfac.windowHours, 3);
+});
+
 // ---------- PR-E: stale-clone guard ----------
 
 // A gh stub the dashboard's background refresh hits via STUB_GH_DIR: PR and
