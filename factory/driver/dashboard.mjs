@@ -373,8 +373,16 @@ const factoryState = (project, meta) => {
     // (kind/timezone/modes) instead of the legacy string.
     schedule: (typeof config?.schedule === "object" ? config.schedule?.kind : config?.schedule) ?? null,
     // Soonest declared fire (null for manual, legacy kind-only, or a broken
-    // declaration) — the card renders "next <mode> HH:MM" from it.
+    // declaration) — the card renders "next <mode> HH:MM" from it. nextDev
+    // is the dev mode's own fire (the nearest is often triage) and
+    // windowHours the declared duration, so the card can say
+    // "next triage 01:30 · dev 02:00 · 4h".
     nextWindow: nextFire(normalizeSchedule(config?.schedule)),
+    nextDev: (() => {
+      const sched = normalizeSchedule(config?.schedule);
+      return sched?.modes?.dev ? nextFire({ ...sched, modes: { dev: sched.modes.dev } }) : null;
+    })(),
+    windowHours: config?.windowHours ?? null,
     derived,
     scaffold: scaffoldCurrency(F),
     milestones,
@@ -679,7 +687,10 @@ a{color:var(--accent);text-decoration:none}a:hover{text-decoration:underline}
   .kpis{grid-template-columns:repeat(2,1fr)}
   .thead{display:none}
   .rg{grid-template-columns:1fr auto;gap:6px 10px}
-  .c-sc,.c-pr,.c-se,.c-td{display:none}
+  .c-pr,.c-se,.c-td{display:none}
+  /* keep the schedule/timers cell on phones — hiding it made the timing
+     feature invisible to a phone-first owner (2026-07-14) */
+  .c-sc{grid-column:1/-1;order:2}
   .c-he{grid-column:1/-1}
   .detail{padding-left:16px}
 }
@@ -766,7 +777,16 @@ function schedCell(f){
   if(f.status==="disabled" || !f.nextWindow) return chip;
   var at = new Date(f.nextWindow.at);
   var day = f.nextWindow.inMinutes >= 24*60 ? at.toLocaleDateString([], {weekday:"short"})+" " : "";
-  return chip+'<span class="nw">next '+esc(f.nextWindow.mode)+' '+day+hm(at)+'</span>';
+  var txt = 'next '+esc(f.nextWindow.mode)+' '+day+hm(at);
+  // The nearest fire is often triage; name dev's own fire too, plus the
+  // declared window duration — the question a phone glance actually asks.
+  if(f.nextDev && f.nextDev.mode!==f.nextWindow.mode){
+    var dat = new Date(f.nextDev.at);
+    var dday = f.nextDev.inMinutes >= 24*60 ? dat.toLocaleDateString([], {weekday:"short"})+" " : "";
+    txt += ' \\u00b7 dev '+dday+hm(dat);
+  }
+  if(f.windowHours) txt += ' \\u00b7 '+f.windowHours+'h';
+  return chip+'<span class="nw">'+txt+'</span>';
 }
 
 function controls(f, canRun){
