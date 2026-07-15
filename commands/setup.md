@@ -24,17 +24,19 @@ macOS, Linux, and Windows:
    outside the markers.
 
 2. **Statusline (only if the user asked for it in the command arguments).**
-   Read `${CLAUDE_PLUGIN_ROOT}/statusline/statusline.js` and Write it to
-   `.claude/statusline.js` (no `chmod` needed — it runs via `node`). Then set in
+   Read `${CLAUDE_PLUGIN_ROOT}/statusline/statusline.cjs` and Write it to
+   `.claude/statusline.cjs` (no `chmod` needed — it runs via `node`; the .cjs
+   extension keeps it CommonJS even in `"type": "module"` projects, and keeps
+   project linters that sweep .js files off it). Then set in
    `.claude/settings.json`:
-   `{"statusLine": {"type": "command", "command": "node .claude/statusline.js", "padding": 0}}`
+   `{"statusLine": {"type": "command", "command": "node .claude/statusline.cjs", "padding": 0}}`
    Merge into any existing `.claude/settings.json` by reading it, setting the
    `statusLine` key, and writing it back — preserve every other key. Do NOT use
    `jq` (it isn't present on Windows); edit the JSON with the Read/Write/Edit
    tools. Create the file if it's missing. A legacy `.claude/statusline.sh`
-   left over from an older install is now inert (settings.json no longer
-   points at it) — mention it in your report so the user can remove it, but
-   don't fail if it's still there.
+   or `.claude/statusline.js` left over from an older install is now inert
+   (settings.json no longer points at it) — mention it in your report so the
+   user can remove it, but don't fail if it's still there.
 
 Then report what was installed, updated, or already current. Do not commit
 anything.
