@@ -61,7 +61,7 @@ What the plugin ships:
   tool layer costs zero context tokens.
 - `/commit` — one-shot commit with git context pre-injected and
   least-privilege `allowed-tools`.
-- `statusline/statusline.js` — optional status bar (branch, model + effort,
+- `statusline/statusline.cjs` — optional status bar (branch, model + effort,
   cost, tokens, context size, lines changed); `setup` wires it on request.
   Runs on `node` (bundled with Claude Code) so it works on macOS, Linux, and
   Windows with no extra tools.
