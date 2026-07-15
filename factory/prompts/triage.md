@@ -43,7 +43,7 @@ branches, no checkouts, no commits, no merges.
   contradicts the spec, don't guess: ask via `open_question` instead.
 - A good `Verify:` line DRIVES THE PRODUCT, not the test suite again: a
   curl against the changed endpoint, a headless engine run, the CLI with
-  real arguments (see the `code4food-skillset:verify` skill's recipes). `npm test` is what CI
+  real arguments (see the `code4food-factory:verify` skill's recipes). `npm test` is what CI
   already proves — fix any task whose Verify line only re-runs it, along
   with your other backlog edits.
 - **Stamp `- Gate: human (<reason>)`** on any task whose acceptance criteria
@@ -126,8 +126,10 @@ with a config fallback). Then correct against the evidence in
 `.factory/log/usage.jsonl`: a task or epic that recently turn-capped, died,
 or overran its budget gets more turns or a stronger model; consistently
 cheap epics can drop to a cheaper setting. When torn between tiers, take
-the higher one — wasted sessions cost more than tokens. Note corrections
-in the `why`.
+the higher one — wasted sessions cost more than tokens. Turn budgets must
+also cover the mandatory pre-PR `code-reviewer` pass every dev session runs
+(spawn + finding triage — roughly 10-20 turns on top of implementation).
+Note corrections in the `why`.
 The driver spawns one session per entry with these settings and assigns it
 the task — a wrong plan wastes a session, so when unsure use `null`.
 

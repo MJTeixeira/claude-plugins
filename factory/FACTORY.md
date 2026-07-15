@@ -118,6 +118,25 @@ act surfaces:
 - What a monitor may merge is an owner decision per factory, not a
   product default.
 
+### Verification & review contract (two profiles)
+
+Verification guidance ships as TWO deliberately separate skills, one per
+session context — never merge them, never cross-load them:
+
+- **Factory windows** verify via `code4food-factory:verify` (headless
+  recipes, factory escalation vocabulary: `open_question`, `Gate: human`)
+  and then run ONE mandatory `code-reviewer` agent pass before opening the
+  PR — the only model review a factory PR gets before auto-merge. Factory
+  sessions never load the skillset's `finishing`.
+- **Live sessions** verify via `code4food-skillset:verify` (attended:
+  watched browser, simulator screenshots, `screencapture`), loaded by
+  `finishing` step 2.
+
+Both honor the same two invariants, each in its own words: claim done only
+on fresh evidence produced in THIS session, and scratch probes never in the
+repo root (`.factory/tmp/` in factory checkouts, a gitignored scratch dir
+in live sessions).
+
 ## Machine setup (once per machine)
 
 1. **The runtime** — every scheduler execs it, every worktree gets its

@@ -1,8 +1,8 @@
 {
   "name": "code4food-factory",
   "displayName": "code4food Factory",
-  "version": "1.1.3",
-  "description": "Factory \u2014 autonomous spec-driven development. Claude Code develops a fully-specced product alone in daily windows; skills cover setup (interview wizard) and the backlog vocabulary. The driver, prompts, and schedulers ship in this plugin's factory/ tree and run from a per-machine runtime clone (see FACTORY.md).",
+  "version": "1.1.4",
+  "description": "Factory \u2014 autonomous spec-driven development. Claude Code develops a fully-specced product alone in daily windows; skills cover setup (interview wizard), the backlog vocabulary, and headless verification for unattended sessions. The driver, prompts, and schedulers ship in this plugin's factory/ tree and run from a per-machine runtime clone (see FACTORY.md).",
   "author": {
     "name": "Marcos Teixeira",
     "url": "https://github.com/MJTeixeira"

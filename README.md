@@ -74,9 +74,10 @@ What the plugin ships:
 The factory is a machine-resident product: config, secrets, schedule, and
 logs live under `~/.factory/` on the machine that runs it; the project repo
 carries only work data (`.factory/{spec,backlog,inbox}`). Needs a git repo
-with a GitHub remote. The plugin ships the `factory-setup` (interview wizard)
-and `backlog` (task vocabulary) skills; the driver, prompts, and schedulers
-live in this repo's `factory/` tree and run from a per-machine runtime clone.
+with a GitHub remote. The plugin ships the `factory-setup` (interview wizard),
+`backlog` (task vocabulary), and `verify` (headless verification for
+unattended sessions) skills; the driver, prompts, and schedulers live in this
+repo's `factory/` tree and run from a per-machine runtime clone.
 
 Once per machine, bootstrap the runtime (or run
 `/code4food-factory:deploy-runtime`):
