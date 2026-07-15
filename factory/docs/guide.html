@@ -1,0 +1,197 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Factory · how it works</title>
+<style>
+:root{
+  --canvas:#f6f7f9;--surface:#fff;--hair:#e8e9ec;--hair2:#dcdee3;
+  --ink:#16181d;--body:#565a63;--mute:#888d97;
+  --accent:#3b6fe6;--accent-dim:rgba(59,111,230,.10);
+  --good:#1a7f37;--warn:#9a6700;--danger:#cf222e;
+  --display:"Nunito",ui-rounded,"SF Pro Rounded","Segoe UI",system-ui,sans-serif;
+  --sans:"Inter",system-ui,-apple-system,"Segoe UI",sans-serif;
+  --mono:"JetBrains Mono",ui-monospace,Menlo,monospace}
+@media(prefers-color-scheme:dark){:root{
+  --canvas:#0a0a0a;--surface:#141414;--hair:#222;--hair2:#2e2e2e;
+  --ink:#efefef;--body:#8c8c8c;--mute:#6f6f6f;
+  --accent:#5b8cff;--accent-dim:rgba(91,140,255,.14);
+  --good:#3fb950;--warn:#d29922;--danger:#f85149}}
+*{box-sizing:border-box;margin:0}
+body{font-family:var(--sans);font-size:14px;line-height:1.65;background:var(--canvas);color:var(--ink);-webkit-font-smoothing:antialiased}
+.wrap{max-width:880px;margin:0 auto;padding:28px 22px 80px}
+header.page{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px}
+h1{font-family:var(--display);font-weight:800;font-size:26px;letter-spacing:-.02em}
+.crumb{color:var(--mute);font-size:12.5px}
+.crumb a{color:var(--accent);text-decoration:none}.crumb a:hover{text-decoration:underline}
+.sub{color:var(--body);margin:4px 0 18px;max-width:66ch}
+nav.toc{background:var(--surface);border:1px solid var(--hair);border-radius:12px;padding:14px 20px;margin-bottom:22px;font-size:13px}
+nav.toc b{font-family:var(--display);font-size:12px;text-transform:uppercase;letter-spacing:.07em;color:var(--mute)}
+nav.toc a{color:var(--accent);text-decoration:none;margin-right:14px;white-space:nowrap}
+nav.toc a:hover{text-decoration:underline}
+section{background:var(--surface);border:1px solid var(--hair);border-radius:12px;padding:20px 24px;margin-bottom:16px}
+h2{font-family:var(--display);font-weight:800;font-size:18px;letter-spacing:-.01em;margin-bottom:10px}
+h3{font-family:var(--display);font-weight:700;font-size:14.5px;margin:16px 0 6px;color:var(--ink)}
+p{color:var(--body);margin:8px 0}
+strong{color:var(--ink)}
+ul,ol{margin:8px 0 8px 22px;color:var(--body)}
+li{margin:4px 0}
+code{font-family:var(--mono);font-size:12px;background:var(--accent-dim);border-radius:5px;padding:1px 5px;color:var(--ink)}
+pre.flow{font-family:var(--mono);font-size:11.5px;line-height:1.45;background:var(--canvas);border:1px solid var(--hair2);border-radius:10px;padding:14px 16px;overflow-x:auto;color:var(--ink);margin:12px 0}
+pre.flow .c{color:var(--mute)}
+table{border-collapse:collapse;width:100%;margin:10px 0;font-size:13px}
+th,td{border:1px solid var(--hair2);padding:7px 10px;text-align:left;vertical-align:top;color:var(--body)}
+th{color:var(--ink);font-weight:600;background:var(--accent-dim)}
+.rule{border-left:3px solid var(--accent);background:var(--accent-dim);border-radius:0 8px 8px 0;padding:10px 14px;margin:12px 0;color:var(--ink)}
+.never{border-left:3px solid var(--danger)}
+.tblwrap{overflow-x:auto}
+.foot{color:var(--mute);font-size:12px;margin-top:26px}
+</style></head><body><div class="wrap">
+<header class="page"><h1>Factory — how it works</h1>
+<span class="crumb"><a id="toqa" href="/docs/qa">owner's Q&amp;A</a> · <a id="toboard" href="/">dashboard</a></span></header>
+<p class="sub">The product manual, condensed for owners and monitors. Full authority: <code>~/.factory/runtime/factory/FACTORY.md</code> — on any conflict, its <strong>§Architecture &amp; contracts</strong> and the driver source win over this page.</p>
+
+<nav class="toc"><b>Sections</b><br>
+<a href="#overview">Overview</a> <a href="#invariant">The invariant</a> <a href="#layers">Three layers</a> <a href="#windows">Windows</a> <a href="#live">Live sessions</a> <a href="#rc">rc sessions</a> <a href="#monitoring">Monitoring</a> <a href="#rules">Where the rules live</a> <a href="#docs">Docs upkeep</a>
+</nav>
+
+<section id="overview"><h2>Overview</h2>
+<p>Claude Code develops a fully-specced product alone in scheduled windows: a fresh headless session per task, state carried in files, humans feeding input async. The same driver runs macOS, Linux/VPS, and Windows. State splits in two:</p>
+<ul>
+<li><strong>In the repo</strong> (travels via git): <code>.factory/spec</code>, <code>.factory/backlog/</code>, <code>.factory/inbox/</code>, <code>.docs/</code> — the collaboration surface.</li>
+<li><strong>Machine-side</strong> (never in git): <code>~/.factory/projects/&lt;name-hash&gt;/</code> ("<code>&lt;state&gt;</code>") — config, schedule, logs, STOP; <code>~/.factory/runtime/</code> — the driver, advanced only by <code>deploy-runtime</code>; <code>~/.factory/registry.json</code> — this machine's factories.</li>
+</ul></section>
+
+<section id="invariant"><h2>The one invariant</h2>
+<div class="rule"><strong>Origin is the rendezvous point.</strong> Factory sessions start from <code>origin/&lt;base&gt;</code> in throwaway worktrees under <code>~/.factory/worktrees/</code> — never from local state. Work becomes visible to the factory, to other machines, and to other sessions only when pushed.</div>
+<p>Everything follows: live sessions any time, two machines on one project (time-shifted), every repo type — the contract is <strong>branch → push/PR → converge at origin</strong>, which never requires a worktree of the owner, so no engine restriction breaks it.</p>
+<pre class="flow">
+ OWNER (live session)                      FACTORY (window)
+ checkout, own branch                      ~/.factory/worktrees/, per-session
+        │                                          │
+        │ commit → push / PR                       │ task branch → PR
+        ▼                                          ▼
+        └────────────►   origin/&lt;base&gt;   ◄─────────┘
+                      (the ONLY meeting point)
+                               │
+             merge gate merges green PRs; backlog flips ride along
+                               │
+                               ▼
+        next session / next machine / owner pulls — everyone converges
+</pre>
+<p>The owner's checkout belongs to the owner: the driver never flips its branch, never quarantines WIP. Its single touch: fast-forward when the checkout is clean AND on base AND strictly behind. <code>prep</code> is the explicit repair verb for a dirty checkout — not a required handoff.</p></section>
+
+<section id="layers"><h2>The three layers</h2>
+<div class="tblwrap"><table>
+<tr><th>Layer</th><th>What</th><th>Duties</th></tr>
+<tr><td><strong>1 · Driver</strong></td><td><code>factory.mjs</code></td><td>runs windows: spawn sessions, enforce caps, gate merges, self-heal (breakers, turn-cap handoffs, needs-human issues)</td></tr>
+<tr><td><strong>2 · Supervisor</strong></td><td><code>supervisor.mjs</code>, one per machine</td><td>kill hung runs past wall-clock bound (then <code>prep</code>), owner-directed relaunches, write the escalations outbox; read-only otherwise</td></tr>
+<tr><td><strong>3 · Monitor</strong></td><td>Eva / any agent / live session / human</td><td>optional + replaceable; consumes the read surfaces, acts through the sanctioned verbs (contract below)</td></tr>
+</table></div></section>
+
+<section id="windows"><h2>How a window runs</h2>
+<pre class="flow">
+ schedule fires (or ▶ on the dashboard, or `factory.mjs dev`)
+   │
+   ▼
+ triage (1 session)  <span class="c">— inbox + issues → backlog updates + plan of day</span>
+   │
+   ▼
+ dev loop: ┌─ pick next actionable task (plan.json / backlog)
+           │  fresh worktree from origin/&lt;base&gt;  <span class="c">— tooling injected from runtime</span>
+           │  implement (TDD + verify) → PR → report_status
+           │  driver: gate polls checks → merges green locally → push
+           └─ next fresh session … until window end / STOP / cap / no tasks
+   │
+   ▼
+ window-end sweep <span class="c">— leftover green PRs get one gate pass</span>
+   │
+   ▼
+ report (1 session) → daily-log issue + mirrors <span class="c">— honest summary</span>
+</pre>
+<ul>
+<li>A window with zero actionable tasks <strong>skips itself</strong> before spawning a paid session.</li>
+<li>Budget = <code>windowHours</code> × <code>maxSessionsPerWindow</code> × <code>maxTurnsPerSession</code> × <code>sessionTimeoutMin</code> — those four ARE the cap.</li>
+<li>Parking states: <code>blocked</code> (machine-clearable, triage re-opens) vs <code>needs-human</code> (only the owner clears). Only-needs-human left → status "waiting on owner"; only dependency-blocked left → "deadlocked".</li>
+</ul></section>
+
+<section id="live"><h2>Live sessions (piloting)</h2>
+<p>First-class, any time, on any machine — the factory is built to interleave with them.</p>
+<h3>Start</h3>
+<ol>
+<li>Open the session in the project checkout.</li>
+<li>First contact with an area — question or edit — read <code>.docs/index.md</code>, then the area file.</li>
+<li>Editing → branch off base first. Backlog work → the <code>backlog</code> skill.</li>
+</ol>
+<h3>Where to work, by repo type</h3>
+<div class="tblwrap"><table>
+<tr><th>Repo</th><th>Where</th><th>Why</th></tr>
+<tr><td>normal (webapp, api, general)</td><td>in-checkout branch; sibling worktree optional</td><td>always factory-safe — the driver never touches the checkout</td></tr>
+<tr><td>Unity</td><td>in-checkout branch, one at a time — <strong>never worktrees</strong></td><td>editor pins one project path; dot-dir ancestors break .NET config</td></tr>
+<tr><td>Godot</td><td>in-checkout branch</td><td>worktree buys nothing, costs a reimport</td></tr>
+<tr><td>iOS/Android</td><td>in-checkout branch; worktree if you like</td><td>toolchain-tolerant — owner's choice</td></tr>
+</table></div>
+<h3>Finish</h3>
+<ul>
+<li><strong>End pushed</strong> — merged or as a PR; the merge gate handles green factory PRs.</li>
+<li>Update touched <code>.docs/</code> area files and backlog task states as part of the work.</li>
+<li><code>prep</code> only if the checkout was left dirty/diverged (it quarantines strays to <code>&lt;state&gt;/log/quarantine-*/</code> + stash, resets to origin base, pushes unpushed commits).</li>
+</ul>
+<p><strong>VPS extra:</strong> checkout-served sites (code4food) show uncommitted edits live, and <code>prep</code> would revert them — commit promptly. Don't manually start a window on a project you're mid-piloting in the checkout of.</p></section>
+
+<section id="rc"><h2>rc sessions (VPS, phone)</h2>
+<p><code>rc</code> is remote-access ergonomics (tmux + Claude Remote Control), not a factory feature. <code>rc &lt;folder&gt;</code> serves a git repo through a pilot worktree <code>~/pilot/&lt;name&gt;</code> (branch <code>pilot/&lt;name&gt;</code>) in tmux <code>rc-&lt;name&gt;</code> and prints the claude.ai link. The pilot worktree is convenience + kill-isolation, not a safety requirement.</p>
+<ul>
+<li><code>rc -l</code> list · <code>rc -u &lt;folder&gt;</code> re-print link · <code>rc -k &lt;folder&gt;</code> graceful stop.</li>
+<li>Land work by telling the session: <em>"commit this and open a PR"</em>.</li>
+<li>The tmux server <strong>may stay idle</strong> — a clean pilot fast-forwards to origin on the next <code>rc</code>. Never hard-kill the tmux session (locked-worktree risk); tmux doesn't survive reboot, just re-run <code>rc</code>.</li>
+</ul></section>
+
+<section id="monitoring"><h2>Monitoring a window (Eva or anything)</h2>
+<p>Consumer-agnostic by design: the interface is <strong>files + token'd HTTP + gh</strong>. Eva is the reference implementation (phased plan: relay → watcher → resolver), not a requirement.</p>
+<h3>Read surfaces — what → status → why → work-product</h3>
+<ol>
+<li><code>~/.factory/escalations.jsonl</code> — append-only outbox, one JSON/line (<code>ts, machine, project, name, type, detail</code>); consumers track their own offset; cross-machine transport is the consumer's job.</li>
+<li><code>GET /api/state</code> — the whole fleet as JSON; <code>GET /api/log</code> for driver logs.</li>
+<li><code>&lt;state&gt;/log/dev-*.out</code> — full session JSONL (grep <code>"type":"result"</code>, <code>report_status</code>, <code>open_question</code>).</li>
+<li><code>gh</code> — PRs, checks, needs-human issues, the daily-log issue.</li>
+</ol>
+<h3>Act ladder — least to most invasive</h3>
+<ol>
+<li><strong>gh-level:</strong> answer needs-human issues, comment on PRs, merge green PRs <em>if authorized</em> (per-owner parameter, never a default).</li>
+<li><strong>repo-level:</strong> fixes on the monitor's OWN branches pushed to origin — a monitor is just another live session.</li>
+<li><strong>control-plane:</strong> dashboard <code>POST /api/run|stop|resume|enabled</code>, <code>touch &lt;state&gt;/STOP</code>, <code>supervisor keep/release</code>.</li>
+<li><strong>escalate to the human</strong> — with the record and a suggested action.</li>
+</ol>
+<div class="rule never"><strong>Never:</strong> enter <code>~/.factory/worktrees/</code> (the window's territory) · kill processes (Layer 1 does it safely, then <code>prep</code>s) · raw git in a project checkout · edit <code>&lt;state&gt;</code> internals.</div>
+<pre class="flow">
+ supervisor ──appends──► escalations.jsonl ──┐
+ dashboard  ◄─GET /api/state─┐               │ (ssh/tail for remote machines)
+ session logs dev-*.out      │               ▼
+ gh PRs/issues/checks        └─────────── MONITOR ──► owner (one sentence + suggested action)
+                                             │
+                            "do it" ─────────┘
+                                             ▼
+                     verb: gh comment/merge · own-branch PR · POST run/stop · STOP file
+</pre></section>
+
+<section id="rules"><h2>Where the rules live</h2>
+<ul>
+<li><strong>Authority:</strong> <code>~/.factory/runtime/factory/FACTORY.md</code> §Architecture &amp; contracts (source: <code>factory/FACTORY.md</code> in the dev repo; shipped by publish → <code>deploy-runtime</code>, identical on every machine). A PR that changes a contract updates that section in the same PR.</li>
+<li><strong>Routing:</strong> the dev repo's <code>.docs/index.md</code> topic router; the <code>backlog</code> skill (loaded in every factory project) opens with a pointer to the contracts; this page is served by every dashboard at <code>/docs</code>.</li>
+<li><strong>History:</strong> <code>factory/NOTES.md</code> + <code>factory/specs/*</code> — banner'd design records, never current contract.</li>
+</ul></section>
+
+<section id="docs"><h2>How docs are maintained</h2>
+<ul>
+<li>Read <code>.docs/index.md</code> before <strong>answering about</strong> or touching an unfamiliar area — verifying a feature exists is cheaper than advising from memory of it.</li>
+<li><strong>Authority order:</strong> source code &gt; <code>.docs/</code>/project docs &gt; memories/summaries/chat. Memories are leads to verify, never authorities.</li>
+<li>Update touched area files inline at the end of small/feature work; reader-repair contradictions on the spot; human docs (README/ONBOARDING/CLAUDE.md) updated in the same branch.</li>
+<li>Machine memories hold machine facts and dated journals only; fleet-wide doctrine goes in the repo, where it travels through origin like code.</li>
+</ul></section>
+
+<p class="foot">Condensed 2026-07-15 from <code>FACTORY.md</code> · served by the factory dashboard (<code>/docs</code>, Q&amp;A at <code>/docs/qa</code>) · source: <code>factory/docs/guide.html</code></p>
+</div>
+<script>
+// carry the dashboard token on internal links
+(function(){var q=location.search;if(!q)return;["toqa","toboard"].forEach(function(id){var a=document.getElementById(id);if(a)a.href+=q;});})();
+</script>
+</body></html>

@@ -961,7 +961,7 @@ function render(s){
     days: days
   };
   document.getElementById("crumb").textContent = s.host+" \\u00b7 "+facs.length+" factories \\u00b7 mutations "+(s.canRun?"enabled":"read-only");
-  document.getElementById("topright").innerHTML = versionChip(s.version)+'<span class="upd">updated '+new Date(s.generatedAt).toLocaleTimeString()+'</span>';
+  document.getElementById("topright").innerHTML = '<a class="chip" href="/docs'+location.search+'">docs</a>'+versionChip(s.version)+'<span class="upd">updated '+new Date(s.generatedAt).toLocaleTimeString()+'</span>';
   document.getElementById("kpis").innerHTML = kpis(s, fl);
   document.getElementById("filters").innerHTML = filtersNav(facs.length, fl);
   document.getElementById("sfoot").innerHTML = sfoot(s);
@@ -1080,6 +1080,19 @@ const server = http.createServer((req, res) => {
     }
     res.writeHead(200, { "content-type": "application/json" });
     res.end(JSON.stringify(tail));
+  } else if (req.url?.startsWith("/docs")) {
+    // Static product docs shipped in the runtime (factory/docs/) — fixed
+    // name map, never the raw pathname, so no traversal surface.
+    const DOC_PAGES = { "/docs": "guide.html", "/docs/": "guide.html", "/docs/qa": "qa.html" };
+    const name = DOC_PAGES[new URL(req.url, "http://x").pathname];
+    const file = name ? path.join(CHECKOUT_DIR, "..", "docs", name) : null;
+    if (file && fs.existsSync(file)) {
+      res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+      res.end(fs.readFileSync(file));
+    } else {
+      res.writeHead(404, { "content-type": "text/plain" });
+      res.end("unknown doc");
+    }
   } else if (req.url?.startsWith("/log")) {
     res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
     res.end(LOG_PAGE);

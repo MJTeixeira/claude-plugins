@@ -5,6 +5,12 @@ description: Working inside a Factory project (.factory/ exists) — how to pick
 
 # Factory backlog
 
+The factory's rules — piloting, checkout ownership, the monitor contract,
+how sessions and owners converge at origin — live in
+`~/.factory/runtime/factory/FACTORY.md` §Architecture & contracts. Read
+THAT before answering questions about factory behavior; this skill covers
+only the backlog vocabulary.
+
 The backlog is the single source of work. `.factory/backlog/index.md` maps
 milestones → epics; each `.factory/backlog/<epic>.md` holds tasks:
 

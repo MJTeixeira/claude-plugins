@@ -232,6 +232,26 @@ test("unknown factory is 404 on every route that takes one", async (t) => {
   }
 });
 
+// ---------- /docs static pages ----------
+
+test("/docs serves the shipped product docs; unknown names 404; token gates", async (t) => {
+  const world = makeFactory(t);
+  register(world);
+  const { base } = await startDashboard(t, world, { token: "sekret" });
+  // known pages come from factory/docs/ beside the driver
+  for (const [p, marker] of [["/docs", "guide"], ["/docs/qa", "qa"]]) {
+    const r = await fetch(base + p + "?token=sekret");
+    assert.equal(r.status, 200, `${p} should be 200`);
+    assert.match(r.headers.get("content-type"), /text\/html/);
+    assert.ok((await r.text()).length > 0, `${p} (${marker}) should have content`);
+  }
+  // fixed name map — only mapped names resolve; the pathname is never used
+  // as a filename, so there is no traversal surface to probe.
+  assert.equal((await fetch(base + "/docs/nope?token=sekret")).status, 404);
+  // reads are token-gated like everything else
+  assert.equal((await fetch(base + "/docs")).status, 401);
+});
+
 // ---------- /api/state new fields ----------
 
 test("/api/state carries declared state, scaffold currency, and a version cache", async (t) => {
