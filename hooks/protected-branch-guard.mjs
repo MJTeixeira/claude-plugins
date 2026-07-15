@@ -1,12 +1,12 @@
 #!/usr/bin/env node
 // Lean Dev Skillset PreToolUse guard — mechanical enforcement of the
 // branch-first rule: no `git commit`/`git push` on protected branches
-// (main/master/dev). Installed by install.sh into .claude/hooks/ and wired
-// into .claude/settings.json; claude runs it before Bash calls with the
-// event JSON on stdin. Empty stdout = allow; a permissionDecision JSON =
-// deny. Factory sessions have their own guard (.factory/hooks/guard.mjs)
-// with base-branch rules; this one covers interactive work and stays
-// silent on task branches.
+// (main/master/dev). Shipped by the plugin via hooks/hooks.json; claude
+// runs it before Bash calls with the event JSON on stdin. Empty stdout =
+// allow; a permissionDecision JSON = deny. Factory sessions have their own
+// guard (the machine runtime's factory/driver/hooks/guard.mjs, wired into
+// each session worktree by the driver) with base-branch rules; this one
+// covers interactive work and stays silent on task branches.
 import { execFileSync } from "node:child_process";
 import * as path from "node:path";
 

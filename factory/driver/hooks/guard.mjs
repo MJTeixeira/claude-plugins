@@ -2,7 +2,8 @@
 // Factory PreToolUse guard (factory-v2-architecture.md O3, NOTES items 24/28/37).
 //
 // Converts the rules that used to be prompt discipline into mechanical
-// denials at the tool layer. Wired into .claude/settings.json by init.mjs;
+// denials at the tool layer. The driver injects it (by absolute runtime
+// path) into each session worktree's .claude/settings.local.json at spawn;
 // claude runs it before Edit/Write/NotebookEdit/Bash calls with the event
 // JSON on stdin. Empty stdout = allow; a permissionDecision JSON = deny.
 //
@@ -35,9 +36,10 @@ const cwd = event.cwd || process.cwd();
 const tool = event.tool_name ?? "";
 const input = event.tool_input ?? {};
 
-// Tooling is deployed from the dev-skills repo — a merged local edit dies at
-// the next --update (NOTES item 37). Backlog Status edits belong to the
-// driver alone; task branches are code-only (item 24).
+// Tooling lives in the machine runtime, advanced only by deploy-runtime —
+// sessions never edit it. Legacy in-repo copies under .factory/ (pre-
+// machine-runtime checkouts) are equally off-limits. Backlog Status edits
+// belong to the driver alone; task branches are code-only (NOTES item 24).
 const TOOLING = new Set(["driver.mjs", "prompts", "schedulers", "hooks"]);
 
 if (["Edit", "MultiEdit", "Write", "NotebookEdit"].includes(tool)) {

@@ -24,8 +24,9 @@ freshest:
 - Open questions: <decisions pending, who/what they're waiting on; "None">
 ```
 
-Budget ≤200 words. Facts a cold reader needs — not narrative. Commit it if
-the branch is pushed; otherwise leave it in the worktree.
+Keep it tight — facts a cold reader needs, not narrative — but never drop a
+fact the next session needs just to stay short. Commit it if the branch is
+pushed; otherwise leave it in the worktree.
 
 ## Reading (at session start)
 

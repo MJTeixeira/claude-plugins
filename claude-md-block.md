@@ -44,8 +44,9 @@ If unsure between two sizes, pick the smaller; escalate if it grows.
 - Trust skill descriptions. Read a SKILL.md at most once per session, when its
   trigger applies. Load references/ files only when the skill says to.
 - Subagents are for feature-sized work only: the built-in Explore agent for
-  codebase recon during `dev-workflow`, and the `code-reviewer` agent exactly
-  once during `finishing`. No researcher, documenter, or per-phase subagents.
+  codebase recon during `dev-workflow`, and the `code-reviewer` agent at most
+  once by default during `finishing` (that skill allows an opt-in second
+  security-lens pass). No researcher, documenter, or per-phase subagents.
 
 ## Conduct and code
 

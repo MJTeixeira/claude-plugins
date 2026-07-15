@@ -213,7 +213,7 @@ this file to tune behavior — nothing here is required reading on day one.
 | `mergeGateMinutes` | `10` | how long the driver polls CI before handing a PR to the next session (only used under `auto-merge-dev`) |
 | `permissionMode` | `"dontAsk"` | keep it; `"bypassPermissions"` only inside a container/VM you could afford to lose |
 | `claudeCmd` | `"claude"` | binary to launch; change only for a custom install |
-| `model` | *(unset)* | default model for sessions, e.g. `"sonnet"` — individual backlog tasks can override via `Model:`/`Effort:`/`Turns:` hints |
+| `model` | `"sonnet"` | default model for sessions (also seeds `triageModel`) — individual backlog tasks can override via `Model:`/`Effort:`/`Turns:` hints |
 | `effort` | *(unset)* | default reasoning effort |
 | `mirrors` | `[]` | `["notion"]` and/or `["jira"]` status mirroring — needs tokens in `.env` |
 | `notify` | *(unset)* | `{"telegram": true}` for phone notifications (section 4) |
