@@ -10,7 +10,7 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const SCRIPT = join(HERE, 'statusline.js');
+const SCRIPT = join(HERE, 'statusline.cjs');
 
 let failures = 0;
 function check(name, cond, detail = '') {
