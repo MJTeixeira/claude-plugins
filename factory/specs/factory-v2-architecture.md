@@ -1,5 +1,8 @@
 # Factory v2 — reliability architecture
 
+> Design record, NOT current contract — on conflict, `FACTORY.md`
+> §Architecture & contracts and the driver source win.
+
 Status: Phase 1 (O3/O4/O5/O8/O9) SHIPPED 2026-07-09 and proven on a pilot project.
 Phase 2 (O2 MCP reporting server) BUILT 2026-07-09 — sessions get
 `report_status` / `open_question` / `log_progress` via a per-session

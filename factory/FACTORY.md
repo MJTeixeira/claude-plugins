@@ -44,6 +44,80 @@ Portable: the same driver runs on macOS, Linux/VPS, and Windows.
   `needs-human` GitHub issues itself; answers get folded in by the next
   triage.
 
+## Architecture & contracts
+
+The contracts every factory honors, stated once. Everything else in this
+file is operations; on conflict with any other doc, memory, or comment,
+THIS section and the driver source win. A PR that changes a contract
+updates this section in the same PR.
+
+### The three layers
+
+1. **Driver** (`factory.mjs`) — runs windows: spawns sessions, enforces
+   caps, gates merges, self-heals inside the window (breakers, turn-cap
+   handoffs, needs-human issues).
+2. **Supervisor** (`supervisor.mjs`) — machine daemon, one per machine:
+   kills hung runs past their wall-clock bound (then `prep`s), executes
+   owner-directed relaunches, writes the escalations outbox. Read-only
+   otherwise.
+3. **Monitor** — any owner-facing consumer: Eva, another agent, a live
+   session, or a human on the dashboard. Optional, replaceable, defined by
+   the monitor contract below — the product ships the interface, not the
+   monitor.
+
+### The origin-rendezvous invariant
+
+**Origin is the rendezvous point.** Factory sessions start from
+`origin/<base>` in throwaway worktrees under `~/.factory/worktrees/` —
+never from local state. Work (owner's or a monitor's) becomes visible to
+the factory, to other machines, and to other sessions only when pushed.
+This is what makes live sessions, multi-machine use, and every repo type
+(Unity, Godot, mobile, web) work with ONE rule: branch → push/PR →
+converge at origin. The branching strategy never requires worktrees of the
+owner, so no engine restriction (e.g. Unity's one-path pin) breaks it.
+
+### Piloting contract (owner live sessions)
+
+Live sessions in a factory repo are first-class, any time — the factory is
+built to interleave with them:
+
+- **The checkout is the owner's.** The driver never flips its branch and
+  never quarantines WIP. The one thing it does: fast-forward the checkout
+  when it is clean AND on base AND strictly behind origin (keeps walk-up
+  reads fresh). `prep` is the explicit repair verb for a dirty checkout —
+  it is NOT a required handoff step.
+- Work on a branch; a sibling worktree is optional owner convenience where
+  the toolchain tolerates it (never for Unity — editor pins one path).
+- **End every live session pushed** (merged or as a PR). Unpushed work is
+  invisible to the factory and to your other machines.
+- Update `.factory/backlog/` task states as part of what you merge, so
+  triage doesn't re-discover work you already did (see the `backlog`
+  skill).
+- Two factories (two machines) on one project: safe when time-shifted,
+  because state converges at origin. Concurrent windows on the same
+  project are NOT coordinated — don't schedule them to overlap.
+
+### Monitor contract
+
+A monitor consumes the read surfaces and acts only through the sanctioned
+act surfaces:
+
+- **Read** (what → status → why → work-product):
+  `~/.factory/escalations.jsonl` (the outbox — format in
+  `.docs/escalations.md`; transport across machines is the consumer's
+  concern) → dashboard `GET /api/state` / `GET /api/log` → session logs
+  `<state>/log/dev-*.out` → `gh` (PRs, checks, issues).
+- **Act**, in escalating order: gh-level (answer needs-human issues,
+  comment, merge green PRs *if authorized*) → repo-level fixes on its OWN
+  branches pushed to origin (a monitor is just another live session — the
+  piloting contract applies) → control-plane (dashboard `POST
+  run/stop/resume/enabled`, `<state>/STOP`) → escalate to the human.
+- **Never**: enter `~/.factory/worktrees/` (the window's territory), kill
+  processes (the supervisor's job — it does it safely and `prep`s after),
+  or edit `<state>` internals directly.
+- What a monitor may merge is an owner decision per factory, not a
+  product default.
+
 ## Machine setup (once per machine)
 
 1. **The runtime** — every scheduler execs it, every worktree gets its
@@ -453,8 +527,10 @@ in `factory/schedulers/`.
   `git stash pop` to take it back), returns the tree to the base branch at
   origin tip, pushes unpushed commits, drains pending status flips, gives
   leftover green factory PRs one gate pass, ends with a doctor summary.
-  Zero sessions, zero cost. Run it whenever you're done piloting and want
-  the next window to start from a known-good repo.
+  Zero sessions, zero cost. This is a REPAIR verb, not a required handoff:
+  the driver never touches your checkout on its own (see Architecture &
+  contracts), so you only need prep when you've left the checkout dirty or
+  diverged and want it back to a known-good base.
 - **Telegram notifications** (opt-in) — the driver pushes window start/end,
   per-session results (task, status, cost, PR link), merge-gate merges, and
   breaker trips to a Telegram chat. Setup:

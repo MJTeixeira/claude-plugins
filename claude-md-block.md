@@ -29,9 +29,13 @@ If unsure between two sizes, pick the smaller; escalate if it grows.
 
 - If `.docs/HANDOFF.md` exists, read it FIRST — it's in-flight work from a
   previous session (`handoff` skill).
-- Before touching an unfamiliar area: read `.docs/index.md` (its `Commands`
-  section has the canonical test/build/run commands — don't rediscover them),
-  then ONLY the `.docs/<area>.md` files for areas your task touches.
+- Before ANSWERING QUESTIONS about or touching an unfamiliar area: read
+  `.docs/index.md` (its `Commands` section has the canonical test/build/run
+  commands — don't rediscover them), then ONLY the `.docs/<area>.md` files
+  for areas your task touches. Verifying a feature exists is cheaper than
+  advising from memory of it.
+- On conflicting claims: source code > `.docs/` > memories/summaries/chat.
+  Memories are leads to verify, never authorities.
 - After finishing a small/feature change: update the touched area files
   yourself, inline, per the `docs` skill. Skip for trivial changes.
 
