@@ -53,10 +53,10 @@ summary.
   `git fetch origin <branch>` and continue there). Push with `-u` as soon
   as the branch exists — origin is the only place your work survives you.
 - Follow the project workflow (code4food-skillset plugin): size the work, TDD, then the
-  `code4food-skillset:verify` skill — drive the real product headlessly (tests prove the diff;
+  `code4food-factory:verify` skill — drive the real product headlessly (tests prove the diff;
   driving the product proves the task), run the task's `Verify` commands,
   and put the evidence in your report. You never load `finishing`; verify
-  IS your pre-PR check.
+  plus the review pass below ARE your pre-PR checks.
 - **Never start a task whose `Model:` pin is above your own tier**
   (haiku < sonnet < opus < fable; your model is the `Your session model:`
   line of the Driver assignment when present, else `model` in the Factory
@@ -103,6 +103,25 @@ summary.
   opened, handoff written) — it feeds the journal and the dashboard.
 - Discovered extra work → report it in your summary so triage adds a task;
   never scope-creep this diff and never edit the backlog yourself.
+
+## Review (mandatory — after verify, before the PR)
+
+Every code diff gets one review pass. Under auto-merge there is no human
+downstream of you — this is the only model review the PR gets, and it must
+finish BEFORE you open the PR (the driver merges on green; a review racing
+the merge gate arrives too late).
+
+- Spawn the `code-reviewer` agent exactly once, with: the purpose of the
+  change (2-3 sentences), the diff base (`<base>...HEAD`), and the relevant
+  `.docs/<area>.md` paths.
+- Triage its findings with rigor, not deference: verify each against the
+  actual code. Fix confirmed-real issues, then re-run the tests and the
+  task's `Verify` commands. Findings you verified to be wrong: reject, one
+  line each in the PR body ("review: rejected <finding> — <why>").
+- A finding you cannot self-judge (design intent, product direction) is an
+  `open_question` WITH the taskId — same escalation rule as above.
+- Diffs with nothing to review (docs-only, generated files) still get the
+  pass — it's cheap there, and "nothing to review" is its finding to make.
 
 ## Land it (per `autonomy` in config.json)
 

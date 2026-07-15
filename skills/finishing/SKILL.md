@@ -26,10 +26,10 @@ unchanged branch, re-probing a library's error shapes).
 ## 2. Verify by driving the app
 
 Tests passing is not the same as the feature working. Exercise the changed
-flow in the actual running product once — per-platform recipes (web, mobile,
-desktop, CLI/API) in `references/verification.md`. Skip only when the change
-has no runtime surface (docs, comments, pure refactor already covered by
-tests you watched fail).
+flow in the actual running product once — use the `verify` skill (per-platform
+recipes: web, mobile, desktop, CLI/API). Skip only when the change has no
+runtime surface (docs, comments, pure refactor already covered by tests you
+watched fail).
 
 If the diff touches auth, user input handling, network boundaries, or data
 storage: also run the checklist in `references/security-pass.md`.

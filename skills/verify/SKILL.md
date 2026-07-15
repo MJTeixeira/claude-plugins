@@ -1,54 +1,70 @@
 ---
 name: verify
-description: Prove a finished change actually works by driving the real product, not just its tests — before reporting done/review on anything with a runtime surface.
+description: Live/attended sessions — prove a finished change actually works by driving the real product, not just its tests, before declaring done on anything with a runtime surface. Factory unattended windows use code4food-factory:verify instead, never this one.
 ---
 
-# Verify — drive the product
+# Verify — drive the product (live sessions)
 
-Tests prove the diff; driving the product proves the task. A passing suite
-around a route that 400s in the real server is a failed task with green
-tests. Climb this ladder as far as the task's acceptance criteria reach —
-and no further.
+Tests prove the diff; driving the product proves the task. See the changed
+behavior happen in the real product, once, before declaring done. A human is
+present: visual tools (a watched browser, simulator screenshots,
+`screencapture`) are fair game, and anything you genuinely cannot self-judge
+(aesthetics, feel) you show to the user instead of guessing.
 
-## The ladder
+Loaded by `finishing` step 2; also applies on its own whenever the user asks
+"does it actually work?". Use `.docs/index.md` → `Commands` for the
+canonical run command.
 
-1. **Tests** — the `tdd` skill's territory; already done by the time you're
-   here. Not verification of the task, only of the code.
-2. **Drive the product headlessly** — start the real thing and exercise the
-   changed behavior end-to-end, from outside, the way a user or caller
-   would. Fresh evidence from THIS run: command output, response bodies,
-   exit codes — never inference from code that looks right.
-3. **Human eyes** — visual quality, game feel, aesthetic judgment. You
-   cannot self-judge these: that's a `Gate: human` task or an
-   `open_question` (→ needs-human). Never talk yourself into
-   "probably fine" — fail toward the owner.
+## Recipes (per platform)
 
-## Headless recipes (step 2, per stack)
+### Webapp
 
-- **CLI** — run the real binary/entry point with real arguments; assert on
-  stdout/stderr and exit code. `--help` proves nothing.
-- **Server/API** — boot the server (background it, capture the log), then
-  `curl` the changed endpoints: happy path + one failure path. Check status
-  codes AND response bodies. Kill the server after.
-- **Web UI** — headless browser (Playwright) against the running app: load
-  the page, perform the changed interaction, assert on resulting DOM/text.
-  If the project has an e2e harness, extend it; if not, a one-off script in
-  `.factory/tmp/` is fine.
-- **Godot** — `godot --headless` (see the `godot` skill): run the scene or
-  a test script that exercises the change; grep the output for errors.
-- **Unity** — `unity -batchmode -nographics -runTests` (see the `unity`
-  skill) plus an EditMode/PlayMode test that drives the changed behavior.
-- **Library (no runtime surface)** — step 1 already covers it; write one
-  consumer-style snippet only when the public API shape changed.
+- Start the dev server (or use the running one); hard-reload.
+- Drive the changed flow with the available browser tools (navigate, click,
+  fill); screenshot the result and compare against intent.
+- Watch the browser console and the dev-server terminal during the flow — new
+  errors/warnings are failures even if the page looks right.
+- Sweep the breakers if UI changed: empty data, long strings, narrow viewport.
+
+### Mobile
+
+- iOS: `xcrun simctl boot <device>` (or use the booted one), build+install
+  (`xcodebuild ... -destination` or the project's run command), drive the flow,
+  `xcrun simctl io booted screenshot out.png` and read the screenshot.
+  Logs: `xcrun simctl spawn booted log stream --predicate` scoped to the app.
+- Android: `emulator -avd <name>` / running device via `adb devices`;
+  install (`./gradlew installDebug` or project command); drive; screenshot via
+  `adb exec-out screencap -p > out.png`; logs via `adb logcat` filtered to the
+  app package.
+- No simulator/emulator available → say so explicitly in your summary; don't
+  claim verification you couldn't do.
+
+### Desktop
+
+- Launch the app via the project's run command (Electron: `npm start`;
+  native: the built binary).
+- Drive the changed flow; take an OS screenshot (`screencapture -x out.png`
+  on macOS) and read it.
+- Check the app's log output/stderr during the flow.
+
+### CLI / API / library
+
+- CLI: invoke the changed command with realistic arguments, including one
+  edge case (empty input, bad flag) — check output AND exit code.
+- API: hit the changed endpoint with curl (happy path + one auth/validation
+  failure); verify status codes and body shape.
+- Library with no runnable surface: a realistic integration-style test you
+  watched fail counts as the drive; unit mocks don't.
 
 ## Rules
 
-- Verify what YOU changed — don't re-drive flows this session never
-  touched, and don't re-prove what CI or a previous session already proved.
-- The task's `Verify:` line is the contract: run it verbatim. If it's just
-  the test suite again, ALSO drive the product once (step 2) and say so in
-  your report — then flag the weak Verify line so triage fixes the task.
-- Scratch probes (seed scripts, curl loops, one-off Playwright scripts) go
-  in `.factory/tmp/`, never the repo root.
-- Evidence goes in the PR body / report summary: the command you ran and
-  one line of what it returned.
+- Claim "done" only on fresh evidence: command output or screenshots
+  produced in THIS session for the thing you changed — never memory of an
+  earlier run, never inference from code that looks right.
+- Verify what YOU changed — don't re-drive flows this session never touched,
+  and don't re-prove what CI already proved.
+- Scratch probes (seed scripts, curl loops, one-off scripts) go in a
+  gitignored scratch dir — the session scratchpad, or `.factory/tmp/` in a
+  factory-enabled project — never the repo root.
+- Report what you drove and what you saw, verbatim where it matters — not
+  just "verified".
