@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Factory · owner's Q&amp;A</title>
+<style>
+:root{
+  --canvas:#f6f7f9;--surface:#fff;--hair:#e8e9ec;--hair2:#dcdee3;
+  --ink:#16181d;--body:#565a63;--mute:#888d97;
+  --accent:#3b6fe6;--accent-dim:rgba(59,111,230,.10);
+  --good:#1a7f37;--warn:#9a6700;--danger:#cf222e;
+  --display:"Nunito",ui-rounded,"SF Pro Rounded","Segoe UI",system-ui,sans-serif;
+  --sans:"Inter",system-ui,-apple-system,"Segoe UI",sans-serif;
+  --mono:"JetBrains Mono",ui-monospace,Menlo,monospace}
+@media(prefers-color-scheme:dark){:root{
+  --canvas:#0a0a0a;--surface:#141414;--hair:#222;--hair2:#2e2e2e;
+  --ink:#efefef;--body:#8c8c8c;--mute:#6f6f6f;
+  --accent:#5b8cff;--accent-dim:rgba(91,140,255,.14);
+  --good:#3fb950;--warn:#d29922;--danger:#f85149}}
+*{box-sizing:border-box;margin:0}
+body{font-family:var(--sans);font-size:14px;line-height:1.65;background:var(--canvas);color:var(--ink);-webkit-font-smoothing:antialiased}
+.wrap{max-width:860px;margin:0 auto;padding:28px 22px 80px}
+header.page{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px}
+h1{font-family:var(--display);font-weight:800;font-size:26px;letter-spacing:-.02em}
+.crumb{color:var(--mute);font-size:12.5px}
+.crumb a{color:var(--accent);text-decoration:none}.crumb a:hover{text-decoration:underline}
+.sub{color:var(--body);margin:4px 0 26px;max-width:64ch}
+.qa{background:var(--surface);border:1px solid var(--hair);border-radius:12px;padding:18px 22px;margin-bottom:14px}
+.qa h2{font-family:var(--display);font-weight:800;font-size:16px;letter-spacing:-.01em;margin-bottom:8px;display:flex;gap:10px;align-items:baseline}
+.qa h2 .n{font-family:var(--mono);font-size:12px;color:var(--accent);flex:none}
+.qa p{color:var(--body);margin:8px 0}
+.qa strong{color:var(--ink)}
+.qa ul,.qa ol{margin:8px 0 8px 22px;color:var(--body)}
+.qa li{margin:4px 0}
+code{font-family:var(--mono);font-size:12px;background:var(--accent-dim);border-radius:5px;padding:1px 5px;color:var(--ink)}
+table{border-collapse:collapse;width:100%;margin:10px 0;font-size:13px}
+th,td{border:1px solid var(--hair2);padding:7px 10px;text-align:left;vertical-align:top;color:var(--body)}
+th{color:var(--ink);font-weight:600;background:var(--accent-dim)}
+.ok{color:var(--good);font-weight:600}.warn{color:var(--warn);font-weight:600}
+.foot{color:var(--mute);font-size:12px;margin-top:26px}
+.tblwrap{overflow-x:auto}
+</style></head><body><div class="wrap">
+<header class="page"><h1>Factory — owner's Q&amp;A</h1>
+<span class="crumb"><a id="toguide" href="/docs">full guide</a> · <a id="toboard" href="/">dashboard</a></span></header>
+<p class="sub">Nine questions the owner asked after the 2026-07-14/15 knowledge consolidation, answered against the verified v2 contract. Authority on conflict: <code>FACTORY.md §Architecture &amp; contracts</code> and the driver source.</p>
+
+<div class="qa"><h2><span class="n">Q1</span>How should a live session work on the Mac (normal repo and game repo) — start and finish?</h2>
+<p><strong>Start:</strong> open the session in the project checkout. On first contact with an area (question <em>or</em> edit), read <code>.docs/index.md</code> → the area file. About to edit → branch off base first. Working backlog items → the <code>backlog</code> skill governs pick/execute/update.</p>
+<ul>
+<li><strong>Normal repo:</strong> a branch in the checkout is always factory-safe — the driver never touches your checkout. A sibling worktree is optional convenience for parallel work.</li>
+<li><strong>Game repo:</strong> same, except <strong>never a worktree</strong> (Unity pins one project path; Godot gains nothing and pays a reimport). In-checkout branch, one at a time. Engine skills add mechanics: close the Unity editor before batchmode; run <code>godot --headless --import</code> before headless work.</li>
+</ul>
+<p><strong>Finish: end pushed</strong> — merged or as a PR (the merge gate handles green factory PRs). Update touched <code>.docs/</code> area files and backlog task states as part of the work. <code>prep</code> only if you left the checkout dirty and want it reset — it is repair, not a ritual.</p></div>
+
+<div class="qa"><h2><span class="n">Q2</span>Same, but on the VPS?</h2>
+<p><strong>Identical contract</strong> — the machine changes nothing. Two VPS-specific caveats: some sites (e.g. code4food) are <strong>served straight from the checkout</strong>, so uncommitted edits show on the live site and a <code>prep</code> would revert them — commit promptly; and in practice VPS sessions start through <code>rc</code> (Q3) rather than raw ssh.</p></div>
+
+<div class="qa"><h2><span class="n">Q3</span>How should an rc session work on the VPS — and does it need to finish?</h2>
+<ul>
+<li><strong>Start:</strong> <code>rc &lt;folder&gt;</code>. Git repos are auto-served through the pilot worktree <code>~/pilot/&lt;name&gt;</code> (branch <code>pilot/&lt;name&gt;</code> from origin base) inside tmux <code>rc-&lt;name&gt;</code>; it prints the claude.ai link (<code>rc -u</code> re-prints, <code>rc -l</code> lists).</li>
+<li><strong>Land work:</strong> tell the session "commit this and open a PR" — the gate does the rest.</li>
+<li><strong>Does it need to finish? No.</strong> The tmux server can stay idle indefinitely; it is designed to survive disconnects, and a <em>clean</em> pilot is fast-forwarded to origin on the next <code>rc</code> run. When you want it gone: <code>rc -k &lt;folder&gt;</code> (graceful Ctrl-C first — a hard <code>tmux kill-session</code> is what left a factory blocked by locked worktrees on 2026-07-14). tmux does not survive reboot; just re-run <code>rc</code>.</li>
+</ul>
+<p>The pilot worktree is convenience + kill-isolation, <em>not</em> a safety requirement — the driver never resets checkouts.</p></div>
+
+<div class="qa"><h2><span class="n">Q4</span>How should Eva monitor a factory window?</h2>
+<p>Per the monitor contract (<code>FACTORY.md §Architecture &amp; contracts</code>):</p>
+<ul>
+<li><strong>Read</strong> (what → status → why → work-product): escalations outbox → <code>GET /api/state</code> → <code>&lt;state&gt;/log/dev-*.out</code> → <code>gh</code>.</li>
+<li><strong>Act</strong>, escalating: gh-level (answer needs-human issues, merge green PRs if authorized) → fixes on her own branches pushed to origin → control-plane (dashboard POSTs, <code>STOP</code>, <code>supervisor keep/release</code>) → escalate to the owner (Telegram/voice).</li>
+<li><strong>Never:</strong> enter <code>~/.factory/worktrees/</code>, kill processes (the supervisor's job), or raw-git in a project checkout.</li>
+</ul>
+<p>Cross-machine: Eva reads the VPS outbox over ssh — transport is the consumer's job by design.</p></div>
+
+<div class="qa"><h2><span class="n">Q5</span>How should <em>anything</em> monitor a factory window?</h2>
+<p>Exactly the same — the contract is deliberately consumer-agnostic: the interface is <strong>files + token'd HTTP + gh</strong>. Any agent, script, or human that can read JSONL, hit the dashboard, and run <code>gh</code> is a valid Layer 3. Eva is the reference implementation, not a requirement. What a monitor may <em>merge</em> is a per-owner parameter, never a product default.</p></div>
+
+<div class="qa"><h2><span class="n">Q6</span>How do projects find the factory rules, and where are they?</h2>
+<p>Authority lives machine-side at <code>~/.factory/runtime/factory/FACTORY.md</code> <strong>§Architecture &amp; contracts</strong> (source: <code>factory/FACTORY.md</code> in the dev repo; shipped via publish → deploy-runtime to every machine). Routing: the dev repo's <code>.docs/index.md</code> topic router points at it, and the <code>backlog</code> skill — loaded by every session inside a factory project — opens with a pointer to the same section. This page and the <a id="toguide2" href="/docs">full guide</a> are served by every dashboard.</p></div>
+
+<div class="qa"><h2><span class="n">Q7</span>How are docs maintained now, and what docs exist?</h2>
+<p><strong>Rules</strong> (docs skill 1.3.2 + installed CLAUDE.md block): read the index before <em>answering or touching</em>; update touched area files inline after small/feature work; reader-repair contradictions on the spot; human docs updated in the same branch; contract changes update <code>FACTORY.md §contracts</code> in the same PR; authority order <strong>source code &gt; .docs/ &gt; memories/chat</strong>.</p>
+<div class="tblwrap"><table>
+<tr><th>Doc</th><th>Role</th></tr>
+<tr><td><code>.docs/index.md</code></td><td>map + topic router + commands + shipping</td></tr>
+<tr><td><code>.docs/escalations.md</code></td><td>outbox format (the Layer-3 contract)</td></tr>
+<tr><td><code>.docs/gha-runners.md</code></td><td>self-hosted CI runners</td></tr>
+<tr><td><code>factory/FACTORY.md</code></td><td>product manual + <strong>§Architecture &amp; contracts</strong> (authority)</td></tr>
+<tr><td><code>factory/NOTES.md</code>, <code>factory/specs/*</code></td><td>banner'd history/design records — never current contract</td></tr>
+<tr><td><code>ONBOARDING.md</code>, <code>README</code></td><td>humans</td></tr>
+<tr><td><code>claude-md-block.md</code>, <code>skills/*/SKILL.md</code></td><td>the products themselves</td></tr>
+<tr><td>machine memories</td><td>machine facts + dated journals, with an authority pointer on top — leads, never authorities</td></tr>
+</table></div></div>
+
+<div class="qa"><h2><span class="n">Q8</span>Does Eva know how to monitor a factory window?</h2>
+<p><span class="warn">Not yet operational — but specced and queued.</span> A full phased plan sits in Eva's host project factory inbox (<code>.factory/inbox/2026-07-14-eva-fleet-pilot.md</code>: relay → watcher → resolver, epic e12-ops) with fleet layout, the verbs, and the outbox contract — now pointing at the monitor contract as its authority. A hands-on <code>factory-window-observability</code> memory (which <code>.out</code> lines to grep, <code>state.json</code>, the <code>babysit.mjs</code> watcher) exists from babysitting real windows. Eva's running code does not consume <code>escalations.jsonl</code> today; monitoring becomes real when that inbox task is built.</p></div>
+
+<div class="qa"><h2><span class="n">Q9</span>Do instructions on monitoring a factory window exist anywhere?</h2>
+<p><span class="ok">Yes — in layers, as of 2026-07-15:</span></p>
+<ul>
+<li><code>FACTORY.md §Architecture &amp; contracts</code> — the <strong>monitor contract</strong> (the rules), shipped to every machine.</li>
+<li><code>FACTORY.md §Monitoring &amp; control</code> — the surfaces: logs, dashboard, STOP, Telegram, budget.</li>
+<li><code>.docs/escalations.md</code> — the outbox record format and semantics.</li>
+<li><code>supervisor.mjs</code> header — Layer-1 duties, i.e. what a monitor must <em>not</em> do itself.</li>
+<li>Eva pilot spec (her host project's factory inbox) — the operator-specific glue plan.</li>
+</ul>
+<p>Before the consolidation the pieces existed but the contract tying them together was unwritten — that was the core finding, and it is closed.</p></div>
+
+<p class="foot">Generated 2026-07-15 from the knowledge-consolidation session · served by the factory dashboard (<code>/docs/qa</code>) · source: <code>factory/docs/qa.html</code></p>
+</div>
+<script>
+// carry the dashboard token on internal links
+(function(){var q=location.search;if(!q)return;["toguide","toguide2","toboard"].forEach(function(id){var a=document.getElementById(id);if(a)a.href+=q;});})();
+</script>
+</body></html>
