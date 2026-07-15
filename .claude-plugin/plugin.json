@@ -1,7 +1,7 @@
 {
   "name": "code4food-skillset",
   "displayName": "code4food Skillset",
-  "version": "1.3.1",
+  "version": "1.3.2",
   "description": "Lean dev workflow: task sizing, explore/plan/TDD/verify/finishing discipline, debugging, worktrees, handoff — plus a code-reviewer agent, /commit, and a protected-branch guard hook.",
   "author": {
     "name": "Marcos Teixeira",

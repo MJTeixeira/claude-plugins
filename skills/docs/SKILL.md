@@ -1,12 +1,23 @@
 ---
 name: docs
-description: Project docs for agents (.docs/) — read before exploring an unfamiliar area; update after finishing a small or feature change.
+description: Project docs for agents (.docs/) — read before answering questions about OR exploring an unfamiliar area; update after finishing a small or feature change.
 ---
 
 # Agent docs (.docs/)
 
 Persistent, agent-facing project knowledge. Optimized for partial loading:
 read the index, then only the areas your task touches.
+
+**Questions route through the index too.** Answering a question about an
+area IS working in that area: read the index and the relevant area file
+before answering, exactly as you would before editing. Advice given from
+memory of how something "probably works" is where wrong sessions start —
+a read is always cheaper than acting on a wrong answer.
+
+**Authority order** on conflicting claims: source code > `.docs/`/project
+docs > everything else (memories, session summaries, code comments in
+OTHER files, chat history). Memories and summaries are leads to verify,
+never authorities — they reflect when they were written, not now.
 
 ## Layout
 

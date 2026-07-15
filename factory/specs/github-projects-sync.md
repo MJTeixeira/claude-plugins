@@ -1,5 +1,8 @@
 # Spec — two-way GitHub Projects sync (NOTES item 20)
 
+> Design record, NOT current contract — on conflict, `FACTORY.md` and the
+> driver source win.
+
 STATUS: BUILT and ACTIVE (2026-07-06) on all three VPS factories — kept as
 the design reference; as-built implementation notes are inline in the build
 plan at the bottom.

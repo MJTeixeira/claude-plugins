@@ -1,5 +1,8 @@
 # Spec — dashboard v2: config file, controls, version currency, layout
 
+> Design record, NOT current contract — on conflict, `FACTORY.md` and the
+> driver source win.
+
 STATUS: BUILT (2026-07-10) — see NOTES item 48. This is the original build
 spec, kept as the design record; §7 (Layout) was rewritten to the code4food
 admin console that actually shipped — the original "keep the card layout"
