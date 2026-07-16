@@ -650,20 +650,28 @@ const linkMetaRuntime = () => {
   }
 };
 
+// Build the persistent meta worktree fresh at the base tip. Used for the
+// first-ever refresh and as the recovery path when an in-place advance can't
+// be salvaged.
+const createMetaWorktree = () => {
+  fs.mkdirSync(worktreesRoot(), { recursive: true });
+  gitOk(["worktree", "prune"]);
+  git(["worktree", "add", "--detach", metaPath(), startRef()]);
+  linkMetaRuntime();
+  materializeWorkspace({ worktree: metaPath(), runtimeRoot: RUNTIME_ROOT, config: cfg });
+};
+
 const refreshMeta = () => {
   if (!isGitRepo()) return;
   if (hasOrigin() && !gitOk(["fetch", "origin", "--prune"])) log("meta: fetch failed — using local refs");
   if (!fs.existsSync(path.join(metaPath(), ".git"))) {
-    fs.mkdirSync(worktreesRoot(), { recursive: true });
-    gitOk(["worktree", "prune"]);
-    git(["worktree", "add", "--detach", metaPath(), startRef()]);
-    linkMetaRuntime();
-    materializeWorkspace({ worktree: metaPath(), runtimeRoot: RUNTIME_ROOT, config: cfg });
+    createMetaWorktree();
     return;
   }
   // Unpushed metadata commits (a failed push at the last boundary): retry,
   // park on a rescue branch if the push still fails — never silently reset
-  // committed work away.
+  // committed work away. This runs BEFORE any reset/recreate below, so the
+  // recovery path can never discard committed work.
   if (hasOrigin() && !gitOk(["merge-base", "--is-ancestor", "HEAD", startRef()], metaPath())) {
     try {
       pushMetaBase();
@@ -674,17 +682,31 @@ const refreshMeta = () => {
       log(`meta: unpushed commits could not be pushed (${firstLine(e)}) — parked on ${rescue}`);
     }
   }
-  // Reset FIRST so a dirty tree (a died triage session's edits) can never
-  // make the checkout fail — refreshMeta must self-heal, not throw nightly.
-  gitOk(["reset", "--hard"], metaPath());
-  git(["checkout", "--detach", startRef()], metaPath());
-  git(["reset", "--hard", startRef()], metaPath());
-  gitOk(["clean", "-fd"], metaPath());
-  linkMetaRuntime();
-  // After the reset: injected tooling survives clean -fd (it's excluded =
-  // ignored), and re-materializing here keeps the persistent meta worktree
-  // current across runtime deploys. Triage/report sessions run in meta.
-  materializeWorkspace({ worktree: metaPath(), runtimeRoot: RUNTIME_ROOT, config: cfg });
+  // Advance the persistent worktree in place. Reset FIRST so a dirty tree (a
+  // died triage session's edits) can't make the checkout fail. But `reset
+  // --hard` can't clear a skip-worktree'd path (item 50: materialization sets
+  // skip-worktree on a TRACKED settings.local.json), so a meta worktree
+  // stranded at a commit that still tracks tooling the base branch has since
+  // dropped throws "local changes would be overwritten" on checkout — and
+  // stays stranded, wedging every window (witchhat, 4 days). The meta worktree
+  // is disposable derived state (committed work was pushed/parked above), so
+  // on ANY advance failure, drop it and recreate fresh rather than throw
+  // "repo not ready" forever — refreshMeta must self-heal, not wedge nightly.
+  try {
+    gitOk(["reset", "--hard"], metaPath());
+    git(["checkout", "--detach", startRef()], metaPath());
+    git(["reset", "--hard", startRef()], metaPath());
+    gitOk(["clean", "-fd"], metaPath());
+    linkMetaRuntime();
+    // Injected tooling survives clean -fd (it's excluded = ignored), and
+    // re-materializing keeps the persistent meta worktree current across
+    // runtime deploys. Triage/report sessions run in meta.
+    materializeWorkspace({ worktree: metaPath(), runtimeRoot: RUNTIME_ROOT, config: cfg });
+  } catch (e) {
+    log(`meta: worktree wedged (${firstLine(e)}) — recreating from ${startRef()}`);
+    removeWorktree(metaPath(), "meta recreate");
+    createMetaWorktree();
+  }
 };
 
 // The one thing the driver still does to the owner's checkout: fast-forward

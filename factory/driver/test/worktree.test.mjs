@@ -3,6 +3,94 @@ import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { makeFactory, queueSessions, runDriver, gitIn } from "./helpers.mjs";
+import { factoryKey } from "../paths.mjs";
+
+// The persistent meta worktree, located the way the driver locates it.
+const metaDir = (world) =>
+  path.join(world.home, ".factory", "worktrees", factoryKey(world.project), "meta");
+
+// Drive a project into the item-50 wedge: its meta worktree stranded at a
+// commit that TRACKS .claude/settings.local.json (which materialization then
+// skip-worktree's) while the base branch has since dropped the file. The
+// stranded skip-worktree'd copy makes `checkout base` throw "local changes
+// would be overwritten" — the exact 4-day witchhat failure.
+const strandMetaOnDroppedTooling = (world) => {
+  const local = path.join(world.project, ".claude", "settings.local.json");
+  // 1. base branch tracks settings.local.json (force-add: it's conventionally
+  //    in a global gitignore, but a pre-migrate scaffold committed it anyway) …
+  fs.writeFileSync(local, "{}\n");
+  gitIn(world.project, "add", "-f", ".claude/settings.local.json");
+  gitIn(world.project, "commit", "-m", "track settings.local.json");
+  gitIn(world.project, "push", "origin", "main");
+  // 2. … prep builds the meta worktree at that commit (tracked → skip-worktree) …
+  const first = runDriver(world, "prep");
+  assert.equal(first.code, 0, `setup prep failed\n${first.stdout}\n${first.stderr}`);
+  // 3. … then a migrate-style strip drops it from base, but the meta worktree
+  //    stays stranded at the old commit that still tracks it.
+  gitIn(world.project, "rm", ".claude/settings.local.json");
+  gitIn(world.project, "commit", "-m", "drop settings.local.json (migrate strip)");
+  gitIn(world.project, "push", "origin", "main");
+};
+
+test("refreshMeta self-heals a meta worktree stranded on tooling the base branch dropped", (t) => {
+  const world = makeFactory(t);
+  strandMetaOnDroppedTooling(world);
+
+  const r = runDriver(world, "prep");
+  assert.equal(r.code, 0, `prep did not recover from the wedge — repo stayed 'not ready'\n${r.stdout}\n${r.stderr}`);
+
+  const meta = metaDir(world);
+  assert.equal(
+    gitIn(meta, "rev-parse", "HEAD"),
+    gitIn(world.origin, "rev-parse", "main"),
+    "meta worktree did not advance to the base tip after recovery"
+  );
+  assert.equal(gitIn(meta, "ls-files", "--", ".claude/settings.local.json"), "", "meta still tracks the dropped tooling file");
+  assert.equal(gitIn(meta, "status", "--porcelain"), "", "meta worktree left dirty after recovery");
+});
+
+test("recovery preserves an unpushed metadata commit — parked on a rescue branch, not lost", (t) => {
+  const world = makeFactory(t);
+  strandMetaOnDroppedTooling(world);
+
+  // A committed-but-unpushed metadata commit on the stranded (detached) meta
+  // HEAD — the failed-push-at-boundary case that must never be reset away.
+  const meta = metaDir(world);
+  fs.writeFileSync(path.join(meta, "carry.txt"), "carry me\n");
+  gitIn(meta, "add", "carry.txt");
+  gitIn(meta, "commit", "-m", "unpushed metadata commit");
+  const carried = gitIn(meta, "rev-parse", "HEAD");
+
+  const r = runDriver(world, "prep");
+  assert.equal(r.code, 0, `prep did not recover from the wedge\n${r.stdout}\n${r.stderr}`);
+
+  // The unpushed commit survived: parked on a rescue branch pointing at it.
+  const listed = gitIn(world.project, "branch", "--list", "factory/meta-rescue-*");
+  const rescue = listed.replace(/^[*+ ]+/, "").split("\n")[0].trim();
+  assert.ok(rescue, `no rescue branch created — the unpushed commit was lost\n${r.stdout}`);
+  assert.equal(gitIn(world.project, "rev-parse", rescue), carried, "rescue branch does not point at the carried commit");
+});
+
+test("a healthy meta worktree advances in place — no needless recreate", (t) => {
+  const world = makeFactory(t);
+  const first = runDriver(world, "prep");
+  assert.equal(first.code, 0, `first prep failed\n${first.stdout}\n${first.stderr}`);
+
+  // Advance the base branch by an ordinary commit — a clean fast-forward.
+  fs.writeFileSync(path.join(world.project, "README.md"), "hello\n");
+  gitIn(world.project, "add", "-A");
+  gitIn(world.project, "commit", "-m", "ordinary base advance");
+  gitIn(world.project, "push", "origin", "main");
+
+  const r = runDriver(world, "prep");
+  assert.equal(r.code, 0, `healthy prep failed\n${r.stdout}\n${r.stderr}`);
+  assert.doesNotMatch(r.stdout, /recreat/i, "healthy advance recreated the meta worktree instead of advancing in place");
+  assert.equal(
+    gitIn(metaDir(world), "rev-parse", "HEAD"),
+    gitIn(world.origin, "rev-parse", "main"),
+    "meta worktree did not advance to the base tip"
+  );
+});
 
 const NO_TASKS_SESSION = {
   script: `mkdir -p .factory/log && echo '{"taskId":null,"status":"no-tasks","summary":"none"}' > .factory/log/last-session.json`,
