@@ -445,6 +445,126 @@ test("a healthy relaunched window (journal has sessions) keeps the directive and
   assert.deepEqual(readEscalations(w), []);
 });
 
+// ---------- stuck-factory detection (item 50 chunk 2) ----------
+// A scheduled+enabled factory whose last N=2 dev windows each aborted before
+// running anything (no session, no clean window-skipped) is WEDGED, not idle —
+// the dumb OnFailure net pings per-failure but can't tell that apart from a
+// blip. Dev windows are the only mode that writes journal-*.jsonl.
+const SCHEDULED = {
+  schedule: { kind: "systemd", timezone: "UTC", modes: { dev: { time: "02:00", days: "Mon-Sun" } } },
+};
+// seq drives the embedded window-start timestamp so newest-window ordering is
+// deterministic (the driver names journals by window-start time).
+const writeDevJournal = (w, seq, steps) => {
+  const ts = new Date(Date.UTC(2026, 0, 1, 0, seq, 0)).toISOString().replace(/[:.]/g, "-");
+  const p = path.join(w.sd, "log", `journal-${ts}.jsonl`);
+  fs.writeFileSync(p, steps.map((s) => JSON.stringify({ ts: new Date().toISOString(), status: "done", ...s })).join("\n") + "\n");
+  return p;
+};
+const ABORTED = [{ step: "window-start" }];
+const SKIPPED = [{ step: "window-start" }, { step: "window-skipped", detail: "backlog complete — nothing left to build" }];
+const WORKED = [{ step: "window-start" }, { step: "session", detail: "1 T-010 → died" }, { step: "finalize:complete" }];
+const stuckEsc = (w) => readEscalations(w).filter((e) => e.type === "factory-stuck");
+
+test("two consecutive aborted dev windows escalate factory-stuck exactly once", (t) => {
+  const w = setup(t, { config: SCHEDULED });
+  writeDevJournal(w, 1, ABORTED);
+  writeDevJournal(w, 2, ABORTED);
+
+  assert.equal(runOnce(w).status, 0);
+  assert.equal(stuckEsc(w).length, 1, JSON.stringify(readEscalations(w)));
+  assert.equal(stuckEsc(w)[0].project, w.project);
+  assert.equal(stuckEsc(w)[0].name, "proj");
+
+  assert.equal(runOnce(w).status, 0); // same streak → deduped
+  assert.equal(stuckEsc(w).length, 1, "stuck must escalate once per streak");
+});
+
+test("a single aborted dev window does not escalate factory-stuck", (t) => {
+  const w = setup(t, { config: SCHEDULED });
+  writeDevJournal(w, 1, WORKED);
+  writeDevJournal(w, 2, ABORTED);
+
+  assert.equal(runOnce(w).status, 0);
+  assert.deepEqual(stuckEsc(w), [], "one abort is not a wedge");
+});
+
+test("windows that cleanly skip (waiting-on-owner / backlog-complete) are never stuck", (t) => {
+  const w = setup(t, { config: SCHEDULED });
+  writeDevJournal(w, 1, SKIPPED);
+  writeDevJournal(w, 2, SKIPPED);
+
+  assert.equal(runOnce(w).status, 0);
+  assert.deepEqual(stuckEsc(w), [], "a correctly-idle factory must not alarm");
+});
+
+test("a session-bearing window resets the stuck streak", (t) => {
+  const w = setup(t, { config: SCHEDULED });
+  writeDevJournal(w, 1, ABORTED);
+  writeDevJournal(w, 2, WORKED);  // recovered
+  writeDevJournal(w, 3, ABORTED); // newest streak length = 1
+
+  assert.equal(runOnce(w).status, 0);
+  assert.deepEqual(stuckEsc(w), []);
+});
+
+test("a disabled or manual-schedule factory is never checked for stuck", (t) => {
+  const disabled = setup(t, { config: { ...SCHEDULED, enabled: false } });
+  writeDevJournal(disabled, 1, ABORTED);
+  writeDevJournal(disabled, 2, ABORTED);
+  assert.equal(runOnce(disabled).status, 0);
+  assert.deepEqual(stuckEsc(disabled), [], "disabled factory must not alarm");
+
+  const manual = setup(t, { config: { schedule: { kind: "manual" } } });
+  writeDevJournal(manual, 1, ABORTED);
+  writeDevJournal(manual, 2, ABORTED);
+  assert.equal(runOnce(manual).status, 0);
+  assert.deepEqual(stuckEsc(manual), [], "manual factory must not alarm");
+});
+
+test("a live in-progress window is not judged stuck", (t) => {
+  const w = setup(t, { config: SCHEDULED });
+  const pid = spawnHung(t, w);
+  fs.writeFileSync(w.lockPath, JSON.stringify({
+    pid, mode: "dev",
+    startedAt: new Date().toISOString(),
+    windowEndsAt: new Date(Date.now() + 3600 * 1000).toISOString(), // healthy: checkFactory leaves it
+  }));
+  writeDevJournal(w, 1, ABORTED);
+  writeDevJournal(w, 2, ABORTED);
+
+  assert.equal(runOnce(w).status, 0);
+  assert.deepEqual(stuckEsc(w), [], "must not judge a window that is still running");
+});
+
+test("a growing stuck streak still escalates only once", (t) => {
+  const w = setup(t, { config: SCHEDULED });
+  writeDevJournal(w, 1, ABORTED);
+  writeDevJournal(w, 2, ABORTED);
+  assert.equal(runOnce(w).status, 0);
+  assert.equal(stuckEsc(w).length, 1, JSON.stringify(readEscalations(w)));
+
+  // The wedge persists — the next scheduled window also aborts.
+  writeDevJournal(w, 3, ABORTED);
+  assert.equal(runOnce(w).status, 0);
+  assert.equal(stuckEsc(w).length, 1, "a lengthening streak must not re-alert");
+});
+
+test("a recovery then a fresh wedge escalates a second time", (t) => {
+  const w = setup(t, { config: SCHEDULED });
+  writeDevJournal(w, 1, ABORTED);
+  writeDevJournal(w, 2, ABORTED);
+  assert.equal(runOnce(w).status, 0);
+  assert.equal(stuckEsc(w).length, 1);
+
+  // A window recovers, then a brand-new 2-window wedge begins.
+  writeDevJournal(w, 3, WORKED);
+  writeDevJournal(w, 4, ABORTED);
+  writeDevJournal(w, 5, ABORTED);
+  assert.equal(runOnce(w).status, 0);
+  assert.equal(stuckEsc(w).length, 2, "a new streak after a recovery must alert again");
+});
+
 test("no Telegram creds anywhere: the outbox is still written and the pass exits clean", (t) => {
   const w = setup(t);
   const pid = spawnHung(t, w);

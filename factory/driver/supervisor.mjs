@@ -398,6 +398,69 @@ const checkDirective = async (project, meta, directive) => {
   writeState(s);
 };
 
+// ---------- stuck-factory detection (item 50 chunk 2) ----------
+// The dumb OnFailure net pings on every unit failure but can't tell a
+// transient blip from a factory wedged for days. A scheduled, enabled factory
+// whose last N dev windows each aborted before doing anything — no `session`
+// step (a session ran, even if it died) and no `window-skipped` step (a clean
+// idle: waiting-on-owner / deadlocked / backlog-complete / no-eligible-tasks) —
+// is STUCK, not idle. Escalate once per streak. Dev windows are the only mode
+// that writes journal-*.jsonl; the filename is the window-start time, so it
+// orders windows even when a later run's finalize-replay bumps an old journal's
+// mtime.
+const STUCK_STREAK = 2;
+
+const isScheduled = (cfg) => {
+  const s = cfg?.schedule;
+  return !!s && typeof s === "object" && !!s.kind && s.kind !== "manual" && !!s.modes?.dev;
+};
+
+// Newest-window-first list of a factory's dev-window journals (by window-start
+// time embedded in the filename, not mtime).
+const devJournals = (sd) => {
+  const logDir = path.join(sd, "log");
+  let files;
+  try { files = fs.readdirSync(logDir).filter((f) => /^journal-.+\.jsonl$/.test(f)); } catch { return []; }
+  return files.sort((a, b) => (a < b ? 1 : a > b ? -1 : 0)).map((f) => path.join(logDir, f));
+};
+
+// A dev window did its job if it ran a session or cleanly skipped. Only a
+// window-start step (± a next-run finalize replay) means it aborted before
+// doing anything. Unreadable = don't count it as a failure.
+const windowAborted = (journalPath) => {
+  let steps;
+  try {
+    steps = fs.readFileSync(journalPath, "utf8").split("\n").filter(Boolean)
+      .map((l) => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean);
+  } catch { return false; }
+  return !steps.some((s) => s.step === "session" || s.step === "window-skipped");
+};
+
+const checkStuck = async (project, meta) => {
+  const name = meta?.name ?? path.basename(project);
+  const sd = stateDir(project);
+  const cfg = readJson(path.join(sd, "config.json"));
+  if (cfg?.enabled === false || !isScheduled(cfg)) return;
+  // A window in progress is not a failure — don't judge until it settles.
+  const lock = readJson(path.join(sd, "log", "window.lock"));
+  if (lock?.pid && alive(lock.pid)) return;
+  // Walk newest→older while windows aborted; the oldest consecutive-aborted
+  // journal names the streak, so escalate()'s dedupe fires once per streak
+  // (a recovery then re-wedge starts a new streak → a new alert).
+  let streak = 0;
+  let streakId = null;
+  for (const j of devJournals(sd)) {
+    if (!windowAborted(j)) break;
+    streak += 1;
+    streakId = path.basename(j);
+  }
+  if (streak < STUCK_STREAK) return;
+  await escalate({
+    project, name, type: "factory-stuck", key: streakId,
+    detail: `${streak} consecutive dev windows aborted before running a session and did not cleanly skip — the factory is wedged, not idle; check ${path.join(sd, "log")} on this machine`,
+  });
+};
+
 // ---------- pass ----------
 
 const pass = async () => {
@@ -412,6 +475,7 @@ const pass = async () => {
     try {
       await checkFactory(project, meta);
       if (directives[project]) await checkDirective(project, meta, directives[project]);
+      await checkStuck(project, meta);
     } catch (e) {
       log(`${meta?.name ?? project}: check failed (${String(e.message ?? e).split("\n")[0]}) — next pass retries`);
     }
