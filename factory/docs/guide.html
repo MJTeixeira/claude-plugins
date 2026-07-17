@@ -83,7 +83,7 @@ th{color:var(--ink);font-weight:600;background:var(--accent-dim)}
 <div class="tblwrap"><table>
 <tr><th>Layer</th><th>What</th><th>Duties</th></tr>
 <tr><td><strong>1 · Driver</strong></td><td><code>factory.mjs</code></td><td>runs windows: spawn sessions, enforce caps, gate merges, self-heal (breakers, turn-cap handoffs, needs-human issues)</td></tr>
-<tr><td><strong>2 · Supervisor</strong></td><td><code>supervisor.mjs</code>, one per machine</td><td>kill hung runs past wall-clock bound (then <code>prep</code>), owner-directed relaunches, write the escalations outbox; read-only otherwise</td></tr>
+<tr><td><strong>2 · Supervisor</strong></td><td><code>supervisor.mjs</code>, one per machine</td><td>kill hung runs past wall-clock bound (then <code>prep</code>), owner-directed relaunches, escalate wedged factories (<code>factory-stuck</code> after repeated dead scheduled windows), write the escalations outbox; read-only otherwise</td></tr>
 <tr><td><strong>3 · Monitor</strong></td><td>Eva / any agent / live session / human</td><td>optional + replaceable; consumes the read surfaces, acts through the sanctioned verbs (contract below)</td></tr>
 </table></div></section>
 
@@ -132,7 +132,7 @@ th{color:var(--ink);font-weight:600;background:var(--accent-dim)}
 <h3>Finish</h3>
 <ul>
 <li><strong>End pushed</strong> — merged or as a PR; the merge gate handles green factory PRs.</li>
-<li>Update touched <code>.docs/</code> area files and backlog task states as part of the work.</li>
+<li>Update touched <code>.docs/</code> area files, <code>.docs/known-issues.md</code> entries you hit or resolved, and backlog task states as part of the work.</li>
 <li><code>prep</code> only if the checkout was left dirty/diverged (it quarantines strays to <code>&lt;state&gt;/log/quarantine-*/</code> + stash, resets to origin base, pushes unpushed commits).</li>
 </ul>
 <p><strong>VPS extra:</strong> checkout-served sites (code4food) show uncommitted edits live, and <code>prep</code> would revert them — commit promptly. Don't manually start a window on a project you're mid-piloting in the checkout of.</p></section>
@@ -185,10 +185,11 @@ th{color:var(--ink);font-weight:600;background:var(--accent-dim)}
 <li>Read <code>.docs/index.md</code> before <strong>answering about</strong> or touching an unfamiliar area — verifying a feature exists is cheaper than advising from memory of it.</li>
 <li><strong>Authority order:</strong> source code &gt; <code>.docs/</code>/project docs &gt; memories/summaries/chat. Memories are leads to verify, never authorities.</li>
 <li>Update touched area files inline at the end of small/feature work; reader-repair contradictions on the spot; human docs (README/ONBOARDING/CLAUDE.md) updated in the same branch.</li>
+<li><code>.docs/known-issues.md</code> — living list of open bugs, quirks, and workarounds, standard in every project (skillset 1.4.0): check it before debugging; an entry is deleted in the same change that fixes it.</li>
 <li>Machine memories hold machine facts and dated journals only; fleet-wide doctrine goes in the repo, where it travels through origin like code.</li>
 </ul></section>
 
-<p class="foot">Condensed 2026-07-15 from <code>FACTORY.md</code> · served by the factory dashboard (<code>/docs</code>, Q&amp;A at <code>/docs/qa</code>) · source: <code>factory/docs/guide.html</code></p>
+<p class="foot">Condensed 2026-07-15 from <code>FACTORY.md</code>, updated 2026-07-16 (skillset 1.4.0, supervisor factory-stuck) · served by the factory dashboard (<code>/docs</code>, Q&amp;A at <code>/docs/qa</code>) · source: <code>factory/docs/guide.html</code></p>
 </div>
 <script>
 // carry the dashboard token on internal links

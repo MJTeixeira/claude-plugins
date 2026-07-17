@@ -48,7 +48,7 @@ th{color:var(--ink);font-weight:600;background:var(--accent-dim)}
 <li><strong>Normal repo:</strong> a branch in the checkout is always factory-safe — the driver never touches your checkout. A sibling worktree is optional convenience for parallel work.</li>
 <li><strong>Game repo:</strong> same, except <strong>never a worktree</strong> (Unity pins one project path; Godot gains nothing and pays a reimport). In-checkout branch, one at a time. Engine skills add mechanics: close the Unity editor before batchmode; run <code>godot --headless --import</code> before headless work.</li>
 </ul>
-<p><strong>Finish: end pushed</strong> — merged or as a PR (the merge gate handles green factory PRs). Update touched <code>.docs/</code> area files and backlog task states as part of the work. <code>prep</code> only if you left the checkout dirty and want it reset — it is repair, not a ritual.</p></div>
+<p><strong>Finish: end pushed</strong> — merged or as a PR (the merge gate handles green factory PRs). Update touched <code>.docs/</code> area files, <code>.docs/known-issues.md</code> entries you hit or resolved, and backlog task states as part of the work. <code>prep</code> only if you left the checkout dirty and want it reset — it is repair, not a ritual.</p></div>
 
 <div class="qa"><h2><span class="n">Q2</span>Same, but on the VPS?</h2>
 <p><strong>Identical contract</strong> — the machine changes nothing. Two VPS-specific caveats: some sites (e.g. code4food) are <strong>served straight from the checkout</strong>, so uncommitted edits show on the live site and a <code>prep</code> would revert them — commit promptly; and in practice VPS sessions start through <code>rc</code> (Q3) rather than raw ssh.</p></div>
@@ -77,11 +77,12 @@ th{color:var(--ink);font-weight:600;background:var(--accent-dim)}
 <p>Authority lives machine-side at <code>~/.factory/runtime/factory/FACTORY.md</code> <strong>§Architecture &amp; contracts</strong> (source: <code>factory/FACTORY.md</code> in the dev repo; shipped via publish → deploy-runtime to every machine). Routing: the dev repo's <code>.docs/index.md</code> topic router points at it, and the <code>backlog</code> skill — loaded by every session inside a factory project — opens with a pointer to the same section. This page and the <a id="toguide2" href="/docs">full guide</a> are served by every dashboard.</p></div>
 
 <div class="qa"><h2><span class="n">Q7</span>How are docs maintained now, and what docs exist?</h2>
-<p><strong>Rules</strong> (docs skill 1.3.2 + installed CLAUDE.md block): read the index before <em>answering or touching</em>; update touched area files inline after small/feature work; reader-repair contradictions on the spot; human docs updated in the same branch; contract changes update <code>FACTORY.md §contracts</code> in the same PR; authority order <strong>source code &gt; .docs/ &gt; memories/chat</strong>.</p>
+<p><strong>Rules</strong> (docs skill 1.4.0 + installed CLAUDE.md block): read the index before <em>answering or touching</em>; update touched area files inline after small/feature work; reader-repair contradictions on the spot; check <code>.docs/known-issues.md</code> before debugging and delete its entries in the change that fixes them; human docs updated in the same branch; contract changes update <code>FACTORY.md §contracts</code> in the same PR; authority order <strong>source code &gt; .docs/ &gt; memories/chat</strong>. No length quotas — area files scale by splitting areas; every bullet must earn its place.</p>
 <div class="tblwrap"><table>
 <tr><th>Doc</th><th>Role</th></tr>
 <tr><td><code>.docs/index.md</code></td><td>map + topic router + commands + shipping</td></tr>
 <tr><td><code>.docs/escalations.md</code></td><td>outbox format (the Layer-3 contract)</td></tr>
+<tr><td><code>.docs/known-issues.md</code></td><td>living list of open bugs/quirks, standard in every project since skillset 1.4.0 — entries deleted when fixed</td></tr>
 <tr><td><code>.docs/gha-runners.md</code></td><td>self-hosted CI runners</td></tr>
 <tr><td><code>factory/FACTORY.md</code></td><td>product manual + <strong>§Architecture &amp; contracts</strong> (authority)</td></tr>
 <tr><td><code>factory/NOTES.md</code>, <code>factory/specs/*</code></td><td>banner'd history/design records — never current contract</td></tr>
@@ -104,7 +105,7 @@ th{color:var(--ink);font-weight:600;background:var(--accent-dim)}
 </ul>
 <p>Before the consolidation the pieces existed but the contract tying them together was unwritten — that was the core finding, and it is closed.</p></div>
 
-<p class="foot">Generated 2026-07-15 from the knowledge-consolidation session · served by the factory dashboard (<code>/docs/qa</code>) · source: <code>factory/docs/qa.html</code></p>
+<p class="foot">Generated 2026-07-15 from the knowledge-consolidation session, refreshed 2026-07-16 (skillset 1.4.0) · served by the factory dashboard (<code>/docs/qa</code>) · source: <code>factory/docs/qa.html</code></p>
 </div>
 <script>
 // carry the dashboard token on internal links
