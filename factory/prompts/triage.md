@@ -27,7 +27,9 @@ branches, no checkouts, no commits, no merges.
   for new/updated issues labeled `factory`.
 - **Inbox**: every file in `.factory/inbox/` is a note from a human. Process
   each, then delete it (its content must land in the backlog or a decision
-  record, never be silently dropped).
+  record, never be silently dropped). `rm` is not allowlisted — delete via
+  `node -e 'require("fs").rmSync(".factory/inbox/<file>")'` (`node` is),
+  and never leave a processed note behind with just a marker comment.
   - `board-delta.md` is generated: human edits on the GitHub Project board.
     New cards → new backlog tasks (or reject with a reason in the daily
     log). Human status moves → judge the intent — the factory already
