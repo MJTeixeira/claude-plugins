@@ -8,6 +8,9 @@ description: Bug, test failure, or unexpected behavior whose cause is unclear �
 Never fix what you can't explain. A fix without a root cause is a symptom
 patch that will come back.
 
+Before the loop: check `.docs/known-issues.md` — the failure may already be
+understood, worked around, or deliberately deferred; don't re-derive it.
+
 ## The loop
 
 1. **Reproduce** — get the failure happening on demand. If there's no failing
@@ -34,7 +37,9 @@ gathered; then ask the user (interactive) or record it as blocked and move to
 other work (unattended). Thrashing degrades the code and burns tokens.
 
 **Exit:** if the root cause would bite the next agent too, add it as a
-Gotcha bullet in the relevant `.docs/<area>.md` before moving on.
+Gotcha bullet in the relevant `.docs/<area>.md` before moving on. Root-caused
+but NOT fixed (deferred, out of scope)? Record it in `.docs/known-issues.md`
+— and delete that entry in the change that finally fixes it.
 
 ## When the cause is far from the symptom
 

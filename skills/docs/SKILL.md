@@ -23,8 +23,9 @@ never authorities — they reflect when they were written, not now.
 
 ```
 .docs/
-├── index.md      # the map — the only file read unconditionally
-├── auth.md       # one file per LOGICAL area (not per folder)
+├── index.md          # the map — the only file read unconditionally
+├── known-issues.md   # living list of open bugs/quirks/workarounds
+├── auth.md           # one file per LOGICAL area (not per folder)
 └── billing.md
 ```
 
@@ -49,8 +50,10 @@ them here when they change. Area grammar: `- <area> — <path globs> —
 <one-line scope>`. Match your task's files against the globs to decide which
 area files to load.
 
-`<area>.md` — a few hundred words is the healthy shape; don't write 5000
-where 250 would do, but never drop a load-bearing bullet to hit a number.
+`<area>.md` — no length quota, in either direction: a file is the right size
+when every bullet earns its place (see Content rules). Large repos scale by
+SPLITTING areas, never by fattening one file — partial loading only works
+while each area stays cheap to read.
 Only four sections, all optional:
 **Contracts** (interfaces others rely on), **Invariants** (what code may
 assume), **Gotchas** (surprising behavior/foot-guns), **Why** (decision
@@ -67,11 +70,34 @@ in `references/area-template.md`.
 - **Reader-repair rule**: if a bullet contradicts the code you just read, fix
   or delete the bullet on the spot, whatever your current task is.
 
+## Known issues (known-issues.md)
+
+A living list of open bugs, quirks, workarounds, and flaky tests — standard
+in every project. Not a log: an entry is DELETED in the same change that
+fixes it; git history keeps the record.
+
+- Check it before debugging anything (the `debugging` skill starts there)
+  and before planning work in an area it mentions.
+- Add an entry when you hit, defer, or discover a problem you aren't fixing
+  now: symptom, what's known about the cause, workaround if any. Content
+  rules apply — symbols and config keys, never line numbers.
+- Reader-repair applies: an entry contradicted by the code you just read
+  gets fixed or deleted on the spot.
+
 ## Lifecycle
 
-- **No init crawl.** When you finish non-trivial work in an area that has no
-  file, write one from what you just learned (the moment you know the most)
-  and add its index line. `.docs/` grows toward where work actually happens.
+- **Initial pass — adopting an ongoing project.** Wiring this workflow into
+  a project that already has code but no `.docs/`? Create `index.md`
+  (Commands verified against the repo's real config — package.json,
+  Makefile, CI — plus the Areas map from a structural scan) and
+  `known-issues.md` with its header. Do NOT crawl-write area files:
+  cold-crawl bullets are inventory, not lessons. Docs left by other tools
+  are neither followed nor migrated — build from the code, and flag them in
+  your report as deletion candidates for the owner.
+- **Area files grow with the work — no init crawl.** When you finish
+  non-trivial work in an area that has no file, write one from what you just
+  learned (the moment you know the most) and add its index line. `.docs/`
+  grows toward where work actually happens.
 - **Update inline** at the end of every small/feature change: 1-2 edits
   adding/fixing/deleting bullets in the touched area files. No subagent.
   Trivial changes skip docs entirely.

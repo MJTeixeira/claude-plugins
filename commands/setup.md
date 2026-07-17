@@ -7,12 +7,13 @@ allowed-tools: Bash(ls:*), Bash(grep:*), Read, Write, Edit
 
 - Project CLAUDE.md: !`ls CLAUDE.md 2>/dev/null || echo "none yet"`
 - Existing managed block: !`grep -c "BEGIN LEAN-WORKFLOW MANAGED BLOCK" CLAUDE.md 2>/dev/null || echo 0`
+- Agent docs: !`ls .docs/index.md 2>/dev/null || echo "no .docs yet"`
 
 ## Task
 
 The skills, `/commit` command, code-reviewer agent, and protected-branch guard
 hook already come from this plugin — nothing to copy for those. This command
-wires the two pieces a plugin cannot inject. Use the Read/Write/Edit tools for
+wires the pieces a plugin cannot inject. Use the Read/Write/Edit tools for
 all file work (not shell copy/merge commands) so this behaves identically on
 macOS, Linux, and Windows:
 
@@ -37,6 +38,13 @@ macOS, Linux, and Windows:
    or `.claude/statusline.js` left over from an older install is now inert
    (settings.json no longer points at it) — mention it in your report so the
    user can remove it, but don't fail if it's still there.
+
+3. **Docs bootstrap.** If the project already has code but no
+   `.docs/index.md`, run the `docs` skill's initial pass: create
+   `.docs/index.md` (Commands verified against the repo's real config, plus
+   the Areas map) and `.docs/known-issues.md` with its header. No area
+   files — those grow with the work. Docs left by other tools are neither
+   followed nor migrated; list them in the report as deletion candidates.
 
 Then report what was installed, updated, or already current. Do not commit
 anything.
