@@ -1,6 +1,6 @@
 ---
 name: dev-workflow
-description: Feature-sized work — new behavior, multi-file changes, or ambiguous scope. Explore the codebase, write a short plan, and get user approval before implementing.
+description: Feature-sized work — new behavior, changes crossing layers or systems, or ambiguous scope. Explore the codebase, write a short plan, and get user approval before implementing.
 ---
 
 # Dev workflow (feature-sized work)
@@ -8,13 +8,23 @@ description: Feature-sized work — new behavior, multi-file changes, or ambiguo
 ## 1. Explore
 
 - Read `.docs/index.md`; load only the `.docs/<area>.md` files matching the
-  areas this task touches.
-- Read the key files directly when the surface is small. Spawn ONE built-in
+  areas this task touches, and skim `known-issues.md` (cheap; it may flag
+  the area you're about to touch). No `.docs/` yet? Run the `docs` skill's
+  initial pass first.
+- Read the key files directly when the surface is small. Spawn the built-in
   Explore agent only when the relevant surface is too large to read yourself
-  (many files, unknown location, unfamiliar conventions). Include the relevant
-  `.docs/<area>.md` paths in its prompt, and have it return a ranked list of
-  the key files to read — then read those yourself; summaries lose the detail
-  you plan from.
+  (many files, unknown location, unfamiliar conventions) — ONE by default.
+  Two cases justify parallel agents: one per SEPARATE system when the change
+  spans systems (see Cross-system changes below), and one per AREA (cap ~4)
+  when the task touches several disjoint `.docs` areas whose surfaces are
+  EACH too large to read yourself — scope each agent to its area's globs and
+  area file so no two agents read the same files. The too-large test is the
+  gate: in a small repo one agent covers everything, and areas never fan out
+  just because they exist. More than ~4 qualifying areas means the task is
+  too big — chunk the plan instead. Layers inside one codebase never get
+  their own agents. Include the relevant `.docs/<area>.md` paths in each
+  prompt, and have it return a ranked list of the key files to read — then
+  read those yourself; summaries lose the detail you plan from.
 - Web search only for unfamiliar external APIs/libraries, not for the codebase.
 - Actively look for existing functions and patterns to reuse before proposing
   new code.
@@ -59,6 +69,24 @@ approval, and do not stop for permission after it.
 ## 5. Finish
 
 Use the `finishing` skill: checks, one review pass, docs update, PR.
+
+## Cross-system changes
+
+When the task spans SEPARATE systems — your app plus an external service or
+tenant, two services, distinct codebases. Layers inside one codebase
+(frontend/backend/db of the same app) are not systems; normal explore
+covers them:
+
+- Explore with one agent per system, in parallel; each returns its ranked
+  files plus the boundary contract it found.
+- Map every seam the change touches BEFORE planning. Boundary-recon prompt
+  per seam: "Map the contract between <A> and <B>: endpoints/operations
+  used, request and response payload shapes, IDs and config keys that cross
+  the seam, the error contract, and where each side validates. Return file
+  anchors on both sides."
+- The plan must name each seam it changes and the test that locks the new
+  contract in — a contract/integration test at the seam, not two unit tests
+  that agree with themselves.
 
 ## UI features
 
