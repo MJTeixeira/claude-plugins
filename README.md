@@ -36,7 +36,7 @@ worktree isolation, persistent docs) at a fraction of the cost, because
 |---|---|---|
 | Trivial (typo, config value) | edit + verify | ~2–5k |
 | Small (contained bugfix) | one failing test → fix → run | ~8–20k |
-| Feature (multi-file, new behavior) | explore → plan → approval → TDD → review → PR | ~60–130k |
+| Feature (new behavior, cross-layer/system) | explore → plan → approval → TDD → review → PR | ~60–130k |
 
 For comparison, a pipeline that mandates researchers, plan docs, per-cycle
 review subagents, and a 7-subagent finishing pass costs ~250–600k tokens for
@@ -44,7 +44,7 @@ review subagents, and a 7-subagent finishing pass costs ~250–600k tokens for
 
 What the plugin ships:
 
-- `claude-md-block.md` — a ~60-line router the `setup` command injects into
+- `claude-md-block.md` — a compact router the `setup` command injects into
   the project's CLAUDE.md. Sizes each task and applies only the needed process.
 - `skills/` — twelve core skills (dev-workflow, grill-me, tdd, debugging,
   worktrees, finishing, verify, docs, handoff, auth, db-migrations, deploy),
