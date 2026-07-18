@@ -2604,6 +2604,10 @@ const runSingle = async (name) => {
         // and links ride the triage commit below.
         const parked = parkNeedsHuman(filedQuestions);
         const applied = [...parked.applied, ...applyFlips([])];
+        // Daily counter true-up: triage adds tasks (total changes) and live
+        // sessions flip their own shipped tasks between windows — neither
+        // goes through applyFlips, so refresh unconditionally here.
+        refreshIndexCounts();
         if (commitMetadata(`triage: backlog update ${today()}${applied.length ? ` (${applied.join(", ")})` : ""}`)) {
           log(`triage output committed to ${cfg.baseBranch}`);
         }
@@ -2690,7 +2694,10 @@ const landMerge = async ({ pr, view, taskId }) => {
       }
       const touched = git(["diff", "--name-only", `HEAD...origin/${head}`], metaPath());
       if (touched.split("\n").some((f) => f.startsWith(".factory/backlog/"))) {
-        log(`merge-gate: WARNING — ${pr} touches .factory/backlog (task branches are code-only; outdated prompts?) — merging anyway, driver stays status authority`);
+        // Live/piloting PRs (no taskId) legitimately carry their own tasks'
+        // Status flips (piloting contract); factory task branches stay code-only.
+        if (taskId) log(`merge-gate: WARNING — ${pr} touches .factory/backlog (factory task branches are code-only; outdated prompts?) — merging anyway, driver stays status authority`);
+        else log(`merge-gate: ${pr} touches .factory/backlog — live/piloting sessions ship their own tasks' status flips; merging`);
       }
       // Deployed tooling is owned upstream — a merged local edit dies
       // silently at the next --update (adoratio T-039 landed 67 lines in
@@ -2707,6 +2714,10 @@ const landMerge = async ({ pr, view, taskId }) => {
       }
       git(["merge", "--no-ff", "--no-commit", `origin/${head}`], metaPath());
       const applied = applyFlips(flips);
+      // A live/piloting PR carries its own Status flips (piloting contract);
+      // true up the index counters from the merged files so they ride this
+      // commit — applyFlips only refreshes when the driver itself flipped.
+      if (!applied.length && touched.split("\n").some((f) => f.startsWith(".factory/backlog/"))) refreshIndexCounts();
       git(["add", "-A", ".factory"], metaPath());
       git(["commit", "-m", `Merge PR #${view.number}${taskId ? ` (${taskId})` : ""}: ${view.title}`,
         "-m", `${applied.length ? `Status: ${applied.join(", ")}. ` : ""}Merged by the factory driver (checks green).`], metaPath());
