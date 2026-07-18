@@ -37,14 +37,20 @@ epic, in exactly the format defined in the `code4food-factory:backlog` skill
    tokens), and give first-of-their-kind engine/subsystem integrations
    opus. Spec authors' difficulty notes override your guess; note the
    reason for opus picks in the task's Notes.
-4. **Coverage check**: after writing, produce a table of every REQ/NFR id →
+4. **Gate propagation**: a spec line carrying a `Gate: human` note (the
+   spec skill's red-team pass stamps them on requirements whose acceptance
+   needs owner judgment) puts `- Gate: human (<reason>)` on EVERY task
+   covering that REQ — the merge gate holds those tasks' green PRs for the
+   owner, which is the entire point of the upfront stamp. Never drop one
+   silently; if you think a stamp is wrong, ask the user now.
+5. **Coverage check**: after writing, produce a table of every REQ/NFR id →
    the tasks covering it. Any uncovered id is a gap: add a task or ask the
    user. Any task citing no REQ is scope creep: justify or cut.
-5. **Open decisions**: for each ambiguity (from the spec's Open decisions
+6. **Open decisions**: for each ambiguity (from the spec's Open decisions
    section or discovered while compiling), ask the user now. Answers get
    recorded in the relevant task's Notes or a spec addendum file
    (`.factory/spec/decisions.md`) — never left in chat only.
-6. Also seed `.docs/index.md` with a `Commands` section once the stack is
+7. Also seed `.docs/index.md` with a `Commands` section once the stack is
    decided (test/build/run), even if the commands don't exist yet — the first
    scaffolding task makes them real.
 
