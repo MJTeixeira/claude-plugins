@@ -397,6 +397,32 @@ test("plugin content change WITH a version bump deploys", (t) => {
   assert.equal(runtimeHead(world), target);
 });
 
+test("factory-only bump (skill + factory manifest + marketplace entry) deploys without a skillset bump", (t) => {
+  // A factory release must touch root marketplace.json (its version entry).
+  // That file is marketplace metadata, not skillset content — gate 0 must
+  // not demand a skillset bump for it (first hit: factory 1.1.5, 2026-07-18).
+  const world = makeRuntimeWorld(t, { withPlugins: true });
+  const factory = makeFactory(t);
+  const binDir = registerFactory(world, factory);
+  const claudeBin = stubClaude(world);
+  const target = commitOnOrigin(world, (seed) => {
+    fs.writeFileSync(path.join(seed, "factory", "skills", "backlog", "SKILL.md"), "# changed\n");
+    const fmf = path.join(seed, "factory", ".claude-plugin", "plugin.json");
+    const fm = JSON.parse(fs.readFileSync(fmf, "utf8"));
+    fm.version = "99.0.0";
+    fs.writeFileSync(fmf, JSON.stringify(fm, null, 2) + "\n");
+    const mp = path.join(seed, ".claude-plugin", "marketplace.json");
+    const m = JSON.parse(fs.readFileSync(mp, "utf8"));
+    for (const p of m.plugins ?? []) if (p.name === "code4food-factory") p.version = "99.0.0";
+    fs.writeFileSync(mp, JSON.stringify(m, null, 2) + "\n");
+  });
+
+  const r = runDeploy(world, { extraPath: `${claudeBin}:${binDir}` });
+
+  assert.equal(r.code, 0, `stdout:\n${r.stdout}\nstderr:\n${r.stderr}`);
+  assert.equal(runtimeHead(world), target);
+});
+
 test("driver-only changes need no version bump — gate 0 stays out of the way", (t) => {
   const world = makeRuntimeWorld(t, { withPlugins: true });
   const factory = makeFactory(t);
