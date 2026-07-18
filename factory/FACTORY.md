@@ -90,9 +90,11 @@ built to interleave with them:
   the toolchain tolerates it (never for Unity — editor pins one path).
 - **End every live session pushed** (merged or as a PR). Unpushed work is
   invisible to the factory and to your other machines.
-- Update `.factory/backlog/` task states as part of what you merge, so
-  triage doesn't re-discover work you already did (see the `backlog`
-  skill).
+- **Update the `Status:` lines of tasks you shipped** as part of what you
+  merge — your own tasks only, never index counts or other tasks' lines —
+  so triage doesn't re-discover work you already did, and any number of
+  live devs can pilot the repo before a factory window without colliding
+  (disjoint lines converge at origin; see the `backlog` skill §Status).
 - Two factories (two machines) on one project: safe when time-shifted,
   because state converges at origin. Concurrent windows on the same
   project are NOT coordinated — don't schedule them to overlap.
@@ -272,8 +274,10 @@ edit. Idempotent; refuses `done`/unknown milestones and a live window.
   work is invisible to the factory until pushed (`prep` pushes for you),
   and quarantine/rescue machinery survives inside `prep` — the explicit
   "make my checkout safe" command.
-- **Task branches are code-only.** Sessions never edit `.factory/backlog/`,
-  never commit to base, never merge. They report MID-RUN through the
+- **Factory task branches are code-only.** Factory sessions never edit
+  `.factory/backlog/`, never commit to base, never merge. (Live/piloting
+  sessions are the sanctioned exception: they ship their OWN tasks' `Status:`
+  flips inside the PR that ships the work — see the Piloting contract.) They report MID-RUN through the
   driver's stdio MCP server (v2 O2: `report_status`, `open_question`,
   `log_progress` — validated tool calls appended to
   `<state>/log/<mode>-<ts>.mcp.jsonl`; a session killed at minute 40 has

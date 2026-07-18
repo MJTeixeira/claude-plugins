@@ -74,15 +74,25 @@ observed usage (a task that keeps turn-capping gets more turns next time).
    session.
 4. Nothing eligible → report `no-tasks` and stop; don't invent work.
 
-## Status (dev sessions REPORT, the driver EDITS)
+## Status (factory dev sessions REPORT, the driver EDITS)
 
-Dev sessions never edit `Status:` lines, index counts, or anything else in
-`.factory/backlog/` — status is reported once, in
+Factory dev sessions never edit `Status:` lines, index counts, or anything
+else in `.factory/backlog/` — status is reported once, in
 `.factory/log/last-session.json`, and the driver writes it into the files
-(done rides inside the merge commit; blocked gets its own commit). Only
-TRIAGE sessions edit backlog files, and only content: new tasks, acceptance
-criteria, Notes, hints, unblocking (`blocked → todo`, answered
-`needs-human → todo`), milestone gating.
+(done rides inside the merge commit; blocked gets its own commit). TRIAGE
+sessions edit backlog content: new tasks, acceptance criteria, Notes,
+hints, unblocking (`blocked → todo`, answered `needs-human → todo`),
+milestone gating.
+
+LIVE/PILOTING sessions (owner-attended, no driver behind them) are the one
+other writer: update the `Status:` line (and a `Notes:` PR link) of the
+tasks YOU shipped, inside the same branch/PR that ships the work — there
+is no driver to do it for you, and an un-updated task means triage
+re-discovers work already done. Touch ONLY your own tasks' lines — never
+index counts (the driver refreshes those), never other tasks — so any
+number of live devs can pilot the repo before the next factory window
+without colliding; their edits land on disjoint lines and converge at
+origin.
 
 What to report when:
 

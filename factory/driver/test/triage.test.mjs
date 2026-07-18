@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { makeFactory, queueSessions, runDriver } from "./helpers.mjs";
+import { makeFactory, queueSessions, runDriver, gitIn } from "./helpers.mjs";
 import { factoryKey } from "../paths.mjs";
 
 test("triage runs in the meta worktree but its plan.json reaches the project", (t) => {
@@ -191,4 +191,26 @@ EOF2`,
   const plan = JSON.parse(fs.readFileSync(path.join(world.stateDir, "plan.json"), "utf8"));
   assert.equal(plan.queue[0].taskId, "T-002");
   assert.ok(!fs.existsSync(path.join(world.project, ".factory", "plan.json")), "plan must not be recreated repo-side");
+});
+
+test("triage boundary trues up index counters left stale by a live-shipped flip", (t) => {
+  // Piloting contract: a live session flips its own task's Status inside the
+  // PR it ships, but never touches index counts (driver-only). The daily
+  // triage commit must recompute them from the files.
+  const world = makeFactory(t, {
+    tasks: "# Epic 1\n\n## T-001: shipped in a live session\n\n- Status: done\n- Reqs: REQ-1\n- Acceptance: it works\n- Verify: true\n",
+  });
+  queueSessions(world, [
+    {
+      script: "true",
+      stdout: JSON.stringify({ type: "result", subtype: "success", result: "nothing to triage", total_cost_usd: 0.01, num_turns: 2, usage: { input_tokens: 1, output_tokens: 2 } }) + "\n",
+      exit: 0,
+    },
+  ]);
+
+  const r = runDriver(world, "triage");
+  assert.equal(r.code, 0, `triage exited ${r.code}\n${r.stdout}\n${r.stderr}`);
+
+  const index = gitIn(world.origin, "show", "main:.factory/backlog/index.md");
+  assert.match(index, /backlog\/e1\.md — 1\/1 done/, `index counters not trued up:\n${index}`);
 });

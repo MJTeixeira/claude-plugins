@@ -21,7 +21,7 @@
     {
       "name": "code4food-factory",
       "description": "Factory — autonomous spec-driven development. Claude Code develops a fully-specced product alone in daily windows; skills cover setup (interview wizard), the backlog vocabulary, and headless verification for unattended sessions.",
-      "version": "1.1.4",
+      "version": "1.1.5",
       "license": "MIT",
       "keywords": [
         "autonomous",
