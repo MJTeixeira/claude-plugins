@@ -214,7 +214,10 @@ syncPlugins();
     const before = versionAt(head, manifest);
     const after = versionAt(candidate, manifest);
     if (after === null) continue; // candidate ships no such plugin — nothing cached to go stale
-    const touched = changed.filter((f) => owns.test(f) && f !== manifest);
+    // marketplace.json is marketplace metadata served fresh from the runtime
+    // clone, never cached plugin content — a factory-only bump edits it and
+    // must not trip the skillset gate (same rule as tools/publish.mjs).
+    const touched = changed.filter((f) => owns.test(f) && f !== manifest && f !== ".claude-plugin/marketplace.json");
     if (touched.length && before === after) stale.push(`${manifest} stays at ${after} while its content changed (${touched[0]}${touched.length > 1 ? ` +${touched.length - 1}` : ""})`);
   }
   if (stale.length) {
