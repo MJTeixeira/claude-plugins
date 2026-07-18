@@ -26,11 +26,22 @@ for a day). Do not tell the user setup is finished while doctor shows ✗.
 
 ## 1. Interview (conversationally, not as a form)
 
+**Specs may already exist** — check `.factory/spec/*.md` first (the `spec`
+skill authors them ahead of setup, often on another machine). If present:
+read them, show a compact summary + the REQ list, confirm it captures the
+user's intent, and SKIP the product questions below — ask only the setup
+questions. If the specs never had a red-team pass (ask the user), offer to
+run `${CLAUDE_PLUGIN_ROOT}/skills/spec/references/red-team.md` before
+compiling — it catches the gaps that stall unattended sessions.
+
 Gather, with sensible suggestions from context:
 - Project path (existing repo or new folder — confirm before creating).
-- The product: ask them to paste/describe specs, ideas, or a PRD right here
+- The product (skip if specs exist): ask them to paste/describe specs,
+  ideas, or a PRD right here
   in chat. Ask follow-ups only for what blocks task compilation later
   (platforms, must-have vs nice-to-have, stack preference or "my choice").
+  For a product that deserves real speccing depth, offer the `spec` skill's
+  multi-sitting interview instead of speccing inline here.
 - Autonomy (`pr-only` default — recommend it for a first Factory), window
   hours + start times + work days, mirrors (notion/jira — only if they
   actually use them), stack (detect from the repo when it exists).
@@ -42,7 +53,7 @@ Gather, with sensible suggestions from context:
   `factory.mjs schedule --declare` then `schedule --install`.
 - GitHub: do they want the PR flow (needs a repo + GH_TOKEN)?
 
-## 2. Write the spec
+## 2. Write the spec (skip if specs already exist and were confirmed)
 
 Turn what they gave you into `.factory/spec/*.md` files following
 `factory/templates/spec-template.md` — numbered testable REQ ids, non-

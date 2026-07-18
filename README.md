@@ -26,6 +26,16 @@ CLAUDE.md:
 /code4food-skillset:setup
 ```
 
+Want the status bar too (branch, model + effort, cost, tokens, context
+size, lines changed)? Ask for it in the same command:
+
+```
+/code4food-skillset:setup with statusline
+```
+
+Already ran setup without it? Run it again with the word `statusline` —
+setup is safe to re-run and only adds what's missing.
+
 ## Skillset
 
 Same core flow as heavy skillsets (explore → plan → TDD → review → PR,
@@ -74,10 +84,28 @@ What the plugin ships:
 The factory is a machine-resident product: config, secrets, schedule, and
 logs live under `~/.factory/` on the machine that runs it; the project repo
 carries only work data (`.factory/{spec,backlog,inbox}`). Needs a git repo
-with a GitHub remote. The plugin ships the `factory-setup` (interview wizard),
+with a GitHub remote; **factories run on macOS/Linux machines** (any OS can
+spec and pilot — see below). The plugin ships the `spec` (multi-sitting
+product speccing + red-team pass — needs no factory machine),
+`factory-setup` (interview wizard),
 `backlog` (task vocabulary), and `verify` (headless verification for
 unattended sessions) skills; the driver, prompts, and schedulers live in this
 repo's `factory/` tree and run from a per-machine runtime clone.
+
+**Spec first, install later (any machine, any OS):** you don't need the
+runtime or a factory machine to start. With just the plugin installed, open
+`claude` in a new or existing project folder and say **"spec this
+project"** — deep interview sittings write `.factory/spec/` files; come
+back for more sittings any time ("are the specs ready?" runs the final
+red-team pass). When the specs are ready, move to a macOS/Linux machine
+for the factory setup below — the specs travel with the repo.
+
+Prereqs for the steps below (Node ≥ 18, `gh` and `claude` logged in):
+[ONBOARDING.md](ONBOARDING.md) step 0. **On a machine that will RUN
+factories, skip the `/plugin marketplace add` from the Install section** —
+the runtime bootstrap below registers the plugins itself (from the runtime
+clone, so sessions run exactly the deployed versions); the marketplace-add
+path is for machines that only use the skills.
 
 Once per machine, bootstrap the runtime (or run
 `/code4food-factory:deploy-runtime`):

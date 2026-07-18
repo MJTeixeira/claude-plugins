@@ -65,6 +65,15 @@ subagents, no ceremony. Bigger asks automatically get more process.
 
 Your project must be a git repo with a GitHub remote (private is fine).
 
+**You can start before any of this machinery exists**: install the factory
+plugin (step 0.4 + `/plugin install code4food-factory@code4food` — works
+on any OS, no factory machine needed) and say *"spec this project"* in the
+repo. The `spec` skill runs deep interview sittings and writes
+`.factory/spec/` files; when they're ready, do the machine setup below on
+a macOS/Linux box and the setup flow picks your specs up as-is. Writing
+specs is the highest-leverage hour of the whole setup — the factory
+builds what they say, nothing more.
+
 ### 2.0 Machine setup (once per machine)
 
 The factory runs from a machine-resident runtime, not from your project:
@@ -296,8 +305,11 @@ them into old configs (existing values always kept).
    trusted, so sessions silently lose all write tools. The wizard sets
    trust (re-running it is safe); the driver refuses to start untrusted
    (and prints the fix).
-3. **One factory instance per repo** — never schedule the same project on
-   two machines; two drivers will fight over the branch and backlog.
+3. **Never let two windows on the same project OVERLAP** — concurrent
+   drivers are not coordinated and will fight over the branch and backlog.
+   Two machines running the same project time-shifted (e.g. VPS by night,
+   laptop by day) is safe: state converges at origin between windows (see
+   `factory/FACTORY.md` §Piloting contract).
 4. **gh identity** — the account you `gh auth login` with is what the
    factory acts as. A fine-grained PAT scoped to the one repo is the
    tighter option (`GH_TOKEN` in the machine `.env`).

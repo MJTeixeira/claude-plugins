@@ -2,7 +2,9 @@
 
 Claude Code develops a fully-specced product alone in daily windows: fresh
 headless session per task, state carried in files, humans feed input async.
-Portable: the same driver runs on macOS, Linux/VPS, and Windows.
+Portable: the same driver runs on macOS and Linux/VPS. Windows is not a
+supported factory host (Windows machines still use the skillset and pilot
+factory repos as live sessions — see "Windows" at the end of this file).
 
 ## How it works
 
@@ -183,6 +185,16 @@ ONLY update verb** — there is no per-project tooling refresh anymore
 
 ## Setup (once per project and machine) — two ways, friendliest first
 
+**Spec first, install later (works on any machine, any OS):** the `spec`
+skill needs only the factory PLUGIN — not a runtime, not a factory host —
+so a project can be specced in deep multi-sitting interviews on a laptop
+(Windows included) days before any factory exists. It writes
+`.factory/spec/*.md` from the plugin's template and finishes with a
+red-team pass that resolves or `Gate: human`-stamps every owner-judgment
+question — the stalls that otherwise interrupt long autonomous runs.
+Both setup paths below detect existing specs and skip straight to the
+mechanics.
+
 **A. Conversational (recommended):** with the `factory-setup` skill
 installed machine-globally (machine setup step 2), open `claude` in (or
 near) the project and say *"set up a factory here"*. The skill interviews
@@ -356,7 +368,9 @@ clears it). A session that cannot self-judge a task's acceptance files an
 `open_question` WITH the taskId; the driver files the GitHub issue, parks
 the task `needs-human`, and links the issue on it (`- Question: <url>`).
 Tasks whose acceptance needs owner judgment upfront carry
-`- Gate: human (<reason>)` (stamped by triage): the merge gate never
+`- Gate: human (<reason>)` (stamped by compile-spec — which propagates the
+spec's red-team `Gate: human` notes onto every task covering the stamped
+REQ — or by triage): the merge gate never
 auto-merges their green PRs — it parks the task, asks the owner ONCE on the
 PR, and the owner's own merge is the approval (it flips the task done).
 Factory-level status derives from the pool: actionable work → normal; only
@@ -396,8 +410,7 @@ execs the machine runtime (`~/.factory/runtime/…`):
 Doctor verifies the declaration semantically against what's installed
 (times, days, timezone, runtime exec path) and fails on drift in either
 direction. Templates for the MACHINE services (watchdog timer, dashboard
-service, `factory-onfailure@.service`, Windows `register-tasks.ps1`) live
-in `factory/schedulers/`.
+service, `factory-onfailure@.service`) live in `factory/schedulers/`.
 
 - Typical day: triage 08:30 → dev 09:00 (window length from config) →
   report ~30min after the window ends.
@@ -688,22 +701,12 @@ fresh per run, `claude/` branches, PRs, and your claude.ai connectors
 same `factory/prompts/*.md` files — the state contract is identical. This is
 an adapter, not a requirement.
 
-## First run on Windows (untested — verify these)
+## Windows
 
-1. `node --version` ≥ 18; `claude --version` works in the same shell; the
-   project is trusted (setup step 6 — the flag lives in `~/.claude.json`,
-   which on Windows is under your user profile).
-2. Bootstrap the runtime (`git clone <repo-url> %USERPROFILE%\.factory\runtime`)
-   and run `node <repo>\factory\driver\init.mjs --project C:\path\to\project`;
-   then `node %USERPROFILE%\.factory\runtime\factory\driver\factory.mjs dev
-   --project C:\path\to\project` manually once — watch
-   `<state>/log/` for a session that starts and reports (a `dev-*.mcp.jsonl`
-   with a `report_status` row, or `last-session.json` as the fallback).
-   Verify the MCP wiring survives the `shell: true` spawn: the driver quotes
-   the `--mcp-config` path (spaces in `C:\Users\First Last\...`), and the
-   `--help` feature probe must find `--mcp-config` even through an npm
-   `.cmd` shim — if the log says "no --mcp-config", that probe is the bug.
-3. Timeout kill uses `child.kill()` — verify a hung session actually dies
-   (set `sessionTimeoutMin: 1` and a dummy prompt to test).
-4. Then `register-tasks.ps1`, and trigger one task manually via
-   `Start-ScheduledTask`.
+Windows is NOT a supported factory host: the supervisor has no Windows
+keep-alive, scheduled-task install is not automated or doctor-verified,
+and the `notify-fail` outer net is POSIX-only — run factories on macOS or
+Linux. Windows machines are fully supported for everything else: the
+skillset (statusline and hooks are plain Node), interactive Claude Code
+sessions, and piloting a factory repo as a live session (the piloting
+contract is host-agnostic — branch, push, converge at origin).
