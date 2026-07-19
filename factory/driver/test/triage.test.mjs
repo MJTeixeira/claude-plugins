@@ -46,7 +46,7 @@ test("triage drops overlay entries the backlog files disagree with", (t) => {
   });
   // Stale runtime overlay: the files re-opened T-001 (todo) but the machine
   // still remembers it blocked — dev sessions would skip valid work forever
-  // (the rpg-solo T-043/T-047 no-task bug). T-002 agrees with its file.
+  // (the fleet T-043/T-047 no-task bug). T-002 agrees with its file.
   const logDir = path.join(world.stateDir, "log");
   fs.mkdirSync(logDir, { recursive: true });
   fs.writeFileSync(path.join(logDir, "state.json"), JSON.stringify({

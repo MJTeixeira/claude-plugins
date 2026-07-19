@@ -13,7 +13,7 @@ const metaDir = (world) =>
 // commit that TRACKS .claude/settings.local.json (which materialization then
 // skip-worktree's) while the base branch has since dropped the file. The
 // stranded skip-worktree'd copy makes `checkout base` throw "local changes
-// would be overwritten" — the exact 4-day witchhat failure.
+// would be overwritten" — the exact 4-day fleet failure.
 const strandMetaOnDroppedTooling = (world) => {
   const local = path.join(world.project, ".claude", "settings.local.json");
   // 1. base branch tracks settings.local.json (force-add: it's conventionally
@@ -140,7 +140,7 @@ test("a dirty session worktree is quarantined to log/ before removal", (t) => {
   queueSessions(world, [
     {
       // A capped/killed session's shape: uncommitted work in the worktree,
-      // no settled report of any kind (rpg-solo T-034, 2026-07-09).
+      // no settled report of any kind (fleet task T-034, 2026-07-09).
       script: `mkdir -p src && echo "half-finished feature" > src/wip.txt`,
       stdout: JSON.stringify({ type: "result", subtype: "error_max_turns", total_cost_usd: 0.03, num_turns: 4, usage: { input_tokens: 1, output_tokens: 2 } }) + "\n",
       exit: 1,

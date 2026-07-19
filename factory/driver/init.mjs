@@ -139,8 +139,8 @@ const step_workdata = () => {
   }
   done(".factory/{spec,backlog,inbox} (work data — all the factory ever puts in the repo)");
   // The one non-dir scaffold file: without it a `git add -A .factory` tracks
-  // runtime state — the meta worktree's log symlink and plan.json (modelwars
-  // 2026-07-11). Rides a normal commit with the rest of the work data.
+  // runtime state — the meta worktree's log symlink and plan.json (fleet
+  // incident 2026-07-11). Rides a normal commit with the rest of the work data.
   if (stampFactoryGitignore(project).length) done(".factory/.gitignore (keeps runtime state out of commits)");
   else skip(".factory/.gitignore (already covers the runtime state)");
   // The teammate contract file: non-skillset devs get the rules — who edits
@@ -162,8 +162,8 @@ const step_machine_config = (a) => {
   const envPath = path.join(S, ".env");
   if (!fs.existsSync(envPath)) {
     fs.mkdirSync(S, { recursive: true });
-    fs.writeFileSync(envPath, "# Fill me. Loaded into every factory session.\nGH_TOKEN=\nNOTION_TOKEN=\nJIRA_BASE_URL=\nJIRA_EMAIL=\nJIRA_API_TOKEN=\n# Telegram notifications (config.json → \"notify\": {\"telegram\": true})\nTELEGRAM_BOT_TOKEN=\nTELEGRAM_CHAT_ID=\n");
-    done(`.env (machine-side: ${envPath} — fill GH_TOKEN if needed)`);
+    fs.writeFileSync(envPath, "# Fill me. Loaded into every factory session.\n# GitHub forge (the default):\nGH_TOKEN=\n# Bitbucket Cloud forge (config.json → \"forge\": \"bitbucket\") — an app password/API token:\nBITBUCKET_EMAIL=\nBITBUCKET_API_TOKEN=\n# Jira (config.json → \"tracker\": \"jira\", \"board\": {\"jira\": true}, or the jira mirror):\nJIRA_BASE_URL=\nJIRA_EMAIL=\nJIRA_API_TOKEN=\nNOTION_TOKEN=\n# Telegram notifications (config.json → \"notify\": {\"telegram\": true})\nTELEGRAM_BOT_TOKEN=\nTELEGRAM_CHAT_ID=\n");
+    done(`.env (machine-side: ${envPath} — fill the keys your forge/tracker needs)`);
   } else skip(".env (machine-side copy exists — values kept)");
 };
 

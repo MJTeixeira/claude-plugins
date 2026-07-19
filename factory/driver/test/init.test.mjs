@@ -78,6 +78,13 @@ test("init writes machine state and puts ONLY work-data dirs in the repo", (t) =
   assert.equal(cfg.stack, "node", "stack detected from the project");
   assert.equal(cfg.schedule.modes.dev.time, "09:00", "schedule declared as a block");
   assert.ok(fs.existsSync(path.join(world.stateDir, ".env")), ".env template machine-side");
+  // The template must name every key a forge/tracker choice can need — a
+  // netbr-style Bitbucket+Jira factory fills these, and a template that
+  // omits them sends the operator hunting through docs (pilot-prep).
+  const envT = fs.readFileSync(path.join(world.stateDir, ".env"), "utf8");
+  for (const key of ["GH_TOKEN", "BITBUCKET_EMAIL", "BITBUCKET_API_TOKEN", "JIRA_BASE_URL", "JIRA_EMAIL", "JIRA_API_TOKEN"]) {
+    assert.match(envT, new RegExp(`^${key}=`, "m"), `.env template missing ${key}`);
+  }
   // registry
   const reg = JSON.parse(fs.readFileSync(path.join(world.home, ".factory", "registry.json"), "utf8"));
   assert.ok(world.project in reg.factories, "registered for the dashboard");
@@ -91,7 +98,7 @@ test("init writes machine state and puts ONLY work-data dirs in the repo", (t) =
     assert.equal(fs.existsSync(path.join(world.project, rel)), false, `${rel} must not be written to the repo`);
   }
   // .factory/.gitignore is stamped (PR-F): runtime state — meta-worktree log
-  // symlink, plan.json — must never ride a `git add -A .factory` (modelwars).
+  // symlink, plan.json — must never ride a `git add -A .factory` (fleet incident).
   const gi = fs.readFileSync(path.join(world.project, ".factory", ".gitignore"), "utf8");
   for (const entry of [".env", "log", "plan.json", "board.json", "STOP"]) {
     assert.ok(gi.split("\n").some((l) => l.trim().replace(/\/$/, "") === entry), `.factory/.gitignore missing ${entry}:\n${gi}`);
