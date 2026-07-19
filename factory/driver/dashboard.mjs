@@ -32,7 +32,7 @@ import { stateDir, readEnvFile } from "./paths.mjs";
 import { normalizeSchedule, nextFire } from "./schedule.mjs";
 import { deriveFactoryStatus } from "./status.mjs";
 import { createForge, createTracker } from "./forge.mjs";
-import { parseMilestones } from "./backlog-index.mjs";
+import { parseMilestones, parseBacklogTasks } from "./backlog-index.mjs";
 
 // ---------- config: file < flags, each setting tracks its source ----------
 const CONFIG_PATH = path.join(os.homedir(), ".factory", "dashboard.json");
@@ -123,24 +123,9 @@ const parseBacklog = (factoryDir) => {
       epics: m.epics.map((e) => ({ id: e.id, name: e.id, file: e.file })),
     });
   }
-  for (const f of fs.readdirSync(dir).filter((f) => f.endsWith(".md") && f !== "index.md")) {
-    const text = fs.readFileSync(path.join(dir, f), "utf8");
-    for (const block of text.split(/^## /m).slice(1)) {
-      const head = block.match(/^(T-[\w-]+):\s*(.*)/);
-      if (!head) continue;
-      const status = block.match(/- Status:\s*(\S+)/)?.[1] ?? "todo";
-      const links = [...block.matchAll(/https?:\/\/\S+/g)].map((x) => x[0].replace(/[).,]$/, ""));
-      const model = block.match(/- Model:\s*(\S+)/)?.[1] ?? null;
-      const effort = block.match(/- Effort:\s*(\S+)/)?.[1] ?? null;
-      // The issue a session filed for this task (driver writes `- Question:`
-      // under the Status line) — the needs-human pill links straight to it.
-      // http(s) only: this lands in an href, and backlog files are written
-      // by autonomous sessions — a bare \S+ would let a `javascript:` token
-      // ride into the owner's click.
-      const question = block.match(/- Question:\s*(https?:\/\/\S+)/)?.[1] ?? null;
-      tasks.push({ id: head[1], title: head[2].trim(), status, epic: f.replace(".md", ""), links, model, effort, question });
-    }
-  }
+  // Task blocks come from the same shared module — this was the second
+  // private copy of the TASK parser (the driver held the other).
+  tasks.push(...parseBacklogTasks(dir));
   return { milestones, tasks };
 };
 
