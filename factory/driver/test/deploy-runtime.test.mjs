@@ -85,7 +85,10 @@ const registerFactory = (world, factoryWorld) => {
   return path.join(factoryWorld.root, "bin");
 };
 
-const runDeploy = (world, { extraPath = "", pathOverride = null } = {}) => {
+// expectedOrigin: what the deploy treats as the canonical distribution repo
+// (FACTORY_RUNTIME_ORIGIN). Defaults to the world's own bare origin; pass
+// null to leave the env unset and exercise the real hardcoded canonical URL.
+const runDeploy = (world, { extraPath = "", pathOverride = null, expectedOrigin = world.origin } = {}) => {
   const r = spawnSync(
     process.execPath,
     [path.join(world.runtime, "factory", "driver", "deploy-runtime.mjs")],
@@ -97,6 +100,7 @@ const runDeploy = (world, { extraPath = "", pathOverride = null } = {}) => {
         HOME: world.home,
         CLAUDE_STUB_LOG: path.join(world.root, "claude-calls.log"),
         PATH: pathOverride ?? (extraPath ? `${extraPath}:${process.env.PATH}` : process.env.PATH),
+        ...(expectedOrigin ? { FACTORY_RUNTIME_ORIGIN: expectedOrigin } : {}),
       },
     }
   );
@@ -126,6 +130,31 @@ const claudeCalls = (world) => {
 };
 
 const runtimeHead = (world) => git(world.runtime, "rev-parse", "HEAD");
+
+// A wrong or retired origin fetches fine and reports "up to date" forever —
+// the frozen-fleet failure (migration runbook Phase 0). The check must fire
+// BEFORE the up-to-date early exit, which is the path a frozen machine takes.
+test("runtime pointed at a non-canonical origin refuses, never reports up to date", (t) => {
+  const world = makeRuntimeWorld(t);
+  const before = runtimeHead(world);
+
+  const r = runDeploy(world, { expectedOrigin: path.join(world.root, "elsewhere", "claude-plugins.git") });
+
+  assert.equal(r.code, 1, `stdout:\n${r.stdout}\nstderr:\n${r.stderr}`);
+  assert.match(r.stdout + r.stderr, /origin/i);
+  assert.match(r.stdout + r.stderr, /remote set-url/, "the fix must be spelled out");
+  assert.doesNotMatch(r.stdout, /up to date/i);
+  assert.equal(runtimeHead(world), before);
+});
+
+test("without an override the real canonical URL is enforced — a local-path origin refuses", (t) => {
+  const world = makeRuntimeWorld(t);
+
+  const r = runDeploy(world, { expectedOrigin: null });
+
+  assert.equal(r.code, 1, `stdout:\n${r.stdout}\nstderr:\n${r.stderr}`);
+  assert.match(r.stdout + r.stderr, /claude-plugins/, "the canonical repo must be named in the refusal");
+});
 
 test("runtime already at origin tip → no-op, exit 0", (t) => {
   const world = makeRuntimeWorld(t);

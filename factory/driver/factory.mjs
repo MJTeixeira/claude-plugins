@@ -24,6 +24,7 @@ import { createForge, createTracker, nativeTrackerCheck } from "./forge.mjs";
 import { parseMilestones, unparsedMilestoneHeadings } from "./backlog-index.mjs";
 import { jiraTracker } from "./jira.mjs";
 import { jiraBoardInit, syncJiraBoard } from "./jira-board.mjs";
+import { expectedOrigin, sameOrigin } from "./distribution.mjs";
 
 // The checkout this driver runs from IS the runtime (deployed machines:
 // ~/.factory/runtime, gated by deploy-runtime.mjs) — session tooling is
@@ -1523,6 +1524,18 @@ const runDoctor = () => {
       const sha = (sh("git", ["-C", RUNTIME, "rev-parse", "--short", "HEAD"]).out ?? "?").trim();
       check(dirty ? "fail" : "ok", "machine runtime",
         dirty ? `${RUNTIME} tree is dirty — the runtime only ever advances via deploy-runtime.mjs; restore it (git -C ${RUNTIME} status)` : `clean at ${sha}`);
+      // 5a. runtime origin (migration runbook Phase 0) — a wrong or retired
+      //     remote fetches fine and deploys report "up to date" forever: a
+      //     silently frozen machine. URL comparison only, no network —
+      //     liveness is deploy-runtime's fetch refusal.
+      const origin = (sh("git", ["-C", RUNTIME, "remote", "get-url", "origin"]).out ?? "").trim();
+      if (!origin) {
+        check("fail", "runtime origin", `no origin remote — the runtime can never advance; git -C ${RUNTIME} remote set-url origin ${expectedOrigin()} (adding it if missing)`);
+      } else if (!sameOrigin(origin, expectedOrigin())) {
+        check("fail", "runtime origin", `${origin} is not the distribution repo — deploys report "up to date" forever while the fleet advances; fix: git -C ${RUNTIME} remote set-url origin ${expectedOrigin()}`);
+      } else {
+        check("ok", "runtime origin", origin);
+      }
     }
     if (fs.existsSync(path.join(dataDir, "driver.mjs"))) {
       check("warn", "legacy driver copy", ".factory/driver.mjs is the retired v3 per-project copy — nothing should run it; git rm it");

@@ -18,6 +18,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { stateDir } from "./paths.mjs";
+import { expectedOrigin, sameOrigin } from "./distribution.mjs";
 
 const RUNTIME = path.join(os.homedir(), ".factory", "runtime");
 const logPath = path.join(os.homedir(), ".factory", "deploy.log");
@@ -139,6 +140,17 @@ const syncPlugins = () => {
 if (!fs.existsSync(path.join(RUNTIME, ".git"))) {
   log(`no runtime at ${RUNTIME} — bootstrap it first: git clone <repo-url> ${RUNTIME}`);
   process.exit(1);
+}
+
+// A wrong or retired origin fetches fine and the up-to-date exit below then
+// reports success forever — a silently frozen machine. Verify the remote
+// BEFORE trusting anything the fetch says (migration runbook Phase 0).
+{
+  let origin = null;
+  try { origin = git(["remote", "get-url", "origin"]); } catch { /* no origin remote */ }
+  if (!sameOrigin(origin, expectedOrigin())) {
+    await refuse(`runtime origin is ${origin ?? "MISSING"} — not the distribution repo (${expectedOrigin()}); this machine would never advance again. Fix: git -C ${RUNTIME} remote set-url origin ${expectedOrigin()}`);
+  }
 }
 
 try { git(["fetch", "origin", "--quiet"]); } catch (e) {

@@ -186,14 +186,19 @@ not per factory:
 node ~/.factory/runtime/factory/driver/deploy-runtime.mjs
 ```
 
-It fetches, refuses a dirty or diverged runtime, gates the candidate
-(`node --check` on every driver module, then the CANDIDATE driver's doctor
-over every registered factory, read-only), fast-forwards only when green,
-stamps `~/.factory/runtime-deploy.json`, and Telegrams the result. A failed
-gate leaves the runtime exactly where it was — the merge-gate principle
-applied to the runtime itself. Log: `~/.factory/deploy.log`. **This is the
-ONLY update verb** — there is no per-project tooling refresh anymore
-(`init.mjs --update` died with the machine-product refactor).
+It verifies the runtime's origin remote is the canonical distribution repo
+(`factory/driver/distribution.mjs`; a wrong or retired remote would report
+"up to date" forever — a silently frozen machine; `FACTORY_RUNTIME_ORIGIN`
+overrides for forks), fetches, refuses a dirty or diverged runtime, gates
+the candidate (`node --check` on every driver module, then the CANDIDATE
+driver's doctor over every registered factory, read-only), fast-forwards
+only when green, stamps `~/.factory/runtime-deploy.json`, and Telegrams the
+result. A failed gate leaves the runtime exactly where it was — the
+merge-gate principle applied to the runtime itself. Doctor carries a
+standing `runtime origin` row for the same check (URL comparison only, no
+network). Log: `~/.factory/deploy.log`. **This is the ONLY update verb** —
+there is no per-project tooling refresh anymore (`init.mjs --update` died
+with the machine-product refactor).
 
 ## Setup (once per project and machine) — two ways, friendliest first
 

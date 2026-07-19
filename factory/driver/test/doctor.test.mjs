@@ -241,6 +241,14 @@ test("doctor only warns on a kind-only declaration with installed units — adop
   assert.match(r.stdout, /! schedule matches declaration — .*adopt/i, `stdout:\n${r.stdout}`);
 });
 
+// Real runtimes are clones — give the fixture an origin remote and point the
+// expected-origin override at it so only the check under test can fail.
+const setRuntimeOrigin = (world, runtime, origin = path.join(world.home, "claude-plugins.git")) => {
+  gitIn(runtime, "remote", "add", "origin", origin);
+  world.extraEnv = { ...(world.extraEnv ?? {}), FACTORY_RUNTIME_ORIGIN: origin };
+  return origin;
+};
+
 test("doctor fails on a dirty machine runtime tree", (t) => {
   const world = makeFactory(t);
   const runtime = path.join(world.home, ".factory", "runtime");
@@ -251,6 +259,7 @@ test("doctor fails on a dirty machine runtime tree", (t) => {
   fs.writeFileSync(path.join(runtime, "seed.txt"), "committed\n");
   gitIn(runtime, "add", "-A");
   gitIn(runtime, "commit", "-q", "-m", "seed");
+  setRuntimeOrigin(world, runtime);
   fs.writeFileSync(path.join(runtime, "local-edit.txt"), "dirty\n");
 
   const r = runDriver(world, "doctor");
@@ -276,6 +285,7 @@ const fakeRuntime = (world, versions = { skillset: "1.1.0", factory: "1.1.0" }) 
     JSON.stringify({ name: "code4food-factory", version: versions.factory }) + "\n");
   gitIn(runtime, "add", "-A");
   gitIn(runtime, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "runtime");
+  setRuntimeOrigin(world, runtime);
   return runtime;
 };
 
@@ -336,6 +346,46 @@ test("a marketplace pointing anywhere but the runtime fails doctor", (t) => {
 
   assert.equal(r.code, 1, `stdout:\n${r.stdout}\nstderr:\n${r.stderr}`);
   assert.match(r.stdout, /✗ code4food plugins — marketplace points at/);
+});
+
+// ---------- runtime origin (migration runbook Phase 0) ----------
+// A runtime pointed at a wrong or retired remote fetches fine and deploys
+// report "up to date" forever — this row is what turns a silently frozen
+// machine into a loud one.
+
+test("doctor is green on a runtime tracking the expected origin", (t) => {
+  const world = makeFactory(t);
+  const runtime = fakeRuntime(world);
+  installPluginRecords(world, runtime, { skillset: "1.1.0", factory: "1.1.0" });
+
+  const r = runDriver(world, "doctor");
+
+  assert.equal(r.code, 0, `stdout:\n${r.stdout}\nstderr:\n${r.stderr}`);
+  assert.match(r.stdout, /✓ runtime origin/);
+});
+
+test("a runtime tracking the wrong origin fails doctor with the set-url fix", (t) => {
+  const world = makeFactory(t);
+  const runtime = fakeRuntime(world);
+  installPluginRecords(world, runtime, { skillset: "1.1.0", factory: "1.1.0" });
+  gitIn(runtime, "remote", "set-url", "origin", path.join(world.home, "retired-mirror.git"));
+
+  const r = runDriver(world, "doctor");
+
+  assert.equal(r.code, 1, `stdout:\n${r.stdout}\nstderr:\n${r.stderr}`);
+  assert.match(r.stdout, /✗ runtime origin — .*remote set-url/);
+});
+
+test("a runtime with no origin remote fails doctor — it can never advance", (t) => {
+  const world = makeFactory(t);
+  const runtime = fakeRuntime(world);
+  installPluginRecords(world, runtime, { skillset: "1.1.0", factory: "1.1.0" });
+  gitIn(runtime, "remote", "remove", "origin");
+
+  const r = runDriver(world, "doctor");
+
+  assert.equal(r.code, 1, `stdout:\n${r.stdout}\nstderr:\n${r.stderr}`);
+  assert.match(r.stdout, /✗ runtime origin — no origin remote/);
 });
 
 test("no machine runtime → plugin check skips (dev-checkout run)", (t) => {
