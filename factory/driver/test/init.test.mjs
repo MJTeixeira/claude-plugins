@@ -79,7 +79,7 @@ test("init writes machine state and puts ONLY work-data dirs in the repo", (t) =
   assert.equal(cfg.schedule.modes.dev.time, "09:00", "schedule declared as a block");
   assert.ok(fs.existsSync(path.join(world.stateDir, ".env")), ".env template machine-side");
   // The template must name every key a forge/tracker choice can need — a
-  // netbr-style Bitbucket+Jira factory fills these, and a template that
+  // Bitbucket+Jira factory fills these, and a template that
   // omits them sends the operator hunting through docs (pilot-prep).
   const envT = fs.readFileSync(path.join(world.stateDir, ".env"), "utf8");
   for (const key of ["GH_TOKEN", "BITBUCKET_EMAIL", "BITBUCKET_API_TOKEN", "JIRA_BASE_URL", "JIRA_EMAIL", "JIRA_API_TOKEN"]) {

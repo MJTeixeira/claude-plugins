@@ -25,7 +25,19 @@ one honest, readable summary for humans. You do NOT implement anything.
 
 ## 2. Write the report
 
-Comment on the `[factory] daily log` issue (create if missing).
+Comment on the `[factory] daily log` issue (create if missing). On GitHub
+that's `gh issue comment` / `gh issue create`; on Bitbucket it's REST —
+`POST /issues/<id>/comments` with `{"content": {"raw": "..."}}`, or
+`POST /issues` to create — same credentials-on-stdin shape as the read
+above.
+
+**Any request that SENDS a body puts that body in a FILE, never inline in
+the command**: write it to `.factory/tmp/<name>.json` with the Write tool,
+then send it with a single-line `--data @.factory/tmp/<name>.json`. A JSON
+payload pasted into the command makes the command multi-line, and `dontAsk`
+denies multi-line commands outright however well curl is allowlisted — the
+report would simply never land (this ate a live pilot's PR, 2026-07-19).
+`.factory/tmp/` is gitignored, so the file never dirties the tree.
 
 Config `tracker: "jira"` moves that issue — and the `needs-human`
 questions you read in step 1 — to the Jira project named by `jiraProject`;
@@ -35,7 +47,9 @@ the repo's own tracker is not used. Via REST
 find issues with `GET /search/jql?jql=<urlencoded JQL>&fields=summary,status`
 (the legacy `/search` endpoint is gone), comment with
 `POST /issue/<KEY>/comment`, create with `POST /issue` — write bodies are
-ADF documents (`{"type": "doc", "version": 1, "content": [...]}`).
+ADF documents (`{"type": "doc", "version": 1, "content": [...]}`) — and
+they ride a payload file, exactly as above.
+
 **If config sets `jiraEpic`, the project is SHARED**: append
 `AND parent = "<jiraEpic>"` to every JQL, add
 `"parent": {"key": "<jiraEpic>"}` to the fields of any issue you create

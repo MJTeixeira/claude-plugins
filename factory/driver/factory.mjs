@@ -20,7 +20,8 @@ import { materializeWorkspace, isInjectedPath, factorySkillNames, stripFactorySe
 import { healConfigSchema } from "./config.mjs";
 import { SCHEDULE_KINDS, SCHEDULE_MODES, normalizeSchedule, validateDeclaration, generateUnits, parseInstalled, compareInstalled, defaultPathLine } from "./schedule.mjs";
 import { deriveFactoryStatus } from "./status.mjs";
-import { createForge, createTracker } from "./forge.mjs";
+import { createForge, createTracker, nativeTrackerCheck } from "./forge.mjs";
+import { parseMilestones, unparsedMilestoneHeadings } from "./backlog-index.mjs";
 import { jiraTracker } from "./jira.mjs";
 import { jiraBoardInit, syncJiraBoard } from "./jira-board.mjs";
 
@@ -1376,7 +1377,7 @@ const makeForge = (cwd = project) => createForge({ kind: cfg.forge ?? "github", 
 const forge = makeForge();
 // Where needs-human questions and the daily log live: the forge's native
 // tracker by default, a Jira project when cfg.tracker is "jira" (repos
-// whose own tracker is off — the netbr shape).
+// whose own tracker is off — the Bitbucket-plus-Jira shape).
 const tracker = createTracker({ cfg, forge, env });
 
 // Every scheduler artifact on this machine that references this project,
@@ -1583,6 +1584,12 @@ const runDoctor = () => {
   // duplicate the rows when both point at Jira.
   if (tracker !== forge) for (const r of tracker.authCheck()) check(r.level, r.name, r.detail);
   else if (cfg.board?.jira) for (const r of jiraTracker({ cfg, env }).authCheck()) check(r.level, r.name, r.detail);
+  // The NATIVE tracker's own auth row above says nothing about whether the
+  // repo's issue tracker is even turned on — probe it (forge.mjs).
+  if (tracker === forge && forgeBin) {
+    const r = nativeTrackerCheck(forge);
+    check(r.level, r.name, r.detail);
+  }
 
   // 8. timers active + linger (Linux)
   if (process.platform === "linux" && resolveCmd("systemctl")) {
@@ -1768,6 +1775,27 @@ const runDoctor = () => {
       check(bad.length ? "warn" : "ok", "backlog format",
         bad.length ? `${tasks.length} task(s); off-vocabulary status: ${bad.map((t) => `${t.id}=${t.status}`).join(", ")}` : `${tasks.length} task(s) parse clean`);
     }
+  }
+
+  // 14b. milestone headings in backlog/index.md — `promote` flips them and
+  //      the dashboard shows the active one, so a heading dialect neither
+  //      can read costs both silently. That is exactly what happened: the
+  //      index format was never specified, three dialects grew, and 4 of 6
+  //      factories read as having no milestones at all (2026-07-19). The
+  //      parser tolerates the known dialects; this row catches the NEXT one.
+  //      Warn, not fail — a backlog with no milestones is legal.
+  {
+    const indexPath = path.join(dataDir, "backlog", "index.md");
+    const text = fs.existsSync(indexPath) ? fs.readFileSync(indexPath, "utf8") : "";
+    const drift = unparsedMilestoneHeadings(text);
+    const parsed = parseMilestones(text);
+    if (drift.length) {
+      check("warn", "milestone headings",
+        `${drift.length} heading(s) in backlog/index.md do not parse, so promote and the dashboard cannot see them — use \`## M<n>: <title> — <status>\`: ${drift.map((d) => d.trim()).join(" | ").slice(0, 120)}`);
+    } else if (parsed.length) {
+      const active = parsed.filter((m) => m.status === "active").map((m) => m.id);
+      check("ok", "milestone headings", `${parsed.length} parse clean${active.length ? ` (active: ${active.join(", ")})` : " (none active)"}`);
+    } else check("skip", "milestone headings", "backlog/index.md declares no milestones");
   }
 
   // 15. auto-merge needs CI — with no checks, the gate merges on nothing
@@ -2496,8 +2524,10 @@ if (mode === "promote") {
   const indexPath = path.join(runtimeFactoryDir(), "backlog", "index.md");
   if (!fs.existsSync(indexPath)) fail(`no ${indexPath} — nothing to promote`);
   const text = fs.readFileSync(indexPath, "utf8");
-  const headings = [...text.matchAll(/^## +(\S+)([^\n]*?)(?:—\s*([\w-]+))?\s*$/gm)]
-    .map((m) => ({ line: m[0], id: m[1], status: m[3] ?? null, index: m.index }));
+  // Shared parser (backlog-index.mjs): the local regex this replaced read
+  // only `## M1 …`, so promote failed with "milestone not found" on the 4
+  // fleet factories whose index used another dialect (2026-07-19).
+  const headings = parseMilestones(text);
   const hit = headings.find((h) => h.id.toLowerCase() === milestone.toLowerCase());
   if (!hit) {
     fail(`milestone ${milestone} not found in backlog/index.md — headings there: ${
@@ -2510,7 +2540,9 @@ if (mode === "promote") {
   if (!["not-started", "gated"].includes(hit.status ?? "")) {
     fail(`${hit.id} is ${hit.status ?? "missing its status suffix"} — promote only opens not-started/gated milestones (a ${hit.status} heading is yours to edit by hand)`);
   }
-  const flipped = hit.line.replace(/—\s*[\w-]+\s*$/, "— active");
+  // Splice the status token in place, by offset — the heading's dialect
+  // (`— active` vs `(active)`) is the author's and must survive the flip.
+  const flipped = hit.line.slice(0, hit.statusStart) + "active" + hit.line.slice(hit.statusEnd);
   fs.writeFileSync(indexPath, text.slice(0, hit.index) + flipped + text.slice(hit.index + hit.line.length));
   if (isGitRepo()) {
     if (!commitMetadata(`promote ${hit.id}: milestone → active`)) fail(`flip produced no staged change in ${indexPath} — index format drift?`);
@@ -2576,6 +2608,15 @@ const processQuestions = async (newQuestions, context) => {
       s.pendingQuestions.push(q);
       log(`question: filing failed (${firstLine(e)}) — kept pending: ${q.title}`);
     }
+  }
+  // The tracker is the channel that just failed, so say it somewhere else.
+  // Without this the only trace is the per-question line above, which scrolls
+  // past inside a window and appears on no dashboard — that is how the first
+  // Bitbucket pilot stranded two real diagnoses in silence.
+  if (s.pendingQuestions.length) {
+    const summary = `${s.pendingQuestions.length} question(s) could not be filed — the tracker rejected them; queued, will retry next session: ${s.pendingQuestions.map((q) => q.title).join("; ")}`;
+    log(`questions: ${summary}`);
+    await notify(`⚠ ${summary}`);
   }
   writeState(s);
   return filed;

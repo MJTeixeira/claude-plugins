@@ -284,6 +284,17 @@ active milestones are KEPT active (deps order the work; don't strand
 foundation tasks) — marking one `done` stays an explicit human/triage
 edit. Idempotent; refuses `done`/unknown milestones and a live window.
 
+Milestone headings are machine-read, and the canonical shape is
+`## M<n>: <title> — <status>` (status LAST on the line; documented in the
+`code4food-factory:backlog` skill). The index format went unspecified for a
+long time, so older factories carry other dialects (`### M1: …`,
+`## Milestone 1 — … (active)`) — the parser reads all of them, and
+`promote` flips the status in whichever dialect the heading uses, so
+nothing gets rewritten under the owner. A heading NO dialect covers is a
+doctor warn (`milestone headings`): before that row existed, an unreadable
+heading silently took out both promote and the dashboard's active-milestone
+display on 4 of 6 fleet factories (2026-07-19).
+
 ## Git & status ownership (NOTES items 23–24, 39–41)
 
 - **Worktree isolation (v2): your checkout is yours.** Every session runs in
@@ -449,12 +460,36 @@ service, `factory-onfailure@.service`) live in `factory/schedulers/`.
   the Jira tracker below is configured, and dashboard check-chips read
   "none" until Pipelines statuses are wired. Sessions and the `finishing`
   skill are forge-neutral (Bitbucket REST wording rides the prompts) — a
-  Bitbucket factory is end-to-end, pending its first live pilot.
+  Bitbucket factory ran its first live client pilot 2026-07-19: build,
+  verify, review, session pushes, the turn-cap resume chain and the merge
+  all proven against the real API. **Session-opened PRs are NOT yet
+  proven** — the pilot's PR-create was denied (see Piloting gotchas: the
+  multi-line-command trap) and the operator opened PR #1 by hand; the
+  file-backed recipe that replaced it is untested in a live window. Watch
+  that leg on the next one.
+  **A Bitbucket repo ships with its issue tracker OFF**, and the API then
+  answers 410 Gone on `/issues` while every PR call keeps working — so
+  needs-human questions queue silently. Doctor probes the native tracker
+  and WARNS on that (enable the tracker, or set `tracker: jira`). It warns
+  rather than fails on purpose: doctor is also the `--scheduled` preflight,
+  so a fail row aborts EVERY timer-fired window — dev and report included,
+  not just the filings that would vanish. A factory whose tracker is off is
+  degraded, not misconfigured: the pilot window that exposed this shipped
+  T-001 with its tracker off, and failing the preflight would have cost
+  that work to protect two questions about tooling.
+  The queue itself is never lost — a filing that throws goes to
+  `state.pendingQuestions` and retries at the next session end. Its
+  visibility is the driver's job, not doctor's: every session end that
+  leaves questions stranded logs and Telegrams the count and titles
+  (`⚠ N question(s) could not be filed …`). That announcement is the
+  load-bearing half — warning without it recreates the original silent-loss
+  bug, which is exactly how the pilot lost two real diagnoses.
 - **Tracker** (`config.json → tracker`, default the forge's own tracker;
   the legacy value `"github"` means the same): set `"jira"` to route
   needs-human questions and the `[factory] daily log` to a Jira Cloud
-  project instead — for repos whose native tracker is off (the netbr
-  shape). Also needs `"jiraProject": "<KEY>"` in `config.json` and
+  project instead — for repos whose native tracker is off (the common
+  Bitbucket-Cloud-plus-Jira shape: issues disabled on the repo, planning
+  lives in Jira). Also needs `"jiraProject": "<KEY>"` in `config.json` and
   `JIRA_BASE_URL` + `JIRA_EMAIL` + `JIRA_API_TOKEN` in `<state>/.env`
   (Atlassian API token, same three keys as the Jira report mirror);
   doctor checks the keys and live-probes the auth. The driver files
@@ -560,7 +595,9 @@ service, `factory-onfailure@.service`) live in `factory/schedulers/`.
   PATH, workspace trust, scaffold, allowlist, machine-runtime health (clean
   tree; legacy per-project driver copies warn; schedulers still exec'ing a
   deleted `.factory/driver.mjs` FAIL with the migration hint), .env keys
-  for enabled features, gh auth scopes, timers + linger, docker when
+  for enabled features, gh auth scopes, native-tracker reachability (issues
+  switched off = questions queue silently — fails), milestone headings that
+  no longer parse (promote + dashboard read them), timers + linger, docker when
   compose exists, plan freshness, dashboard registry, plus the setup
   contract (NOTES item 25): `schedule` declared and matching what's
   installed, `enabled` a declared boolean (item 47 — a disabled factory is
@@ -667,6 +704,13 @@ service, `factory-onfailure@.service`) live in `factory/schedulers/`.
 - **GitHub API timeouts** (`gh pr view failed`, `meta: fetch failed — using
   local refs`) self-heal via the window-end sweep or next session. Only act
   if PRs pile up unmerged.
+- **A multi-line Bash command is DENIED outright under `dontAsk`**, however
+  well its individual binaries are allowlisted — the permission matcher
+  cannot decompose a command carrying newlines. This ate the first live pilot's
+  PR: a curl with an inline multi-line `--data '{...}'` was refused, and
+  the operator opened PR #1 by hand. Every prompt recipe that SENDS a body
+  now writes it to `.factory/tmp/<name>.json` with the Write tool and
+  passes `--data @<file>` on one line. Write new recipes the same way.
 
 ## Safety notes
 

@@ -12,7 +12,27 @@ THAT before answering questions about factory behavior; this skill covers
 only the backlog vocabulary.
 
 The backlog is the single source of work. `.factory/backlog/index.md` maps
-milestones → epics; each `.factory/backlog/<epic>.md` holds tasks:
+milestones → epics; each `.factory/backlog/<epic>.md` holds tasks.
+
+## Index format (`backlog/index.md`)
+
+Milestone headings are MACHINE-READ — `promote` flips their status and the
+dashboard shows the active one — so they have one shape:
+
+```markdown
+## M<n>: <title> — <status>
+- [e<n>-<kebab-name>](e<n>-<kebab-name>.md) — <count> tasks
+```
+
+`<status>` is `active` | `not-started` | `gated` | `done`, and it is the
+LAST thing on the heading line. Milestone ids are `M<n>`; epic bullets link
+the epic file. Older factories carry other dialects (`### M1: …`,
+`## Milestone 1 — … (active)`) and the parser still reads them, but write
+new indexes this way — a heading nothing can parse takes milestone
+promotion and the dashboard's active-milestone display down silently, which
+is how three dialects grew unnoticed in the first place.
+
+Each `.factory/backlog/<epic>.md` holds tasks:
 
 ```markdown
 ## T-023: <title>

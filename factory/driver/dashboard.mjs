@@ -32,6 +32,7 @@ import { stateDir, readEnvFile } from "./paths.mjs";
 import { normalizeSchedule, nextFire } from "./schedule.mjs";
 import { deriveFactoryStatus } from "./status.mjs";
 import { createForge, createTracker } from "./forge.mjs";
+import { parseMilestones } from "./backlog-index.mjs";
 
 // ---------- config: file < flags, each setting tracks its source ----------
 const CONFIG_PATH = path.join(os.homedir(), ".factory", "dashboard.json");
@@ -113,12 +114,14 @@ const parseBacklog = (factoryDir) => {
   const tasks = [];
   const indexPath = path.join(dir, "index.md");
   if (!fs.existsSync(indexPath)) return { milestones, tasks };
-  let current = null;
-  for (const line of fs.readFileSync(indexPath, "utf8").split("\n")) {
-    const m = line.match(/^##\s+(M\d+)[:\s]+(.*?)\s*(?:—\s*(\S+))?\s*$/);
-    if (m) { current = { id: m[1], name: m[2], status: m[3] ?? "", epics: [] }; milestones.push(current); continue; }
-    const e = line.match(/^-\s+(E\d+)\s+(\S+)\s+—\s+(\S+)/);
-    if (e && current) current.epics.push({ id: e[1], name: e[2], file: e[3] });
+  // Shared parser (backlog-index.mjs) — this used to be a local regex that
+  // only read `## M1 …` and left 4 of 6 fleet factories showing "no active
+  // milestone" (2026-07-19).
+  for (const m of parseMilestones(fs.readFileSync(indexPath, "utf8"))) {
+    milestones.push({
+      id: m.id, name: m.title, status: m.status ?? "",
+      epics: m.epics.map((e) => ({ id: e.id, name: e.id, file: e.file })),
+    });
   }
   for (const f of fs.readdirSync(dir).filter((f) => f.endsWith(".md") && f !== "index.md")) {
     const text = fs.readFileSync(path.join(dir, f), "utf8");

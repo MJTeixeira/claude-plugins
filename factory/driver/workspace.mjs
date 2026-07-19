@@ -23,7 +23,10 @@ export const ALLOW_BASE = ["Read", "Edit", "Write", "Glob", "Grep", "TodoWrite",
   // (sessions are told the driver wipes scratch), NOT as a security boundary:
   // node:* above already grants arbitrary fs access, and find/mv below can
   // delete/clobber too — dontAsk sessions are trusted with the machine.
-  "Bash(find:*)", "Bash(grep:*)", "Bash(echo:*)", "Bash(sed:*)", "Bash(awk:*)",
+  // printf rides with echo: the first live Bitbucket pilot's session reached for it to feed
+  // curl's `-K -` credential config on stdin, and lost a turn to the denial
+  // even though it had the right idea (2026-07-19).
+  "Bash(find:*)", "Bash(grep:*)", "Bash(echo:*)", "Bash(printf:*)", "Bash(sed:*)", "Bash(awk:*)",
   "Bash(head:*)", "Bash(tail:*)", "Bash(wc:*)", "Bash(sort:*)", "Bash(diff:*)",
   "Bash(which:*)", "Bash(pwd)", "Bash(cd:*)", "Bash(cp:*)", "Bash(mv:*)",
   "Bash(touch:*)", "Bash(chmod:*)", "Bash(rmdir:*)",

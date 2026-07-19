@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { createForge } from "../forge.mjs";
+import { createForge, nativeTrackerCheck } from "../forge.mjs";
 
 // One programmable stub gh for the whole file: dispatch on "$1 $2", canned
 // responses live in files each test rewrites. Tests in a file run
@@ -26,7 +26,9 @@ case "$1 $2" in
     cat "$ROOT/auth.txt"; exit 0 ;;
   "pr view") cat "$ROOT/pr-view.json" ;;
   "pr list") cat "$ROOT/pr-list.out" ;;
-  "issue list") cat "$ROOT/issue-list.json" ;;
+  "issue list")
+    if [ -s "$ROOT/issues-err" ]; then cat "$ROOT/issues-err" >&2; exit 1; fi
+    cat "$ROOT/issue-list.json" ;;
   "issue create") echo "https://github.com/o/r/issues/12" ;;
   "pr merge") echo "merge blocked" >&2; exit 1 ;;
   "api repos/o/r/branches/main"|"api repos/{owner}/{repo}/branches/main") cat "$ROOT/branch.json" ;;
@@ -175,4 +177,36 @@ test("async remoteBranchSha resolves the branch head sha, null when unknown", as
   assert.equal(await forge.async.remoteBranchSha("main"), "abc123");
   set("branch.json", "garbage");
   assert.equal(await forge.async.remoteBranchSha("main"), null);
+});
+
+// nativeTrackerCheck — a repo whose issue tracker is switched off answers
+// every other forge call normally, so nothing else in doctor sees it and
+// needs-human filings queue forever (first live Bitbucket pilot, 2026-07-19).
+test("nativeTrackerCheck: a reachable tracker is one ok row", () => {
+  set("issues-err", "");
+  set("issue-list.json", JSON.stringify([]));
+  const row = nativeTrackerCheck(forge);
+  assert.equal(row.level, "ok");
+  assert.match(row.name, /github issue tracker/);
+});
+
+// WARN, not FAIL: doctor is the scheduled preflight, and a closed question
+// mailbox must not cancel a window that would otherwise ship working code (the
+// 2026-07-19 pilot window did exactly that). Questions queue and retry; the
+// driver announces the stranded count out-of-band.
+test("nativeTrackerCheck: issues disabled → WARN naming both ways out", () => {
+  set("issues-err", "GraphQL: Issues are disabled for this repository");
+  const row = nativeTrackerCheck(forge);
+  assert.equal(row.level, "warn");
+  assert.match(row.detail, /enable it in the repo settings/i);
+  assert.match(row.detail, /"tracker": "jira"/, "the fix must name the Jira alternative");
+  set("issues-err", "");
+});
+
+test("nativeTrackerCheck: an unrecognized failure WARNS — doctor is the scheduled preflight, a blip must not cost a window", () => {
+  set("issues-err", "error connecting to api.github.com");
+  const row = nativeTrackerCheck(forge);
+  assert.equal(row.level, "warn");
+  assert.match(row.detail, /could not read the issue tracker/);
+  set("issues-err", "");
 });

@@ -1,6 +1,7 @@
 // Jira tracker — the issue surface of the forge contract (forge.mjs header)
 // backed by Jira Cloud REST v3, for factories whose repo's native tracker is
-// off (cfg.tracker: "jira" + cfg.jiraProject; netbr's Bitbucket repos).
+// off (cfg.tracker: "jira" + cfg.jiraProject; typically Bitbucket repos,
+// where the issue tracker ships disabled).
 // PR traffic never comes here — that stays on the forge.
 //
 // Transport is curl with credentials on stdin (`-K -`), exactly like
@@ -55,9 +56,9 @@ export const jiraTracker = ({ cfg = {}, env = {} }) => {
   const json = (url, opts) => JSON.parse(req(url, opts));
 
   // cfg.jiraEpic (optional): the factory owns ONE epic inside a shared Jira
-  // project (the netbr ISC shape) — every scan narrows to the epic's
-  // children and every created issue is parented under it. Unset = the
-  // factory owns the whole project.
+  // project (the shape when a client's Jira is shared across teams) — every
+  // scan narrows to the epic's children and every created issue is parented
+  // under it. Unset = the factory owns the whole project.
   const scope = () => `project = "${project()}"${cfg.jiraEpic ? ` AND parent = "${cfg.jiraEpic}"` : ""}`;
   const parentField = () => (cfg.jiraEpic ? { parent: { key: cfg.jiraEpic } } : {});
   const searchUrl = () => {

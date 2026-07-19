@@ -206,7 +206,7 @@ test("a dead session's in-progress MCP breadcrumbs reach the next session's hand
 
 // Programmable gh recording every call; `issue create` registers the new
 // issue so later `issue list` calls see it (like the real GitHub REST list).
-const installQuestionGh = (world, { issues = [], failFirstCreate = false } = {}) => {
+const installQuestionGh = (world, { issues = [], failFirstCreate = false, failAllCreates = false } = {}) => {
   const ghDir = path.join(world.root, "stub-gh");
   fs.mkdirSync(ghDir, { recursive: true });
   fs.writeFileSync(path.join(ghDir, "issues.json"), JSON.stringify(issues));
@@ -217,6 +217,7 @@ printf '%s\\n' "$*" >> "${ghDir}/calls.log"
 case "$1 $2" in
   "issue list") cat "${ghDir}/issues.json" ;;
   "issue create")
+    ${failAllCreates ? `echo "The requested URL returned error: 410" >&2; exit 1;` : ":"}
     ${failFirstCreate ? `if [ ! -f "${ghDir}/failed-once" ]; then touch "${ghDir}/failed-once"; echo "boom" >&2; exit 1; fi` : ":"}
     prev=""; title=""
     for a in "$@"; do [ "$prev" = "--title" ] && title="$a"; prev="$a"; done
@@ -304,6 +305,30 @@ test("a failed gh create keeps the question pending; the next session end retrie
   assert.equal(gh.calls().filter((c) => c.startsWith("issue create")).length, 2); // failed attempt + successful retry
   const state = JSON.parse(fs.readFileSync(path.join(world.stateDir, "log", "state.json"), "utf8"));
   assert.deepEqual(state.pendingQuestions ?? [], []);
+});
+
+// A tracker that is switched off (Bitbucket's default) accepts nothing, so the
+// queue only grows. The per-question "kept pending" line scrolls past inside a
+// long window: the window must end by saying how many questions are stranded,
+// on a channel that does not depend on the tracker (first live Bitbucket pilot,
+// 2026-07-19: two real diagnoses queued and nobody saw either).
+test("questions that never file announce the stranded count, not just per-question lines", (t) => {
+  const world = makeFactory(t);
+  installQuestionGh(world, { failAllCreates: true });
+  queueSessions(world, [
+    {
+      script: `${questionEvent("Bitbucket REST is blocked")}\n${questionEvent("curl is denied under dontAsk", "context", null)}\nmkdir -p .factory/log && printf '%s' '{"taskId": null, "status": "no-tasks", "summary": "n"}' > .factory/log/last-session.json`,
+      stdout: RESULT_EVENT,
+      exit: 0,
+    },
+  ]);
+  const r = runDriver(world, "dev");
+  assert.equal(r.code, 0, `driver exited ${r.code}\nstdout:\n${r.stdout}\nstderr:\n${r.stderr}`);
+  assert.match(r.stdout, /2 question\(s\) could not be filed/, "the count must be stated once, not left to per-question lines");
+  assert.match(r.stdout, /retry/i, "the owner must be told the questions are queued, not lost");
+  assert.match(r.stdout, /Bitbucket REST is blocked/, "the summary names what is stranded");
+  const state = JSON.parse(fs.readFileSync(path.join(world.stateDir, "log", "state.json"), "utf8"));
+  assert.equal(state.pendingQuestions.length, 2);
 });
 
 test("triage sessions file questions through the driver too", (t) => {

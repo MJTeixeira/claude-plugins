@@ -20,7 +20,12 @@ branches, no checkouts, no commits, no merges.
   curl -sS -K - https://api.bitbucket.org/2.0/repositories/<ws>/<slug>/...`
   — creds on stdin via `-K -`, never `-u` (argv is host-visible);
   PRs under `/pullrequests`, comments under `/pullrequests/<id>/comments`,
-  issues under `/issues`): new/updated open issues since the last triage,
+  issues under `/issues`. **Any request that SENDS a body — a comment, a
+  new issue — writes that JSON to `.factory/tmp/<name>.json` with the
+  Write tool first, then rides a single-line `--data
+  @.factory/tmp/<name>.json`**: a payload inline in the command makes it
+  multi-line, and `dontAsk` denies multi-line commands outright.
+  `.factory/tmp/` is gitignored): new/updated open issues since the last triage,
   new comments on `[factory]` PRs and on `needs-human` issues. A closed
   `needs-human` issue with an answer = a decision: unblock the task and
   record the answer in its Notes.
