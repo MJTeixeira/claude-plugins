@@ -55,6 +55,30 @@ test("missing .factory/.gitignore is scaffold drift — warn (advisory), never f
   assert.match(r.stdout, /! \.factory\/\.gitignore — scaffold drift.*migrate/);
 });
 
+test("missing .factory/README.md is scaffold drift — warn (advisory), never fail (team affordances)", (t) => {
+  const world = makeFactory(t);
+  // Teammates without the skillset discover the contract through this file;
+  // its absence is drift migrate stamps, never a window-blocking failure.
+  fs.rmSync(path.join(world.factoryDir, "README.md"));
+  gitIn(world.project, "rm", "-q", "--cached", ".factory/README.md");
+  gitIn(world.project, "commit", "-q", "-m", "drop the contract file");
+  gitIn(world.project, "push", "-q", "origin", "main");
+
+  const r = runDriver(world, "doctor");
+
+  assert.equal(r.code, 0, `stdout:\n${r.stdout}\nstderr:\n${r.stderr}`);
+  assert.match(r.stdout, /! \.factory\/README\.md — scaffold drift.*migrate/);
+});
+
+test("doctor is green on .factory/README.md when the contract file is present", (t) => {
+  const world = makeFactory(t);
+
+  const r = runDriver(world, "doctor");
+
+  assert.equal(r.code, 0, `stdout:\n${r.stdout}\nstderr:\n${r.stderr}`);
+  assert.match(r.stdout, /✓ \.factory\/README\.md/);
+});
+
 test("tracked runtime state (.factory/log, plan.json) fails doctor — the modelwars shape (PR-F)", (t) => {
   const world = makeFactory(t);
   fs.rmSync(path.join(world.factoryDir, ".gitignore"));

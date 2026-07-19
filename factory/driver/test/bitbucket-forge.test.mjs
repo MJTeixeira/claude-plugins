@@ -98,10 +98,17 @@ test("prListOpen hits the workspace/slug from origin and maps to contract rows",
     id: 5, title: "[factory] T-001: t", draft: false,
     links: { html: { href: "https://bitbucket.org/acme/widget/pull-requests/5" } },
     source: { branch: { name: "factory/T-001" } },
+  }, {
+    id: 6, title: "T-002: claimed by a human", draft: true,
+    links: { html: { href: "https://bitbucket.org/acme/widget/pull-requests/6" } },
+    source: { branch: { name: "teammate-branch" } },
   }] }));
   assert.deepEqual(forge.prListOpen(), [{
     number: 5, url: "https://bitbucket.org/acme/widget/pull-requests/5",
-    title: "[factory] T-001: t", headRefName: "factory/T-001",
+    title: "[factory] T-001: t", headRefName: "factory/T-001", isDraft: false,
+  }, {
+    number: 6, url: "https://bitbucket.org/acme/widget/pull-requests/6",
+    title: "T-002: claimed by a human", headRefName: "teammate-branch", isDraft: true,
   }]);
   assert.match(calls().join("\n"), /repositories\/acme\/widget\/pullrequests\?state=OPEN/);
 });

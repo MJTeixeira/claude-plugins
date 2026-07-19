@@ -11,6 +11,7 @@
 import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { fileURLToPath } from "node:url";
 
 export const ALLOW_BASE = ["Read", "Edit", "Write", "Glob", "Grep", "TodoWrite",
   "Bash(git:*)", "Bash(gh:*)", "Bash(ls:*)", "Bash(cat:*)", "Bash(mkdir:*)", "Bash(node:*)",
@@ -72,6 +73,21 @@ export const stampFactoryGitignore = (projectDir) => {
   fs.mkdirSync(path.dirname(p), { recursive: true });
   fs.writeFileSync(p, cur.replace(/\n*$/, cur ? "\n" : "") + missing.join("\n") + "\n");
   return missing;
+};
+
+// Create .factory/README.md — the in-repo contract for teammates who don't
+// run the skillset (who edits what, the draft-PR task claim). Create-only:
+// an existing file is the owner's and is never rewritten (unlike the
+// gitignore there are no per-line canonical entries to heal). Shared by
+// init (scaffold stamp), migrate (drift healing), and doctor (drift check).
+// Returns true when the file was created.
+export const stampFactoryReadme = (projectDir) => {
+  const p = path.join(projectDir, ".factory", "README.md");
+  if (fs.existsSync(p)) return false;
+  const template = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "templates", "factory-readme.md");
+  fs.mkdirSync(path.dirname(p), { recursive: true });
+  fs.copyFileSync(template, p);
+  return true;
 };
 
 export const detectStack = (dir) => {

@@ -96,12 +96,31 @@ test("init writes machine state and puts ONLY work-data dirs in the repo", (t) =
   for (const entry of [".env", "log", "plan.json", "board.json", "STOP"]) {
     assert.ok(gi.split("\n").some((l) => l.trim().replace(/\/$/, "") === entry), `.factory/.gitignore missing ${entry}:\n${gi}`);
   }
+  // .factory/README.md is stamped (team affordances): teammates without the
+  // skillset get the contract — who edits what, and the draft-PR task claim —
+  // from inside the repo.
+  const readme = fs.readFileSync(path.join(world.project, ".factory", "README.md"), "utf8");
+  assert.match(readme, /draft pull request/i, "README must carry the draft-PR claim convention");
+  assert.match(readme, /Status:/, "README must explain the status-line ownership rule");
   // and nothing committed — the gitignore rides normal commits with the rest
   // of the work data, like the backlog will
   assert.equal(git(world.project, "rev-list", "--count", "HEAD"), "1", "init must not create commits");
   // (git collapses an all-untracked dir to `?? .factory/`)
   assert.match(git(world.project, "status", "--porcelain"), /^\?\? \.factory\/(\.gitignore)?$/,
     "init leaves exactly the stamped gitignore for the owner's next commit");
+});
+
+test("init keeps an owner-customized .factory/README.md byte-for-byte", (t) => {
+  const world = makeWorld(t);
+  fs.mkdirSync(path.join(world.project, ".factory"), { recursive: true });
+  const custom = "# Our team's factory\n\nHouse rules live here.\n";
+  fs.writeFileSync(path.join(world.project, ".factory", "README.md"), custom);
+
+  const r = runInit(world);
+
+  assert.equal(r.code, 0, `stdout:\n${r.stdout}\nstderr:\n${r.stderr}`);
+  assert.equal(fs.readFileSync(path.join(world.project, ".factory", "README.md"), "utf8"), custom,
+    "an existing README is the owner's — init must never rewrite it");
 });
 
 test("init is idempotent — an existing machine config's values are kept", (t) => {

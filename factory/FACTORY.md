@@ -90,6 +90,18 @@ built to interleave with them:
   it is NOT a required handoff step.
 - Work on a branch; a sibling worktree is optional owner convenience where
   the toolchain tolerates it (never for Unity — editor pins one path).
+- **Claim a backlog task before piloting it: open a DRAFT pull request
+  with the task id in the title** (e.g. `T-023: add invoice export`;
+  branch name is free, works on both forges). While the PR is open the
+  factory skips the task (plan routing + a Claimed-tasks prompt section)
+  and its merge sweep never touches drafts; other pilots route around it
+  the same way. The claim holds through "ready for review" until the PR
+  merges or closes — your `Status:` flip rides the PR and only lands at
+  merge, so the open PR is what stops a nightly window duplicating your
+  finished-but-unreviewed work. The convention ships in-repo as
+  `.factory/README.md` (init stamps it, migrate heals it, doctor warns
+  when missing), so teammates without the skillset learn it by opening
+  the directory.
 - **End every live session pushed** (merged or as a PR). Unpushed work is
   invisible to the factory and to your other machines.
 - **Update the `Status:` lines of tasks you shipped** as part of what you

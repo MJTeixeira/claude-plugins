@@ -78,6 +78,7 @@ export const bitbucketForge = ({ project, env = {} }) => {
 
   const listOpen = () => (json(`${base()}/pullrequests?state=OPEN&pagelen=30`).values ?? []).map((p) => ({
     number: p.id, url: p.links?.html?.href ?? null, title: p.title, headRefName: p.source?.branch?.name ?? null,
+    isDraft: p.draft ?? false,
   }));
 
   // Dashboard transport: async, resolve-{data|error}, never rejects — even

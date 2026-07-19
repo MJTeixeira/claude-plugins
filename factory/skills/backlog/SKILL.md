@@ -72,7 +72,12 @@ observed usage (a task that keeps turn-capping gets more turns next time).
    `Model:` pin is ABOVE your own tier (haiku < sonnet < opus < fable) is
    not eligible for you either — skip it; the plan routes it to a stronger
    session.
-4. Nothing eligible → report `no-tasks` and stop; don't invent work.
+4. A CLAIMED task is never eligible: a human's open PR with the task id in
+   its title — draft (in progress) or ready (awaiting review; their status
+   flip only lands at merge) — holds the task (the prompt's **Claimed
+   tasks** section lists them). Skip it — the claim clears when the PR
+   merges or closes.
+5. Nothing eligible → report `no-tasks` and stop; don't invent work.
 
 ## Status (factory dev sessions REPORT, the driver EDITS)
 
@@ -92,7 +97,10 @@ re-discovers work already done. Touch ONLY your own tasks' lines — never
 index counts (the driver refreshes those), never other tasks — so any
 number of live devs can pilot the repo before the next factory window
 without colliding; their edits land on disjoint lines and converge at
-origin.
+origin. Picking a task for a live session? **Claim it first: open a draft
+PR with the task id in the title** (branch name is free) — the factory and
+other pilots route around your open PR, draft through ready, until it
+merges or closes.
 
 What to report when:
 
