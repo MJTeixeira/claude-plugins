@@ -40,7 +40,7 @@ test("an unfinished window's finalization is replayed by the next prep run, miss
   const logDir = path.join(world.stateDir, "log");
   fs.mkdirSync(logDir, { recursive: true });
 
-  // Forge the post-crash state the adoratio EACCES left behind (NOTES 33):
+  // Forge the post-crash state the fleet EACCES crash left behind (NOTES 33):
   // window started, sweep done, then death — no board sync, lock never
   // released, scratch never removed.
   const stamp = "2026-07-08T09-00-00-000Z";

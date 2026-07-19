@@ -64,7 +64,7 @@ export const jiraBoardInit = ({ jira, stateD, say }) => {
   writeBoard(stateD, {
     statusMap, missing,
     // Same lesson as the GitHub board's phantom-cards incident (NOTES,
-    // adoratio 2026-07-12): re-init must never orphan tracked cards.
+    // fleet incident 2026-07-12): re-init must never orphan tracked cards.
     items: prev?.items ?? {}, pendingMoves: prev?.pendingMoves ?? {},
   });
   say(`status map: ${Object.entries(statusMap).map(([k, v]) => `${k} → "${v}"`).join(", ")}`);

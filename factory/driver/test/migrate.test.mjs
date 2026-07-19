@@ -47,7 +47,7 @@ const makeLegacyWorld = (t, { config = {} } = {}) => {
   fs.mkdirSync(path.join(f, "schedulers"));
   fs.writeFileSync(path.join(f, "schedulers", "com.factory.project.dev.plist"), "<plist/>\n");
   fs.writeFileSync(path.join(project, "factory.yaml"), "# answerfile\nstack: node\nbaseBranch: main\n");
-  // v3-era stamped copies (the melkaia twins still carry these): dead weight
+  // v3-era stamped copies (transition-era fleet repos still carry these): dead weight
   // nothing runs — init --update used to remove them, migrate owns it now.
   fs.writeFileSync(path.join(f, "driver.mjs"), "// stale v3 stamped copy\n");
   fs.mkdirSync(path.join(f, "prompts"));
@@ -68,7 +68,7 @@ const makeLegacyWorld = (t, { config = {} } = {}) => {
   fs.writeFileSync(path.join(project, ".claude", "statusline.sh"), "#!/bin/sh\necho status\n");
   fs.writeFileSync(path.join(project, ".claude", "settings.local.json"), JSON.stringify({ machineInjected: true }) + "\n");
   // Forced: dev machines commonly global-gitignore settings.local.json — the
-  // transition-era repos this models (witchhat/blacklist) force-added it.
+  // transition-era fleet repos this models force-added it.
   git(project, "add", "-f", "--", ".claude/settings.local.json");
   fs.writeFileSync(path.join(project, ".claude", "settings.json"), JSON.stringify({
     permissions: { allow: ["Read", "Bash(git:*)", "mcp__factory", "Bash(npm:*)", "Bash(make:*)"] },
@@ -330,9 +330,9 @@ test("repo cleanup also runs for an already-migrated factory (P1-shaped repo)", 
   assert.equal(git(world.project, "rev-parse", "HEAD"), head, "idempotent cleanup must not stack commits");
 });
 
-test("migrate untracks committed runtime state and stamps .factory/.gitignore — the modelwars shape (PR-F)", (t) => {
+test("migrate untracks committed runtime state and stamps .factory/.gitignore — the tracked-runtime-state shape (PR-F)", (t) => {
   const world = makeLegacyWorld(t);
-  // modelwars 2026-07-11: no .factory/.gitignore, so log/ and plan.json were
+  // Fleet incident 2026-07-11: no .factory/.gitignore, so log/ and plan.json were
   // committed. factory-setup missed the stamp; migrate is the standing fix.
   fs.rmSync(path.join(world.factoryDir, ".gitignore"));
   git(world.project, "rm", "-q", "--cached", ".factory/.gitignore");

@@ -3,7 +3,7 @@
 // never by `gh pr checks` exit codes (misread in-flight CI as failing —
 // runtime lesson, seen ~5×/night); green PRs left by earlier sessions or
 // windows must land at the next session boundary, not wait for window end
-// (rpg-solo #64/#65 needed a manual kill→prep to merge).
+// (fleet PRs #64/#65 needed a manual kill→prep to merge).
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import * as fs from "node:fs";

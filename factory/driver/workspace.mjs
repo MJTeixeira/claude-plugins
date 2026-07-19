@@ -48,7 +48,7 @@ export const ALLOW_ENGINE = {
 
 // Canonical .factory/.gitignore — the runtime state the driver writes (or
 // symlinks, in the meta worktree) next to the work data. Without it, one
-// `git add -A .factory` tracks logs and plan.json (modelwars 2026-07-11).
+// `git add -A .factory` tracks logs and plan.json (fleet incident 2026-07-11).
 // `log` deliberately unslashed: `log/` matches only directories, never the
 // meta worktree's log SYMLINK, and a committed symlink loops the fleet.
 // Shared by init (scaffold stamp), migrate (healing), and doctor (drift).

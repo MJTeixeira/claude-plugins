@@ -540,7 +540,7 @@ test("schedule --adopt fails when nothing is installed", (t) => {
 });
 
 test("a prefix-sibling project's artifacts are never claimed — adopt sees nothing to adopt", (t) => {
-  // /a/project must not match /a/project2 (the melkaia-twins class): a raw
+  // /a/project must not match /a/project2 (the sibling-factories class): a raw
   // substring match would let --uninstall delete the sibling's units and
   // --adopt import the sibling's times.
   const world = makeFactory(t);

@@ -9,7 +9,7 @@ test("doctor stays green with no .claude in git — session tooling is injected,
   // The post-migration shape: nothing under .claude tracked. Sessions get
   // allowlist + guard injected into their worktrees from the runtime, so
   // the old "untracked allowlist strands worktree sessions" failure
-  // (witchhat 2026-07-09, NOTES item 44) no longer exists.
+  // (fleet incident 2026-07-09, NOTES item 44) no longer exists.
   fs.writeFileSync(path.join(world.project, ".gitignore"), ".claude/\n");
   gitIn(world.project, "rm", "-r", "-q", "--cached", ".claude");
   gitIn(world.project, "add", ".gitignore");
@@ -42,7 +42,7 @@ test("missing .factory/.gitignore is scaffold drift — warn (advisory), never f
   const world = makeFactory(t);
   // The meta worktree carries a log symlink and plan.json next to the work
   // data, so the ignore file IS scaffold even with all state machine-side
-  // (modelwars 2026-07-11 tracked both). Missing = drift migrate stamps;
+  // (fleet incident 2026-07-11 tracked both). Missing = drift migrate stamps;
   // only actually-tracked runtime state fails.
   fs.rmSync(path.join(world.factoryDir, ".gitignore"));
   gitIn(world.project, "rm", "-q", "--cached", ".factory/.gitignore");
@@ -79,7 +79,7 @@ test("doctor is green on .factory/README.md when the contract file is present", 
   assert.match(r.stdout, /✓ \.factory\/README\.md/);
 });
 
-test("tracked runtime state (.factory/log, plan.json) fails doctor — the modelwars shape (PR-F)", (t) => {
+test("tracked runtime state (.factory/log, plan.json) fails doctor — the tracked-runtime-state shape (PR-F)", (t) => {
   const world = makeFactory(t);
   fs.rmSync(path.join(world.factoryDir, ".gitignore"));
   gitIn(world.project, "rm", "-q", "--cached", ".factory/.gitignore");

@@ -366,7 +366,7 @@ const recordUsage = ({ factoryDir, sessionLogPath, mode, taskId, status, model, 
 };
 
 // First non-empty of stderr/stdout/message: git puts the interesting text
-// on either stream depending on the failure (witchhat sweep logged three
+// on either stream depending on the failure (one fleet sweep logged three
 // bare "attempt failed ()" retries because "nothing to commit" is stdout).
 const firstLine = (e) =>
   String([e?.stderr, e?.stdout, e?.message].find((s) => s && String(s).trim()) ?? e)
@@ -420,7 +420,7 @@ const parseBacklogTasks = (root = dataDir) => {
 // at origin tip at every boundary (window start, between sessions, window
 // end, before triage). Dirty state is quarantined — bytes copied to
 // .factory/log/quarantine-<ts>/ AND stashed — never destroyed, never left
-// to poison the next session or a human deploy (the adoratio race).
+// to poison the next session or a human deploy (a real deploy race on the fleet, 2026-07-07).
 
 const isGitRepo = () => fs.existsSync(path.join(project, ".git"));
 const gitRaw = (args, cwd = project) =>
@@ -584,7 +584,7 @@ const removeWorktree = (p, context) => {
   if (!p) return;
   // A dirty throwaway worktree is a capped/killed session's uncommitted
   // work — copy the bytes to log/quarantine-* before --force destroys them
-  // (NOTES item 45: rpg-solo T-034 lost 121 turns this way; the checkout
+  // (NOTES item 45: fleet task T-034 lost 121 turns this way; the checkout
   // had this protection since item 23, worktrees never did).
   try {
     // Injected tooling doesn't count as dirt — see copyDirtyBytes.
@@ -680,7 +680,7 @@ const refreshMeta = () => {
   // skip-worktree on a TRACKED settings.local.json), so a meta worktree
   // stranded at a commit that still tracks tooling the base branch has since
   // dropped throws "local changes would be overwritten" on checkout — and
-  // stays stranded, wedging every window (witchhat, 4 days). The meta worktree
+  // stays stranded, wedging every window (a fleet project, 4 days). The meta worktree
   // is disposable derived state (committed work was pushed/parked above), so
   // on ANY advance failure, drop it and recreate fresh rather than throw
   // "repo not ready" forever — refreshMeta must self-heal, not wedge nightly.
@@ -887,7 +887,7 @@ const stateOverlayNote = () => {
 // Post-triage the files are authoritative — triage saw the overlay in its own
 // prompt, so any runtime memory it chose not to carry into the files is stale
 // by construction. Entries the files disagree with are dropped; keeping them
-// made dev sessions skip work triage had just re-opened (rpg-solo T-043/T-047).
+// made dev sessions skip work triage had just re-opened (fleet tasks T-043/T-047).
 // Only statuses the driver writes to files can disagree with them — runtime-
 // only statuses (in-progress, review: the open PR is their durable record)
 // have no file representation, so a file can never "agree" with one and they
@@ -1086,7 +1086,7 @@ if (mode === "migrate") {
       const staged = [];
       const tracked = (rel) => g(["ls-files", "--", rel]) !== "";
       // Machine state leaves git: config/.env and any runtime state a
-      // missing .factory/.gitignore let in (modelwars: log/, plan.json) —
+      // missing .factory/.gitignore let in (fleet incident: log/, plan.json) —
       // their disk copies just moved machine-side, so only the deletion is
       // staged. A tracked copy STILL on disk (machine-side copy existed, so
       // the move kept it) is the owner's to reconcile: a pathspec'd commit
@@ -1103,7 +1103,7 @@ if (mode === "migrate") {
         }
       }
       // Stamp (or heal) the ignore file that keeps runtime state out for
-      // good — the factory-setup omission that created the modelwars shape.
+      // good — the factory-setup omission that created the tracked-runtime-state shape.
       const addedIgnore = stampFactoryGitignore(project);
       if (addedIgnore.length) {
         g(["add", "--", ".factory/.gitignore"]);
@@ -1388,7 +1388,7 @@ const collectSchedulers = () => {
   const found = { systemd: [], launchd: [], cron: [] };
   // Path-boundary match everywhere, same rule as the cron matcher below:
   // /a/app must never claim /a/app2's artifacts — a substring match would
-  // let --uninstall delete a sibling factory's units (the melkaia-twins
+  // let --uninstall delete a sibling factory's units (the sibling-factories
   // class). Every artifact carries the path followed by whitespace, a
   // quote, an XML tag, or end-of-line — never another path character.
   const projectRef = new RegExp(`${project.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?=[\\s"'<]|$)`, "m");
@@ -1730,7 +1730,7 @@ const runDoctor = () => {
     }
     // Runtime state must never be tracked: it is machine-only (and in the
     // meta worktree, a log SYMLINK a pushed commit would loop the fleet on).
-    // The modelwars shape (2026-07-11) — no ignore file, log/ + plan.json
+    // The tracked-runtime-state shape (fleet, 2026-07-11) — no ignore file, log/ + plan.json
     // committed. Tracked state = fail; a merely missing/partial ignore file
     // = scaffold drift migrate stamps (warn, so a healthy-but-unstamped
     // fleet project still runs its windows).
@@ -1771,7 +1771,7 @@ const runDoctor = () => {
   }
 
   // 15. auto-merge needs CI — with no checks, the gate merges on nothing
-  //     (witchhat 2026-07-07: 12 sessions merged into dev totally ungated).
+  //     (fleet incident 2026-07-07: 12 sessions merged into dev totally ungated).
   if ((cfg.autonomy ?? "").startsWith("auto-merge") || cfg.autonomy === "milestone-gates") {
     const wf = path.join(project, ".github", "workflows");
     const has = fs.existsSync(wf) && fs.readdirSync(wf).some((f) => /\.ya?ml$/.test(f));
@@ -2277,7 +2277,7 @@ const boardInit = () => {
   // Re-init over the SAME board must keep the tracked-items map — clobbering
   // it orphans every existing card: the next sync re-creates them all as
   // duplicates and reports the originals as a bogus human board-delta
-  // (adoratio got 58 phantom cards this way, 2026-07-12). A different board
+  // (one fleet board got 58 phantom cards this way, 2026-07-12). A different board
   // starts fresh: the old item ids belong to the old project.
   const prev = readJson(boardPath);
   const keepItems = prev?.projectId === proj.id;
@@ -2377,7 +2377,7 @@ const syncBoard = (why) => {
       const cur = byItemId.get(rec.itemId);
       // Inbound: board differs both from what we last pushed AND from the
       // backlog — MAYBE a human dragged the card. Projects reads are
-      // eventually consistent (NOTES item 31: witchhat T-022 earned three
+      // eventually consistent (NOTES item 31: fleet task T-022 earned three
       // phantom "dragged back to todo" issues from one stale item-list),
       // so a single observation proves nothing: hold the restore, remember
       // what we saw, and only report a human move when the SAME value is
@@ -2724,7 +2724,7 @@ const landMerge = async ({ pr, view, taskId }) => {
   const head = view.headRefName;
   // A blocked task's PR may still land (design docs, partial work), but the
   // merge must not overwrite `blocked` with `done` — the needs-human
-  // question is still open (adoratio T-032, 2026-07-07).
+  // question is still open (fleet task T-032, 2026-07-07).
   const blocked = taskId && ["blocked", "needs-human"].includes(readState().tasks[taskId]?.status);
   if (blocked) log(`merge-gate: ${taskId} is parked (blocked/needs-human) — landing ${pr} without a status flip`);
   const flips = taskId && !blocked ? [{ taskId, status: "done" }] : [];
@@ -2736,7 +2736,7 @@ const landMerge = async ({ pr, view, taskId }) => {
       refreshMeta();
       git(["fetch", "origin", head], metaPath());
       // gh's PR list/view lag a just-pushed merge; the sweep once re-landed
-      // a PR its own session had merged seconds earlier (witchhat #53).
+      // a PR its own session had merged seconds earlier (fleet PR #53).
       if (gitOk(["merge-base", "--is-ancestor", `origin/${head}`, "HEAD"], metaPath())) {
         log(`merge-gate: ${pr} is already contained in ${cfg.baseBranch} — nothing to land`);
         return null;
@@ -2749,7 +2749,7 @@ const landMerge = async ({ pr, view, taskId }) => {
         else log(`merge-gate: ${pr} touches .factory/backlog — live/piloting sessions ship their own tasks' status flips; merging`);
       }
       // Deployed tooling is owned upstream — a merged local edit dies
-      // silently at the next --update (adoratio T-039 landed 67 lines in
+      // silently at the next --update (fleet task T-039 landed 67 lines in
       // driver.mjs this way). Refuse; the note tells a session to split it.
       const tooling = touched.split("\n").filter((f) =>
         f === ".factory/driver.mjs" || f.startsWith(".factory/prompts/") || f.startsWith(".factory/schedulers/") || f.startsWith(".factory/hooks/"));
@@ -2777,7 +2777,7 @@ const landMerge = async ({ pr, view, taskId }) => {
       return null; // status handled — nothing for the next session
     } catch (e) {
       // git prints "CONFLICT (content): …" on STDOUT — stderr alone misses
-      // it (rpg-solo #47 burned 3 retries + the gh fallback before this).
+      // it (fleet PR #47 burned 3 retries + the gh fallback before this).
       const msg = `${e.stdout ?? ""}\n${e.stderr ?? ""}\n${e.message ?? ""}`;
       try { git(["merge", "--abort"], metaPath()); } catch { /* no merge in progress */ }
       if (/CONFLICT|not something we can merge|conflict/i.test(msg)) {
@@ -2863,7 +2863,7 @@ const mergeGate = async ({ pr, taskId }, budgetMs = cfg.mergeGateMinutes * 60 * 
     const checks = rollupState(view.statusCheckRollup);
     if (checks === "fail") {
       // A failing PR needs a session to fix it, same as a conflicting one
-      // (adoratio #50 sat failing with no instruction to anyone).
+      // (a fleet PR, #50, sat failing with no instruction to anyone).
       log(`merge-gate: checks FAILING on ${pr} — leaving for the next session`);
       return failingNote({ pr, taskId, head: view.headRefName });
     }
@@ -2906,7 +2906,7 @@ const mergeGate = async ({ pr, taskId }, budgetMs = cfg.mergeGateMinutes * 60 * 
 
 // PR sweep (NOTES item 27): a green factory PR must not sit orphaned — not
 // until tomorrow because the cap ended the window, and not until window end
-// because it wasn't this session's own PR (rpg-solo #64/#65 waited stuck-but-
+// because it wasn't this session's own PR (fleet PRs #64/#65 waited stuck-but-
 // green until a manual kill→prep landed them). Window end and prep sweep
 // with the full gate budget; session boundaries sweep with a single no-wait
 // pass per PR (other PRs' pending checks are not worth window time — the
@@ -2975,7 +2975,7 @@ const sweepOpenPRs = async ({ waitForChecks = true, excludePr = null, context = 
 
 // Window-end/prep sweeps persist their notes: there is no next session to
 // hand them to, so the next window's first session reads carryNotes
-// (rpg-solo #47 sat CONFLICTING across windows because the sweep dropped
+// (fleet PR #47 sat CONFLICTING across windows because the sweep dropped
 // its instruction). Overwrite semantics: still-stuck PRs regenerate their
 // note every sweep; a swept-clean list clears stale notes.
 const sweepAndCarryNotes = async (context) => {
@@ -2987,7 +2987,7 @@ const sweepAndCarryNotes = async (context) => {
 };
 
 // Sessions that use docker can leave root-owned files in the scratch dir;
-// EACCES here must not kill the window (adoratio 2026-07-07 died on the
+// EACCES here must not kill the window (a fleet window 2026-07-07 died on the
 // final cleanup and skipped the board sync + lock release).
 const scratchDir = path.join(stateD, "tmp");
 const rmScratch = (context) => {
@@ -2998,7 +2998,7 @@ const rmScratch = (context) => {
 // ---------- window journal (factory-v2 O4) ----------
 // One journal-<window-ts>.jsonl per window, one line per driver step. Its
 // load-bearing job: window-end finalization runs as idempotent journaled
-// steps, so a crash halfway (the adoratio EACCES skipped board sync,
+// steps, so a crash halfway (the 2026-07-07 EACCES skipped board sync,
 // notify, and the lock release — NOTES item 33) is completed by the next
 // dev/prep run instead of silently dropped.
 // (The journal/journalFile primitives live up next to readMcpEvents:
