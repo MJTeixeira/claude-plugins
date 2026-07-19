@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Factory driver — portable (macOS/Linux/Windows), Node >= 18, zero deps.
+// Factory driver — portable (macOS/Linux; Windows is not a factory host), Node >= 18, zero deps.
 //
 //   node factory.mjs dev    --project <path>   # session loop for the daily window
 //   node factory.mjs triage --project <path>   # one session: inputs -> backlog
@@ -1454,6 +1454,13 @@ const runDoctor = () => {
     catch (e) { return { out: null, err: (String(e.stderr ?? "").trim() || e.message).split("\n")[0].slice(0, 160) }; }
   };
 
+  // 0. host platform — Windows was dropped as a factory host (2026-07-18):
+  //    speccing and live piloting stay supported there, the machine-resident
+  //    factory (schedulers, supervisor, worktree sessions) does not.
+  if (process.platform === "win32") {
+    check("fail", "host platform", "Windows is not a supported factory host — run the factory on macOS/Linux (spec + pilot on Windows stay supported)");
+  }
+
   // 1. binaries on the CURRENT path (what a manual run sees)
   const claudeBin = resolveCmd(cfg.claudeCmd);
   check(claudeBin ? "ok" : "fail", `claude on PATH`, claudeBin ?? `'${cfg.claudeCmd}' not found`);
@@ -1643,9 +1650,6 @@ const runDoctor = () => {
     } else if (decl.kind === "manual") {
       check(installed.length ? "fail" : "ok", "schedule: manual",
         installed.length ? `declared manual but ${installed.join("+")} scheduler(s) reference this project — remove them or declare the real schedule` : "no independent runs (declared)");
-    } else if (decl.kind === "schtasks") {
-      check(process.platform === "win32" ? "warn" : "fail", "schedule: schtasks",
-        process.platform === "win32" ? "declared — not auto-verified; check `schtasks /query`" : "declared schtasks on a non-Windows machine");
     } else {
       const present = installed.includes(decl.kind);
       const extras = installed.filter((k) => k !== decl.kind);
@@ -2054,7 +2058,7 @@ if (mode === "schedule") {
 
   const doDeclare = async () => {
     let decl;
-    const platformKind = { darwin: "launchd", linux: "systemd", win32: "schtasks" }[process.platform] ?? "manual";
+    const platformKind = { darwin: "launchd", linux: "systemd" }[process.platform] ?? "manual";
     if (schedOpts.gaveFlags) {
       const kind = schedOpts.kind ?? platformKind;
       if (kind === "manual") decl = { kind: "manual" };
@@ -2110,7 +2114,6 @@ if (mode === "schedule") {
     const decl = normalizeSchedule(cfg.schedule);
     if (!decl) fail('no schedule declared in machine config — run schedule --declare (or --adopt from installed units)');
     if (decl.kind === "manual") { say("schedule is manual — nothing to install (windows start by hand, on purpose)"); return; }
-    if (decl.kind === "schtasks") { say("schtasks is not auto-installed — run factory/schedulers/register-tasks.ps1 in PowerShell"); return; }
     if (!decl.modes) fail("declaration is kind-only (no times) — run schedule --declare, or schedule --adopt to import the installed units first");
     const problems = validateDeclaration(decl);
     if (problems.length) fail(`invalid schedule declaration:\n  - ${problems.join("\n  - ")}`);

@@ -166,3 +166,22 @@ test("wizard answers over piped stdin land in the machine config", (t) => {
   assert.equal(cfg.windowHours, 6);
   assert.deepEqual(cfg.schedule, { kind: "manual" });
 });
+
+test("init refuses a Windows host — factories run on macOS/Linux only", (t) => {
+  const world = makeWorld(t);
+  // Windows was dropped as a factory host (2026-07-18): speccing and live
+  // piloting stay supported there, the machine-resident factory does not.
+  const shim = path.join(world.root, "win32-shim.mjs");
+  fs.writeFileSync(shim, `Object.defineProperty(process, "platform", { value: "win32" });\n`);
+
+  const r = spawnSync(process.execPath, ["--import", shim, initPath, "--yes", "--project", world.project], {
+    encoding: "utf8",
+    timeout: 240_000,
+    env: { ...process.env, HOME: world.home },
+  });
+
+  assert.equal(r.status, 1, `stdout:\n${r.stdout}\nstderr:\n${r.stderr}`);
+  assert.match(r.stderr, /macOS\/Linux/, "must say where factories DO run");
+  assert.match(r.stderr, /spec|pilot/i, "must say what Windows still CAN do");
+  assert.equal(fs.existsSync(path.join(world.project, ".factory")), false, "must refuse before touching the repo");
+});

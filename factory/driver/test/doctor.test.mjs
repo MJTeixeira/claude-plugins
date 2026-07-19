@@ -379,3 +379,24 @@ exit 0
   assert.equal(r.code, 0, `stdout:\n${r.stdout}\nstderr:\n${r.stderr}`);
   assert.match(r.stdout, /✓ jira auth.*Marcos T/);
 });
+
+test("doctor fails on a Windows host — factories run on macOS/Linux only", (t) => {
+  const world = makeFactory(t);
+  const shim = path.join(world.root, "win32-shim.mjs");
+  fs.writeFileSync(shim, `Object.defineProperty(process, "platform", { value: "win32" });\n`);
+
+  const r = runDriver(world, "doctor", [], { nodeArgs: ["--import", shim] });
+
+  assert.notEqual(r.code, 0, `doctor must fail on win32\nstdout:\n${r.stdout}`);
+  assert.match(r.stdout, /✗ host platform.*not a supported factory host/i);
+});
+
+test("a legacy schtasks schedule declaration fails doctor — the kind is retired", (t) => {
+  const world = makeFactory(t, { config: { schedule: "schtasks" } });
+
+  const r = runDriver(world, "doctor");
+
+  assert.notEqual(r.code, 0, `stdout:\n${r.stdout}`);
+  assert.match(r.stdout, /"schtasks" is not one of/);
+  assert.doesNotMatch(r.stdout, /systemd\|cron\|launchd\|schtasks/, "schtasks must be gone from the offered kinds");
+});

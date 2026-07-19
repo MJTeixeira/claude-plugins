@@ -36,6 +36,12 @@ const fail = (msg) => {
   process.exit(1);
 };
 
+// Windows was dropped as a factory host (2026-07-18): speccing and live
+// piloting stay supported there, the machine-resident factory does not.
+if (process.platform === "win32") {
+  fail("Windows is not a supported factory host — run the factory on a macOS/Linux machine (you can still spec and pilot from Windows; see FACTORY.md)");
+}
+
 if (!fs.existsSync(path.join(FACTORY_SRC, "prompts"))) {
   fail("must run from the claude-plugins repo (or the ~/.factory/runtime clone) (factory/prompts/ not found)");
 }

@@ -139,10 +139,10 @@ export const queueSessions = (world, scenarios) => {
   }
 };
 
-export const runDriver = (world, mode, extraArgs = [], { timeoutMs = 120_000, input } = {}) => {
+export const runDriver = (world, mode, extraArgs = [], { timeoutMs = 120_000, input, nodeArgs = [] } = {}) => {
   const r = spawnSync(
     process.execPath,
-    [driverPath, mode, "--project", world.project, ...extraArgs],
+    [...nodeArgs, driverPath, mode, "--project", world.project, ...extraArgs],
     {
       encoding: "utf8",
       timeout: timeoutMs,
