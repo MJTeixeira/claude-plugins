@@ -84,7 +84,8 @@ What the plugin ships:
 The factory is a machine-resident product: config, secrets, schedule, and
 logs live under `~/.factory/` on the machine that runs it; the project repo
 carries only work data (`.factory/{spec,backlog,inbox}`). Needs a git repo
-with a GitHub remote; **factories run on macOS/Linux machines** (any OS can
+with a GitHub or Bitbucket Cloud remote (issue tracking can also route to
+Jira); **factories run on macOS/Linux machines** (any OS can
 spec and pilot — see below). The plugin ships the `spec` (multi-sitting
 product speccing + red-team pass — needs no factory machine),
 `factory-setup` (interview wizard),
@@ -132,8 +133,8 @@ node ~/.factory/runtime/factory/driver/factory.mjs doctor --project .
 
 More: [ONBOARDING.md](ONBOARDING.md) (step-by-step, config reference,
 no-chat manual path) and [factory/FACTORY.md](factory/FACTORY.md) (full
-runbook — phone dashboard, Telegram notifications, GitHub Projects board,
-autonomy levels).
+runbook — phone dashboard, Telegram notifications, GitHub Projects or Jira
+board, autonomy levels).
 
 ## License
 
