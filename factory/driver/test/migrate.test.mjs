@@ -352,6 +352,18 @@ test("migrate untracks committed runtime state and stamps .factory/.gitignore �
   assert.ok(git(world.project, "ls-files", "--", ".factory/.gitignore"), "stamped gitignore must be committed");
 });
 
+test("migrate stamps a missing .factory/README.md and commits it — teammates get the contract in-repo", (t) => {
+  const world = makeLegacyWorld(t);
+  assert.equal(fs.existsSync(path.join(world.factoryDir, "README.md")), false, "legacy world starts without it");
+
+  const r = runMigrate(world);
+
+  assert.equal(r.code, 0, `stdout:\n${r.stdout}\nstderr:\n${r.stderr}`);
+  const readme = fs.readFileSync(path.join(world.factoryDir, "README.md"), "utf8");
+  assert.match(readme, /draft pull request/i, "stamped README carries the claim convention");
+  assert.ok(git(world.project, "ls-files", "--", ".factory/README.md"), "stamped README must be committed");
+});
+
 test("migrate heals a partial .factory/.gitignore — owner lines kept, missing entries appended (PR-F)", (t) => {
   const world = makeLegacyWorld(t);
   fs.writeFileSync(path.join(world.factoryDir, ".gitignore"), "# owner comment\nowner-scratch/\n.env\nlog/\n");

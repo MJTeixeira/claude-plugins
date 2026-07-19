@@ -38,7 +38,8 @@ summary.
    assigned task is already done/merged, report `completed` (no PR) and
    stop. Otherwise: follow the `code4food-factory:backlog` skill to pick your ONE task
    (HANDOFF outranks the backlog; apply the state overlay on top of the
-   backlog files when judging eligibility).
+   backlog files when judging eligibility, and never pick a task listed in
+   the **Claimed tasks** section — a human holds it via an open PR).
 3. The moment you have your task, call `report_status` (status
    `in-progress`, the task id, one line on your plan) — if you die
    mid-session, this breadcrumb is what tells the next session where to

@@ -82,10 +82,15 @@ test("prState is a cheap state-only read — never the flaky check-rollup query"
   assert.doesNotMatch(line, /statusCheckRollup/, "gate-approval sweeps must not depend on the rollup query");
 });
 
-test("prListOpen returns the parsed open-PR rows for the sweep", () => {
-  const rows = [{ number: 5, url: "u", title: "[factory] T-001: t", headRefName: "factory/T-001" }];
+test("prListOpen returns the parsed open-PR rows for the sweep, draft flag included", () => {
+  clearCalls();
+  const rows = [{ number: 5, url: "u", title: "[factory] T-001: t", headRefName: "factory/T-001", isDraft: false },
+    { number: 6, url: "u6", title: "T-002: claimed by a human", headRefName: "anything", isDraft: true }];
   set("pr-list.out", JSON.stringify(rows));
   assert.deepEqual(forge.prListOpen(), rows);
+  // isDraft is how the sweep tells a human's claim from mergeable work —
+  // the query must actually request it.
+  assert.match(calls().find((l) => l.startsWith("pr list")), /isDraft/);
 });
 
 test("prListText returns the human-readable list untouched (repo snapshot)", () => {

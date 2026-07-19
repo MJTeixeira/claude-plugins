@@ -352,3 +352,133 @@ printf '%s\\n' '{"ts":"t","event":"report_status","taskId":"T-001","status":"blo
   const ghCalls = fs.existsSync(path.join(ghDir, "gh-calls.log")) ? fs.readFileSync(path.join(ghDir, "gh-calls.log"), "utf8") : "";
   assert.ok(!/issue/.test(ghCalls), `question leaked to the forge tracker:\n${ghCalls}`);
 });
+
+test("a draft PR naming a task claims it — plan skips it and the session prompt says who has it", (t) => {
+  const world = makeFactory(t, {
+    config: { maxSessionsPerWindow: 1 },
+    tasks: `# Epic 1
+
+## T-001: claimed by a teammate
+- Status: todo
+- Reqs: REQ-1
+- Acceptance: it works
+- Verify: true
+
+## T-002: still free
+- Status: todo
+- Reqs: REQ-1
+- Acceptance: it works
+- Verify: true
+`,
+  });
+  fs.writeFileSync(
+    path.join(world.stateDir, "plan.json"),
+    JSON.stringify({
+      generatedAt: new Date().toISOString(),
+      queue: [
+        { taskId: "T-001", model: "sonnet", effort: "low" },
+        { taskId: "T-002", model: "sonnet", effort: "low" },
+      ],
+    })
+  );
+  // The teammate's claim: an open DRAFT PR with the task id in the title —
+  // any branch name (team affordances; the convention lives in
+  // .factory/README.md and the backlog skill).
+  const ghDir = path.join(world.root, "stub-gh");
+  fs.mkdirSync(ghDir, { recursive: true });
+  fs.writeFileSync(path.join(ghDir, "pr-list.json"), JSON.stringify([
+    { number: 9, url: "https://github.com/o/r/pull/9", title: "T-001: I'm on it", headRefName: "marcos/t001", isDraft: true },
+  ]));
+  fs.writeFileSync(path.join(ghDir, "gh"), `#!/bin/sh
+case "$1 $2" in
+  "pr list") cat "${ghDir}/pr-list.json" ;;
+  "issue list") echo '[]' ;;
+  *) echo "" ;;
+esac
+exit 0
+`);
+  fs.chmodSync(path.join(ghDir, "gh"), 0o755);
+  fs.appendFileSync(path.join(world.stateDir, ".env"), `STUB_GH_DIR=${ghDir}\n`);
+  queueSessions(world, [
+    {
+      script: `mkdir -p .factory/log && cat > .factory/log/last-session.json <<'JSON'
+{"taskId": "T-002", "status": "completed", "summary": "built T-002"}
+JSON`,
+      stdout: { type: "result", subtype: "success", result: "done", total_cost_usd: 0.02, num_turns: 5, usage: { input_tokens: 10, output_tokens: 20 } },
+      exit: 0,
+    },
+  ]);
+
+  const r = runDriver(world, "dev");
+
+  assert.equal(r.code, 0, `driver exited ${r.code}\nstdout:\n${r.stdout}\nstderr:\n${r.stderr}`);
+  assert.match(r.stdout, /plan: skipping T-001 \(claimed by draft PR #9\)/);
+  assert.match(r.stdout, /session 1 starting \(plan: T-002/);
+  const inv = JSON.parse(fs.readFileSync(path.join(world.stubDir, "invocation-1.json"), "utf8"));
+  assert.match(inv.prompt, /Your task this session: T-002/);
+  assert.match(inv.prompt, /Claimed tasks[\s\S]*T-001[\s\S]*draft PR/i,
+    "the session must see the claim so self-selection also avoids it");
+});
+
+test("a READY human PR still claims its task until merged — finished-but-unmerged work is not duplicated", (t) => {
+  const world = makeFactory(t, {
+    config: { maxSessionsPerWindow: 1 },
+    tasks: `# Epic 1
+
+## T-001: ready, waiting on review
+- Status: todo
+- Reqs: REQ-1
+- Acceptance: it works
+- Verify: true
+
+## T-002: still free
+- Status: todo
+- Reqs: REQ-1
+- Acceptance: it works
+- Verify: true
+`,
+  });
+  fs.writeFileSync(
+    path.join(world.stateDir, "plan.json"),
+    JSON.stringify({
+      generatedAt: new Date().toISOString(),
+      queue: [
+        { taskId: "T-001", model: "sonnet", effort: "low" },
+        { taskId: "T-002", model: "sonnet", effort: "low" },
+      ],
+    })
+  );
+  // The teammate marked their PR ready on Friday; review waits over the
+  // weekend. The Status: done flip rides the PR and only lands at merge —
+  // until then the backlog says todo and only the open PR holds the task.
+  const ghDir = path.join(world.root, "stub-gh");
+  fs.mkdirSync(ghDir, { recursive: true });
+  fs.writeFileSync(path.join(ghDir, "pr-list.json"), JSON.stringify([
+    { number: 10, url: "https://github.com/o/r/pull/10", title: "T-001: ready, waiting on review", headRefName: "marcos/t001", isDraft: false },
+  ]));
+  fs.writeFileSync(path.join(ghDir, "gh"), `#!/bin/sh
+case "$1 $2" in
+  "pr list") cat "${ghDir}/pr-list.json" ;;
+  "issue list") echo '[]' ;;
+  *) echo "" ;;
+esac
+exit 0
+`);
+  fs.chmodSync(path.join(ghDir, "gh"), 0o755);
+  fs.appendFileSync(path.join(world.stateDir, ".env"), `STUB_GH_DIR=${ghDir}\n`);
+  queueSessions(world, [
+    {
+      script: `mkdir -p .factory/log && cat > .factory/log/last-session.json <<'JSON'
+{"taskId": "T-002", "status": "completed", "summary": "built T-002"}
+JSON`,
+      stdout: { type: "result", subtype: "success", result: "done", total_cost_usd: 0.02, num_turns: 5, usage: { input_tokens: 10, output_tokens: 20 } },
+      exit: 0,
+    },
+  ]);
+
+  const r = runDriver(world, "dev");
+
+  assert.equal(r.code, 0, `driver exited ${r.code}\nstdout:\n${r.stdout}\nstderr:\n${r.stderr}`);
+  assert.match(r.stdout, /plan: skipping T-001 \(claimed by PR #10\)/);
+  assert.match(r.stdout, /session 1 starting \(plan: T-002/);
+});

@@ -16,7 +16,7 @@ import * as path from "node:path";
 import * as os from "node:os";
 import { fileURLToPath } from "node:url";
 import { factoryKey, stateDir, writeJsonAtomic, readEnvFile } from "./paths.mjs";
-import { materializeWorkspace, isInjectedPath, factorySkillNames, stripFactorySettings, buildSessionSettings, detectStack, detectEngines, missingGitignoreEntries, stampFactoryGitignore } from "./workspace.mjs";
+import { materializeWorkspace, isInjectedPath, factorySkillNames, stripFactorySettings, buildSessionSettings, detectStack, detectEngines, missingGitignoreEntries, stampFactoryGitignore, stampFactoryReadme } from "./workspace.mjs";
 import { healConfigSchema } from "./config.mjs";
 import { SCHEDULE_KINDS, SCHEDULE_MODES, normalizeSchedule, validateDeclaration, generateUnits, parseInstalled, compareInstalled, defaultPathLine } from "./schedule.mjs";
 import { deriveFactoryStatus } from "./status.mjs";
@@ -1110,6 +1110,13 @@ if (mode === "migrate") {
         staged.push(".factory/.gitignore");
         say(`.factory/.gitignore: stamped ${addedIgnore.join(", ")}`);
       }
+      // Stamp the teammate contract file the same way (team affordances) —
+      // create-only, an owner-customized copy is never rewritten.
+      if (stampFactoryReadme(project)) {
+        g(["add", "--", ".factory/README.md"]);
+        staged.push(".factory/README.md");
+        say(".factory/README.md: stamped (the in-repo contract for teammates)");
+      }
       // driver.mjs + prompts are the v3-era stamped copies (init --update
       // used to remove them; migrate owns all legacy cleanup now).
       for (const rel of [".factory/hooks", ".factory/spec-template.md", ".factory/schedulers", "factory.yaml",
@@ -1739,6 +1746,12 @@ const runDoctor = () => {
           : missing.length ? `scaffold drift — missing ${missing.join(", ")}; run factory.mjs migrate to stamp it`
             : "covers the runtime state");
     }
+    // The teammate contract file (team affordances): its absence only costs
+    // discoverability, never a window — drift migrate stamps.
+    check(fs.existsSync(path.join(dataDir, "README.md")) ? "ok" : "warn", ".factory/README.md",
+      fs.existsSync(path.join(dataDir, "README.md"))
+        ? "in-repo teammate contract present"
+        : "scaffold drift — teammates have no in-repo contract; run factory.mjs migrate to stamp it");
   } else check("skip", "git contract", "not a git repo");
 
   // 14. backlog format — the status ledger edits Status: lines mechanically,
@@ -2937,7 +2950,12 @@ const sweepOpenPRs = async ({ waitForChecks = true, excludePr = null, context = 
     log(`sweep: gh pr list failed (${firstLine(e)}) — skipping`);
     return null;
   }
-  const mine = open.filter((p) => (p.headRefName.startsWith("factory/") || p.title.startsWith("[factory]")) && p.url !== excludePr);
+  // Drafts are human task claims (team affordances) — factory sessions never
+  // open drafts, so even one on a factory/ branch is a teammate's and not the
+  // gate's to touch (merging a claim would ship half-done work).
+  const claimed = open.filter((p) => p.isDraft && (p.headRefName.startsWith("factory/") || p.title.startsWith("[factory]")));
+  for (const p of claimed) log(`${context} sweep: #${p.number} is a draft — a human's claim, leaving it alone`);
+  const mine = open.filter((p) => !p.isDraft && (p.headRefName.startsWith("factory/") || p.title.startsWith("[factory]")) && p.url !== excludePr);
   if (!mine.length) return [];
   log(`${context} sweep: ${mine.length} open factory PR(s)`);
   const deadline = Date.now() + cfg.mergeGateMinutes * 60 * 1000;
@@ -3215,18 +3233,47 @@ while (true) {
   });
 
   const sessionLog = path.join(logDir, `dev-${nowStamp()}.out`);
+  // Human PRs are task claims (team affordances): a teammate's open PR with
+  // the task id in its title reserves that task — draft while they work, and
+  // STILL once marked ready: their Status: done flip rides the PR and only
+  // lands at merge, so until then the backlog says todo and only the open PR
+  // holds the task (review can take days against nightly windows). Factory-
+  // branded non-drafts are the driver's own work — the status ledger already
+  // settles those (a draft on a factory/ branch is a human's: sessions never
+  // open drafts). Re-read every session — claims come and go mid-window.
+  // Unreadable list = no claim info, never a stopped window (the human's
+  // draft still protects the task at merge time: the sweep skips drafts).
+  const claims = new Map();
+  try {
+    for (const p of forge.prListOpen()) {
+      const factoryOwn = !p.isDraft && (p.headRefName.startsWith("factory/") || p.title.startsWith("[factory]"));
+      const id = factoryOwn ? null : p.title.match(/T-[\w-]+/)?.[0];
+      if (id && !claims.has(id)) claims.set(id, { number: p.number, draft: p.isDraft });
+    }
+  } catch (e) {
+    log(`claims: pr list failed (${firstLine(e)}) — proceeding without claim info`);
+  }
   // planIdx is per-window but plan.json lives until triage rewrites it, so
   // entries settled since it was written (done via an earlier window's merge,
   // blocked awaiting a human) would each burn a session re-verifying (NOTES
-  // item 43). Skip them; a fully-settled plan falls back to self-selection
-  // like an exhausted one.
+  // item 43). Skip them — and claimed entries — a fully-settled plan falls
+  // back to self-selection like an exhausted one.
   if (plan) {
     const settled = new Map(effectiveTasks().map((t) => [t.id, t.status]));
     while (planIdx < plan.length) {
       const st = settled.get(plan[planIdx].taskId);
-      if (st !== "done" && st !== "blocked" && st !== "needs-human") break;
-      log(`plan: skipping ${plan[planIdx].taskId} (backlog says ${st})`);
-      planIdx += 1;
+      if (st === "done" || st === "blocked" || st === "needs-human") {
+        log(`plan: skipping ${plan[planIdx].taskId} (backlog says ${st})`);
+        planIdx += 1;
+        continue;
+      }
+      if (claims.has(plan[planIdx].taskId)) {
+        const c = claims.get(plan[planIdx].taskId);
+        log(`plan: skipping ${plan[planIdx].taskId} (claimed by ${c.draft ? "draft " : ""}PR #${c.number})`);
+        planIdx += 1;
+        continue;
+      }
+      break;
     }
   }
   const entry = plan?.[planIdx] ? { ...plan[planIdx] } : null;
@@ -3258,6 +3305,9 @@ while (true) {
   {
     const overlay = stateOverlayNote();
     if (overlay) extra += `\n\n## Driver state overlay (runtime statuses — authoritative over backlog files)\n\n${overlay}\n`;
+  }
+  if (claims.size) {
+    extra += `\n\n## Claimed tasks (a human holds each via an open PR — NOT eligible, even if the backlog says todo)\n\n${[...claims].map(([id, c]) => `- ${id} — ${c.draft ? "draft " : ""}PR #${c.number}`).join("\n")}\n`;
   }
   nextSessionNote = null;
   const { exitCode, timedOut, mcpEventsPath } = await runSession({

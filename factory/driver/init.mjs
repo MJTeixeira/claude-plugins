@@ -22,7 +22,7 @@ import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import * as readline from "node:readline/promises";
 import { stateDir, writeJsonAtomic } from "./paths.mjs";
-import { detectStack, stampFactoryGitignore } from "./workspace.mjs";
+import { detectStack, stampFactoryGitignore, stampFactoryReadme } from "./workspace.mjs";
 import { PLATFORM_SCHEDULER, DEFAULTS, buildConfig } from "./config.mjs";
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
@@ -137,6 +137,10 @@ const step_workdata = () => {
   // 2026-07-11). Rides a normal commit with the rest of the work data.
   if (stampFactoryGitignore(project).length) done(".factory/.gitignore (keeps runtime state out of commits)");
   else skip(".factory/.gitignore (already covers the runtime state)");
+  // The teammate contract file: non-skillset devs get the rules — who edits
+  // what, the draft-PR task claim — from inside the repo.
+  if (stampFactoryReadme(project)) done(".factory/README.md (the in-repo contract for teammates)");
+  else skip(".factory/README.md (exists — kept as-is)");
 };
 
 // Config and secrets are MACHINE state: they live under

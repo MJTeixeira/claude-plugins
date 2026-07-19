@@ -234,3 +234,29 @@ test("the owner merging a parked human-gated PR flips the task done at the next 
   assert.match(epic, /- Status: done/,
     "the owner's merge is the approval — the sweep must close the loop mechanically");
 });
+
+test("a draft PR is a human's task claim — the sweep leaves it alone, never gates or merges it", (t) => {
+  const world = makeFactory(t, {
+    config: { autonomy: "auto-merge-dev", mergeGateMinutes: 0.1, maxSessionsPerWindow: 1 },
+  });
+  // A teammate claimed T-002 by opening a draft PR (team affordances). Even
+  // on a factory/ branch with green checks it is not the gate's to touch —
+  // factory sessions never open drafts, so any draft is a human's.
+  installGateGh(world, {
+    prList: [{ number: 6, url: "https://github.com/o/r/pull/6", title: "[factory] T-002: claimed rework", headRefName: "factory/T-002", isDraft: true }],
+    prView: {
+      state: "OPEN", number: 6, title: "[factory] T-002: claimed rework",
+      headRefName: "factory/T-002", mergeable: "MERGEABLE",
+      statusCheckRollup: [{ status: "COMPLETED", conclusion: "SUCCESS" }],
+    },
+  });
+  queueSessions(world, [
+    { script: report({ taskId: null, status: "no-tasks", summary: "n" }), stdout: RESULT, exit: 0 },
+  ]);
+
+  const r = runDriver(world, "dev");
+
+  assert.equal(r.code, 0, `driver exited ${r.code}\nstdout:\n${r.stdout}\nstderr:\n${r.stderr}`);
+  assert.doesNotMatch(r.stdout, /merged https/, "a draft claim must never merge");
+  assert.doesNotMatch(r.stdout, /1 open factory PR/, "a draft claim is not the sweep's work");
+});

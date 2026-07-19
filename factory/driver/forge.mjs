@@ -10,7 +10,10 @@
 //   kind                    "github" | ...
 //   bin                     binary the doctor/preflight PATH checks look for
 //   prListText()            human-readable open-PR list for the repo snapshot
-//   prListOpen()            [{number, url, title, headRefName}]
+//   prListOpen()            [{number, url, title, headRefName, isDraft}] —
+//                           isDraft is how the driver tells a human's task
+//                           claim (draft PR, team affordances) from
+//                           mergeable factory work
 //   prView(pr)              {state, number, title, headRefName, mergeable,
 //                            statusCheckRollup: [{conclusion|state}]}
 //   prState(pr)             "OPEN" | "MERGED" | "CLOSED" — cheap state-only
@@ -60,7 +63,7 @@ const githubForge = ({ project, env = {} }) => {
     // stderr passthrough (the failure reason lands in the driver log).
     prListText: () =>
       execFileSync("gh", ["pr", "list", "--state", "open", "--limit", "10"], { cwd: project, env: { ...process.env, ...env }, timeout: 30_000, encoding: "utf8" }),
-    prListOpen: () => jsonOut(["pr", "list", "--state", "open", "--json", "number,url,title,headRefName", "--limit", "30"]),
+    prListOpen: () => jsonOut(["pr", "list", "--state", "open", "--json", "number,url,title,headRefName,isDraft", "--limit", "30"]),
     prView: (pr) => jsonOut(["pr", "view", pr, "--json", "state,number,title,headRefName,mergeable,statusCheckRollup"]),
     prState: (pr) => jsonOut(["pr", "view", pr, "--json", "state"]).state,
     prMerge: (pr) => { out(["pr", "merge", pr, "--merge"]); },

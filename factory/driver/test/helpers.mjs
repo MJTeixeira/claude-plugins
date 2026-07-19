@@ -70,6 +70,9 @@ exit 0
   // `log` unslashed: it must also match the meta worktree's log SYMLINK —
   // `log/` matches only directories, and a committed symlink loops the fleet.
   fs.writeFileSync(path.join(f, ".gitignore"), ".env\nlog\ntmp/\nplan.json\nboard.json\nSTOP\n");
+  // Healthy migrated factories carry the teammate contract file (team
+  // affordances) — doctor treats a missing one as scaffold drift.
+  fs.writeFileSync(path.join(f, "README.md"), "# Factory work data (test fixture)\n");
   fs.mkdirSync(path.join(project, ".claude"), { recursive: true });
   fs.writeFileSync(
     path.join(project, ".claude", "settings.json"),
