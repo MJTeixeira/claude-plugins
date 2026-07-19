@@ -424,11 +424,41 @@ service, `factory-onfailure@.service`) live in `factory/schedulers/`.
 - **Auth note**: each machine needs `claude` logged in (subscription) or
   `ANTHROPIC_API_KEY` in `<state>/.env`. `gh` needs `GH_TOKEN` (no
   interactive login required).
+- **Forge** (`config.json → forge`, default `"github"`): set
+  `"bitbucket"` for a Bitbucket Cloud repo. Needs `curl` on PATH and
+  `BITBUCKET_EMAIL` + `BITBUCKET_API_TOKEN` in `<state>/.env` (Atlassian
+  API token; the basic-auth username for API calls is the account EMAIL,
+  not the Bitbucket username). Bitbucket deltas, all by design: the
+  GitHub Projects board needs a github forge (doctor warns if
+  `board.github` is set; the Jira board below works on any forge),
+  merge conflicts
+  surface at the gate's local merge (the API has no conflict pre-check),
+  needs-human questions file into the repo's NATIVE issue tracker unless
+  the Jira tracker below is configured, and dashboard check-chips read
+  "none" until Pipelines statuses are wired. Sessions and the `finishing`
+  skill are forge-neutral (Bitbucket REST wording rides the prompts) — a
+  Bitbucket factory is end-to-end, pending its first live pilot.
+- **Tracker** (`config.json → tracker`, default the forge's own tracker;
+  the legacy value `"github"` means the same): set `"jira"` to route
+  needs-human questions and the `[factory] daily log` to a Jira Cloud
+  project instead — for repos whose native tracker is off (the netbr
+  shape). Also needs `"jiraProject": "<KEY>"` in `config.json` and
+  `JIRA_BASE_URL` + `JIRA_EMAIL` + `JIRA_API_TOKEN` in `<state>/.env`
+  (Atlassian API token, same three keys as the Jira report mirror);
+  doctor checks the keys and live-probes the auth. The driver files
+  questions there (issue type Task), triage reads answers there (close
+  the Jira issue with an answer, as on GitHub), and the dashboard's
+  needs-human pill and daily-log link follow. PRs stay on the forge
+  either way. In a SHARED Jira project, `"jiraEpic": "<KEY>"` anchors
+  everything under one epic — tracker issues are created as its children
+  and scans never leave it (see the Jira board bullet below).
 
 ## Feeding it input (any time)
 
 - **GitHub** (canonical): file issues; comment on `[factory]` PRs; answer
   `needs-human` issues and close them. Next triage folds everything in.
+  On a `tracker: "jira"` factory the same loop runs in the Jira project:
+  answer `[factory] question:` issues there and resolve them.
 - **Notion / Jira mirrors**: enable in `config.json → mirrors` + tokens in
   `<state>/.env`. Notion needs the official Notion MCP server in the project's
   `.mcp.json` with `NOTION_TOKEN` (internal integration token — OAuth does
@@ -451,6 +481,27 @@ service, `factory-onfailure@.service`) live in `factory/schedulers/`.
   the move is recorded for triage to judge while the factory's status is
   restored (factory wins on status, humans win on new work and priority).
   Full design: `specs/github-projects-sync.md`.
+- **Jira board** (opt-in, two-way — the Jira twin of the Projects board,
+  works on ANY forge): set `"board": {"jira": true}` + `"jiraProject"`
+  (and `JIRA_*` keys in `<state>/.env`, same as the tracker), then run
+  `sync-board --init` — it maps the backlog status vocabulary onto the
+  project's REAL workflow columns by name (loudly listing unmapped ones;
+  add columns in Jira's UI and re-run --init to pick them up — the driver
+  never edits workflows) and caches the map in `<state>/jira-board.json`.
+  Task cards are plain Task issues (`T-xxx — title`, labels
+  `factory-task` + `epic:<name>`), moved via real workflow transitions at
+  the same sync points as the GitHub board. Inbound works the same too:
+  a human-filed issue in scope is captured into
+  `.factory/inbox/board-delta.md` and labeled `factory-captured` (Jira
+  issues are NEVER deleted — triage closes the original with a comment
+  naming the new task); a dragged card is reported after two consecutive
+  sightings and the factory's status restored. Pruned tasks get
+  `factory-archived`. **Shared ISC project?** Set `"jiraEpic": "<KEY>"`
+  and the factory stays inside that epic: every card and tracker issue is
+  created under it and every scan is scoped to its children — the rest of
+  the project is invisible to the factory. (One anchor epic for now;
+  mapping backlog epics onto multiple Jira epics is deliberately
+  deferred.)
 
 ## Monitoring & control
 

@@ -73,8 +73,23 @@ If the user asked for a PR (or already approved it in the plan):
 ```sh
 git add <files> && git commit
 git push -u origin <branch>
-gh pr create --title "..." --body "..."
 ```
+
+then open the PR per the forge (`git remote get-url origin`):
+
+- **GitHub**: `gh pr create --title "..." --body "..."`
+- **Bitbucket Cloud**: REST —
+  `echo "user = \"$BITBUCKET_EMAIL:$BITBUCKET_API_TOKEN\"" | curl -sS -K -
+  -X POST -H "Content-Type: application/json" --data '{"title": "...",
+  "description": "...", "source": {"branch": {"name": "<branch>"}},
+  "destination": {"branch": {"name": "<target branch>"}}}'
+  https://api.bitbucket.org/2.0/repositories/<workspace>/<slug>/pullrequests`
+  (workspace/slug from the origin URL; keys are an Atlassian API token —
+  the username is the account EMAIL — and ride stdin via `-K -`, never
+  `-u`: argv is visible to every process on the host. Always set
+  `destination`; omitted, Bitbucket targets the repo's main branch.)
+  Keys not in the env? Push, then give the user the create-PR link instead:
+  `https://bitbucket.org/<workspace>/<slug>/pull-requests/new?source=<branch>`
 
 Commit subject: `<area>: <imperative summary>`, ≤ 72 chars, matching the
 repo's existing style (`git log --oneline -10`); body only when the why
@@ -83,8 +98,10 @@ isn't visible in the diff.
 PR body: what/why/how-verified in ~20 lines. No boilerplate branding. Land
 before polish — a mergeable PR now beats prose later.
 
-Then check CI ONCE with `gh pr checks <pr>`. If it fails, fix and push. If
-it's still pending, report the PR URL and stop — do not poll in a loop; the
-user can ask you to check later.
+Then check CI ONCE — `gh pr checks <pr>`, or on Bitbucket
+`GET .../pullrequests/<id>/statuses` (empty = the repo has no CI; that's a
+pass, not a pending). If it fails, fix and push. If it's still pending,
+report the PR URL and stop — do not poll in a loop; the user can ask you to
+check later.
 
 If the user hasn't asked for a commit/PR, stop after step 3 and report status.

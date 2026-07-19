@@ -15,11 +15,14 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
 import { fileURLToPath } from "node:url";
-import { factoryKey, stateDir, writeJsonAtomic } from "./paths.mjs";
+import { factoryKey, stateDir, writeJsonAtomic, readEnvFile } from "./paths.mjs";
 import { materializeWorkspace, isInjectedPath, factorySkillNames, stripFactorySettings, buildSessionSettings, detectStack, detectEngines, missingGitignoreEntries, stampFactoryGitignore } from "./workspace.mjs";
 import { healConfigSchema } from "./config.mjs";
 import { SCHEDULE_KINDS, SCHEDULE_MODES, normalizeSchedule, validateDeclaration, generateUnits, parseInstalled, compareInstalled, defaultPathLine } from "./schedule.mjs";
 import { deriveFactoryStatus } from "./status.mjs";
+import { createForge, createTracker } from "./forge.mjs";
+import { jiraTracker } from "./jira.mjs";
+import { jiraBoardInit, syncJiraBoard } from "./jira-board.mjs";
 
 // The checkout this driver runs from IS the runtime (deployed machines:
 // ~/.factory/runtime, gated by deploy-runtime.mjs) — session tooling is
@@ -97,19 +100,6 @@ const loadConfig = (stateRoot) => {
   return { ...CONFIG_DEFAULTS, ...JSON.parse(fs.readFileSync(p, "utf8")) };
 };
 
-// .factory/.env: KEY=VALUE lines, # comments. No expansion.
-const loadEnvFile = (factoryDir) => {
-  const p = path.join(factoryDir, ".env");
-  const env = {};
-  if (!fs.existsSync(p)) return env;
-  for (const line of fs.readFileSync(p, "utf8").split("\n")) {
-    const t = line.trim();
-    if (!t || t.startsWith("#")) continue;
-    const eq = t.indexOf("=");
-    if (eq > 0) env[t.slice(0, eq).trim()] = t.slice(eq + 1).trim();
-  }
-  return env;
-};
 
 const readJson = (p) => {
   try { return JSON.parse(fs.readFileSync(p, "utf8")); } catch { return null; }
@@ -317,7 +307,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // Cheap deterministic snapshot so a session after an unreported one lands
 // the leftovers instead of spending paid turns re-discovering what happened.
-const repoSnapshot = ({ project, env }) => {
+const repoSnapshot = ({ project, env, forge }) => {
   const run = (cmd, args) => {
     try {
       return execFileSync(cmd, args, { cwd: project, env: { ...process.env, ...env }, timeout: 30_000, encoding: "utf8" }).trim();
@@ -325,11 +315,13 @@ const repoSnapshot = ({ project, env }) => {
       return "(unavailable)";
     }
   };
+  let prs;
+  try { prs = forge.prListText().trim() || "(none)"; } catch { prs = "(unavailable)"; }
   return [
     `current branch: ${run("git", ["branch", "--show-current"])}`,
     `working tree:\n${run("git", ["status", "--short"]) || "(clean)"}`,
     `recent commits:\n${run("git", ["log", "--oneline", "-8", "--all"])}`,
-    `open PRs:\n${run("gh", ["pr", "list", "--state", "open", "--limit", "10"]) || "(none)"}`,
+    `open PRs:\n${prs}`,
   ].join("\n\n");
 };
 
@@ -985,7 +977,7 @@ const preflight = ({ project, cfg, log }) => {
         `--project ${project}  (idempotent — or run claude interactively there once).`
     );
   }
-  if (!resolveCmd("gh")) log(`preflight warning: 'gh' not on PATH — PRs and issues will fail`);
+  if (!resolveCmd(forge.bin)) log(`preflight warning: '${forge.bin}' not on PATH — PRs and issues will fail`);
   if (problems.length) {
     for (const p of problems) log(`preflight: ${p}`);
     log("preflight failed — no sessions started");
@@ -1368,7 +1360,17 @@ const cfg = loadConfig(stateD);
 // --max-sessions 1 = "run just the next task": the dev loop already ends at
 // the session cap, so overriding it is the whole feature (NOTES item 19).
 if (maxSessions) cfg.maxSessionsPerWindow = maxSessions;
-const env = loadEnvFile(stateD);
+const env = readEnvFile(stateD);
+
+// One forge instance per cwd the driver talks from (owner checkout vs meta
+// worktree — same origin, so the same repo either way). `cfg.forge` is an
+// internal key, documented the day a second forge ships.
+const makeForge = (cwd = project) => createForge({ kind: cfg.forge ?? "github", project: cwd, env });
+const forge = makeForge();
+// Where needs-human questions and the daily log live: the forge's native
+// tracker by default, a Jira project when cfg.tracker is "jira" (repos
+// whose own tracker is off — the netbr shape).
+const tracker = createTracker({ cfg, forge, env });
 
 // Every scheduler artifact on this machine that references this project,
 // by kind — shared by doctor (presence/drift checks) and the schedule mode
@@ -1448,8 +1450,8 @@ const runDoctor = () => {
   // 1. binaries on the CURRENT path (what a manual run sees)
   const claudeBin = resolveCmd(cfg.claudeCmd);
   check(claudeBin ? "ok" : "fail", `claude on PATH`, claudeBin ?? `'${cfg.claudeCmd}' not found`);
-  const ghBin = resolveCmd("gh");
-  check(ghBin ? "ok" : "fail", `gh on PATH`, ghBin ?? "not found — PRs and issues will fail");
+  const forgeBin = resolveCmd(forge.bin);
+  check(forgeBin ? "ok" : "fail", `${forge.bin} on PATH`, forgeBin ?? "not found — PRs and issues will fail");
 
   // 2. binaries under the SCHEDULER's PATH (what a timer-fired run sees —
   //    the 2026-07-04 lost-night trap: .bashrc PATH is invisible to systemd)
@@ -1461,7 +1463,7 @@ const runDoctor = () => {
     for (const u of services) {
       const m = u.text.match(/^Environment=PATH=(.+)$/m);
       if (!m) { check("warn", `systemd service PATH (${u.f})`, "no Environment=PATH= line — timer runs get the minimal systemd PATH"); continue; }
-      const missing = [cfg.claudeCmd, "gh"].filter((c) => !resolveCmd(c, m[1]));
+      const missing = [cfg.claudeCmd, forge.bin].filter((c) => !resolveCmd(c, m[1]));
       check(missing.length ? "fail" : "ok", `systemd service PATH (${u.f})`,
         missing.length ? `${missing.join(", ")} not resolvable under the unit's PATH` : "claude and gh resolve");
     }
@@ -1552,26 +1554,21 @@ const runDoctor = () => {
   const needed = [];
   if (cfg.notify?.telegram) needed.push("TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID");
   if ((cfg.mirrors ?? []).includes("notion")) needed.push("NOTION_TOKEN");
-  if ((cfg.mirrors ?? []).includes("jira")) needed.push("JIRA_BASE_URL", "JIRA_EMAIL", "JIRA_API_TOKEN");
+  if ((cfg.mirrors ?? []).includes("jira") || cfg.tracker === "jira" || cfg.board?.jira) needed.push("JIRA_BASE_URL", "JIRA_EMAIL", "JIRA_API_TOKEN");
   if (needed.length) {
     const unset = needed.filter((k) => !env[k]);
     check(unset.length ? "fail" : "ok", ".factory/.env keys", unset.length ? `enabled features need: ${unset.join(", ")}` : `${needed.join(", ")} set`);
   } else check("skip", ".factory/.env keys", "no feature needs one");
 
-  // 7. gh auth + scopes
-  if (ghBin) {
-    const auth = sh("gh", ["auth", "status"]);
-    if (auth.out === null) check("fail", "gh auth", auth.err);
-    else {
-      const scopes = auth.out.match(/Token scopes:\s*(.+)/)?.[1];
-      if (!scopes) check("ok", "gh auth", "authenticated (scopes not listed — fine-grained/oauth token)");
-      else {
-        const need = ["repo", ...(cfg.board?.github ? ["project"] : [])];
-        const missing = need.filter((s) => !scopes.includes(`'${s}'`) && !scopes.includes(s));
-        check(missing.length ? "fail" : "ok", "gh auth scopes", missing.length ? `missing ${missing.join(", ")} — gh auth refresh -s ${missing.join(" -s ")}` : scopes.trim());
-      }
-    }
-  } else check("skip", "gh auth", "gh not installed");
+  // 7. forge auth (+ scopes when the token lists them)
+  if (forgeBin) for (const r of forge.authCheck({ wantBoard: !!cfg.board?.github })) check(r.level, r.name, r.detail);
+  else check("skip", `${forge.bin} auth`, `${forge.bin} not installed`);
+  // A non-native tracker has its own auth surface (jira: env keys, project
+  // key, live probe) — the forge rows above don't cover it. A Jira BOARD
+  // needs the same surface even when the tracker is native, but never
+  // duplicate the rows when both point at Jira.
+  if (tracker !== forge) for (const r of tracker.authCheck()) check(r.level, r.name, r.detail);
+  else if (cfg.board?.jira) for (const r of jiraTracker({ cfg, env }).authCheck()) check(r.level, r.name, r.detail);
 
   // 8. timers active + linger (Linux)
   if (process.platform === "linux" && resolveCmd("systemctl")) {
@@ -2210,13 +2207,13 @@ if (scheduled) {
 // ---------- board sync, outbound (NOTES item 20) ----------
 // Mirrors the backlog to a GitHub Projects v2 board — deterministic driver
 // code, no model tokens, backlog markdown stays the source of truth.
-// Same rule as notify: sync failures log and never affect the run. Lives
-// in this file because projects run a single-file copy of the driver.
+// Same rule as notify: sync failures log and never affect the run.
+// GitHub-only by design: it rides the github forge's escape hatch, never
+// the forge contract (a non-GitHub forge simply has no board).
 
 const boardPath = path.join(stateD, "board.json");
-const ghOut = (args) =>
-  execFileSync("gh", args, { cwd: project, env: { ...process.env, ...env }, timeout: 60_000, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
-const ghJsonOut = (args) => JSON.parse(ghOut(args));
+const ghOut = (args) => forge.github.out(args);
+const ghJsonOut = (args) => forge.github.jsonOut(args);
 
 const taskBody = (t) =>
   [t.model || t.effort ? `Model: ${t.model ?? "?"} · Effort: ${t.effort ?? "?"}` : null, ...(t.links ?? [])]
@@ -2297,8 +2294,41 @@ const draftIds = (board) => {
   return map;
 };
 
+// Jira twin (jira-board.mjs): same call sites, same never-affect-the-run
+// rule. The module returns the delta; the inbox write + meta commit happen
+// here because they are meta-worktree machinery.
+const syncJiraBoardGlue = (why) => {
+  try {
+    const r = syncJiraBoard({ jira: jiraTracker({ cfg, env }), stateD, tasks: effectiveTasks(), log });
+    if (!r || (!r.newcomers.length && !r.humanMoves.length)) return;
+    const inboxDir = path.join(runtimeFactoryDir(), "inbox");
+    fs.mkdirSync(inboxDir, { recursive: true });
+    const deltaPath = path.join(inboxDir, "board-delta.md");
+    const lines = [];
+    if (!fs.existsSync(deltaPath)) lines.push("# Board delta — human edits on the board (generated by sync-board)");
+    lines.push(`\n## ${new Date().toISOString()} (${why})`);
+    for (const n of r.newcomers) {
+      lines.push(`\n### New Jira issue: ${n.key} — ${n.summary}`);
+      lines.push(`_(read its description via the Jira REST API, add it to the backlog as a task per the backlog skill — or reject with a reason in the daily log — then close ${n.key} with a comment naming the task id. The issue is labeled factory-captured and stays on the board until you do.)_`);
+    }
+    for (const m of r.humanMoves) {
+      lines.push(`\n### Human move: ${m.taskId} dragged to \`${m.boardStatus}\` (backlog says \`${m.backlogStatus}\`)`);
+      lines.push(m.restored
+        ? "_(seen on two consecutive syncs, so probably real — factory status restored on the board; judge the intent: a done task dragged back usually means a re-open request → new bug task; when in doubt ask via open_question. If the owner denies moving it, treat as a board glitch and drop it.)_"
+        : "_(seen on two consecutive syncs, so probably real — the factory could NOT move it back (no transition or no mapped column), so the card stays where the human put it; judge the intent AND reconcile: either the backlog status or the Jira workflow needs to change. When in doubt ask via open_question.)_");
+    }
+    fs.appendFileSync(deltaPath, lines.join("\n") + "\n");
+    commitMetadata(`jira board delta (${why}): ${r.newcomers.length} new issue(s), ${r.humanMoves.length} human move(s)`);
+    log(`jira board delta: ${r.newcomers.length} new issue(s), ${r.humanMoves.length} human move(s) → inbox/board-delta.md (committed)`);
+  } catch (e) {
+    log(`jira board sync failed (${String(e.message).split("\n")[0]}) — continuing`);
+  }
+};
+
 const syncBoard = (why) => {
+  if (cfg.board?.jira) syncJiraBoardGlue(why);
   if (!cfg.board?.github) return;
+  if (!forge.github) { log(`board sync: skipped — board.github is set but the forge is ${forge.kind} (the GitHub board needs a github forge; a Jira board via "board": {"jira": true} works on any forge)`); return; }
   const board = readJson(boardPath);
   if (!board) { log("board sync: no board.json — run sync-board --init once"); return; }
   try {
@@ -2425,9 +2455,12 @@ const syncBoard = (why) => {
 };
 
 if (mode === "sync-board") {
-  if (!cfg.board?.github) fail('config.json does not enable the board — add "board": {"github": true}');
-  if (init) boardInit();
-  else {
+  if (!cfg.board?.github && !cfg.board?.jira) fail('config.json does not enable a board — add "board": {"github": true} or {"jira": true}');
+  if (cfg.board?.github && !forge.github) fail(`the GitHub board needs a github forge — this factory's forge is ${forge.kind}; use "board": {"jira": true} instead`);
+  if (init) {
+    if (cfg.board?.github) boardInit();
+    if (cfg.board?.jira) jiraBoardInit({ jira: jiraTracker({ cfg, env }), stateD, say: (m) => process.stdout.write(m + "\n") });
+  } else {
     refreshMeta(); // syncBoard reads the backlog from the meta worktree
     syncBoard("manual");
   }
@@ -2473,13 +2506,13 @@ if (mode === "promote") {
 }
 
 // ---------- needs-human questions (factory-v2 O2, Decision 1) ----------
-// Sessions ask via the open_question MCP tool; the DRIVER files the GitHub
+// Sessions ask via the open_question MCP tool; the DRIVER files the tracker
 // issue — one mechanical writer instead of three sessions filing the same
-// question (NOTES item 28). Dedupe by normalized title against the OPEN
-// issues from a plain `gh issue list` (never --search: the search index
-// lags, item 31's lesson) — a closed question asked again is a new issue on
-// purpose (the answer didn't take, or it recurred). gh failures queue in
-// state.json and retry at the next session end.
+// question (NOTES item 28). Dedupe by normalized title against a plain
+// open-issue list (never a search index: it lags, item 31's lesson) — a
+// closed question asked again is a new issue on purpose (the answer didn't
+// take, or it recurred). Filing failures queue in state.json and retry at
+// the next session end.
 
 const QUESTION_PREFIX = "[factory] question: ";
 const normTitle = (s) => String(s).toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
@@ -2494,7 +2527,7 @@ const processQuestions = async (newQuestions, context) => {
   if (!queue.length) return filed;
   s.pendingQuestions = [];
   const attribution = (q) => `— asked by a factory ${context} session${q.taskId ? ` working ${q.taskId}` : ""} on ${today()}. Close this issue with an answer; triage reads closed answers daily.`;
-  let openByTitle = null; // one gh round-trip, only when there is a queue
+  let openByTitle = null; // one tracker round-trip, only when there is a queue
   const seen = new Set(); // same title twice in one batch = a session retrying itself
   for (const q of queue) {
     const key = normTitle(q.title);
@@ -2503,18 +2536,18 @@ const processQuestions = async (newQuestions, context) => {
     try {
       if (!openByTitle) {
         openByTitle = new Map();
-        for (const i of ghJsonOut(["issue", "list", "--state", "open", "--limit", "100", "--json", "number,title,url"])) {
+        for (const i of tracker.issueListOpen()) {
           if (i.title.startsWith(QUESTION_PREFIX)) openByTitle.set(normTitle(i.title.slice(QUESTION_PREFIX.length)), { number: i.number, url: i.url ?? null });
         }
       }
       const existing = openByTitle.get(key);
       if (existing) {
-        ghOut(["issue", "comment", String(existing.number), "--body", `${q.body || "(same question, no new context)"}\n\n${attribution(q)}`]);
+        tracker.issueComment(existing.number, `${q.body || "(same question, no new context)"}\n\n${attribution(q)}`);
         journal("question:comment", "done", `#${existing.number} ${q.title.slice(0, 80)}`);
         log(`question: commented on open #${existing.number} — ${q.title}`);
         filed.push({ taskId: q.taskId ?? null, url: existing.url });
       } else {
-        const url = ghOut(["issue", "create", "--title", `${QUESTION_PREFIX}${q.title}`, "--body", `${q.body || "(no additional context provided)"}\n\n${attribution(q)}`]).trim();
+        const url = tracker.issueCreate({ title: `${QUESTION_PREFIX}${q.title}`, body: `${q.body || "(no additional context provided)"}\n\n${attribution(q)}` });
         const num = Number(url.match(/\/issues\/(\d+)/)?.[1]);
         if (num) openByTitle.set(key, { number: num, url });
         journal("question:filed", "done", q.title.slice(0, 80));
@@ -2741,7 +2774,7 @@ const landMerge = async ({ pr, view, taskId }) => {
   // Local landing kept failing (e.g. branch protection) — let GitHub merge
   // and queue the flip for the next driver commit.
   try {
-    ghOut(["pr", "merge", pr, "--merge"]);
+    forge.prMerge(pr);
     if (flips.length) {
       const s = readState();
       s.pendingFlips.push({ ...flips[0], ts: new Date().toISOString() });
@@ -2779,7 +2812,7 @@ const mergeGate = async ({ pr, taskId }, budgetMs = cfg.mergeGateMinutes * 60 * 
   while (true) { // always at least one pass — zero-budget callers (no-wait sweeps) still get a verdict
     let view;
     try {
-      view = JSON.parse(ghOut(["pr", "view", pr, "--json", "state,number,title,headRefName,mergeable,statusCheckRollup"]));
+      view = forge.prView(pr);
     } catch (e) {
       log(`merge-gate: gh pr view failed (${firstLine(e)}) — leaving ${pr} for the next session`);
       return null;
@@ -2840,9 +2873,9 @@ const mergeGate = async ({ pr, taskId }, budgetMs = cfg.mergeGateMinutes * 60 * 
         const applied = applyFlips([{ taskId, status: "needs-human" }]);
         if (applied.some((a) => a.startsWith(`${taskId} `))) {
           commitMetadata(`${taskId} needs-human: green PR awaits owner review`);
-          ghOut(["pr", "comment", pr, "--body",
+          forge.prComment(pr,
             `Checks are green, but ${taskId} is marked \`Gate: human\` — the factory will not auto-merge. ` +
-            `Review and merge it yourself (your merge marks the task done), or comment what to change.`]);
+            `Review and merge it yourself (your merge marks the task done), or comment what to change.`);
           journal("gate:human", "done", `${pr} (${taskId})`);
           await notify(`👀 owner review requested: ${pr} (${taskId} is human-gated)`);
         }
@@ -2877,8 +2910,7 @@ const closeOwnerMergedGates = () => {
   for (const [id, rec] of parked) {
     if (tasks.find((t) => t.id === id)?.gate !== "human") continue;
     try {
-      const view = JSON.parse(ghOut(["pr", "view", rec.pr, "--json", "state"]));
-      if (view.state !== "MERGED") continue;
+      if (forge.prState(rec.pr) !== "MERGED") continue;
       refreshMeta();
       const applied = applyFlips([{ taskId: id, status: "done" }]);
       if (applied.length) {
@@ -2900,7 +2932,7 @@ const sweepOpenPRs = async ({ waitForChecks = true, excludePr = null, context = 
   }
   let open;
   try {
-    open = ghJsonOut(["pr", "list", "--state", "open", "--json", "number,url,title,headRefName", "--limit", "30"]);
+    open = forge.prListOpen();
   } catch (e) {
     log(`sweep: gh pr list failed (${firstLine(e)}) — skipping`);
     return null;
@@ -3325,6 +3357,7 @@ while (true) {
       : end.kind === "turn-capped"
         ? "hit the max-turns cap during wrap-up"
         : "died before finishing";
+    const snapProject = isGitRepo() ? metaPath() : project;
     nextSessionNote =
       `The previous session ${reason} and never reported a settled status. ` +
       `Reconcile before picking new work: finish or hand off its task (push the branch, open the PR per ` +
@@ -3333,7 +3366,7 @@ while (true) {
         ? `Its last mid-run report (factory MCP, trustworthy): task ${mcp.inProgress.taskId ?? "?"} — ` +
           `${mcp.inProgress.summary}${mcp.inProgress.pr ? ` (PR ${mcp.inProgress.pr})` : ""}\n\n`
         : "") +
-      `Repo state right now:\n\n${repoSnapshot({ project: isGitRepo() ? metaPath() : project, env })}` +
+      `Repo state right now:\n\n${repoSnapshot({ project: snapProject, env, forge: makeForge(snapProject) })}` +
       (end.finalText ? `\n\nIts final output (may be mid-thought):\n\n${end.finalText.slice(0, 1500)}` : "");
     const realDeath = end.kind !== "turn-capped" || timedOut;
     if (realDeath && exitCode !== 0) {

@@ -28,9 +28,10 @@ import * as os from "node:os";
 import { execFile, execFileSync, spawn } from "node:child_process";
 import { timingSafeEqual } from "node:crypto";
 import { fileURLToPath } from "node:url";
-import { stateDir } from "./paths.mjs";
+import { stateDir, readEnvFile } from "./paths.mjs";
 import { normalizeSchedule, nextFire } from "./schedule.mjs";
 import { deriveFactoryStatus } from "./status.mjs";
+import { createForge, createTracker } from "./forge.mjs";
 
 // ---------- config: file < flags, each setting tracks its source ----------
 const CONFIG_PATH = path.join(os.homedir(), ".factory", "dashboard.json");
@@ -174,24 +175,26 @@ const usageSummary = (factoryDir) => {
   return sum;
 };
 
-// ---------- GitHub facts (via gh, background-cached) ----------
+// ---------- forge facts (via the forge adapter, background-cached) ----------
 // The 5s UI tick must never wait on the network: refresh runs on its own
-// interval and factoryState only reads the cache. Read-only gh calls.
+// interval and factoryState only reads the cache. Read-only forge calls
+// (forge.async — resolves {data|error}, never rejects).
 
 const GH_REFRESH_MS = 120_000;
 const ghCache = new Map(); // project -> { fetchedAt, error, prs, needsHuman, dailyLogUrl }
 
-const ghJson = (project, args) => new Promise((resolve) => {
-  execFile("gh", args, { cwd: project, timeout: 15_000, maxBuffer: 4 * 1024 * 1024 }, (err, stdout, stderr) => {
-    if (err) {
-      const reason = err.code === "ENOENT" ? "gh not installed"
-        : (String(stderr ?? "").trim() || err.message || "gh failed").split("\n")[0].slice(0, 120);
-      resolve({ error: reason });
-      return;
-    }
-    try { resolve({ data: JSON.parse(stdout) }); } catch { resolve({ error: "unparseable gh output" }); }
-  });
-});
+// Per-call, not cached: honors a forge/config flip without a dashboard
+// restart, same freshness rule as every other config read here. The env is
+// the project's machine-side .env (bitbucket credentials live there).
+const forgeFor = (project) => {
+  const sd = stateDir(project);
+  const cfg = readJson(path.join(sd, "config.json")) ?? {};
+  const env = readEnvFile(sd);
+  const forge = createForge({ kind: cfg.forge ?? "github", project, env });
+  // Issues (needs-human pill, daily-log link) come from the tracker — the
+  // forge itself unless cfg.tracker says jira. PRs always stay on the forge.
+  return { forge, tracker: createTracker({ cfg, forge, env }) };
+};
 
 // SUCCESS/FAILURE/… per check -> one chip per PR.
 const prChecks = (pr) => {
@@ -218,17 +221,16 @@ const gitIn = (cwd, args) => new Promise((resolve) => {
 // The dashboard reads file state from the LOCAL clone; when its base branch
 // is behind origin (a remote machine's window merged work), that picture is
 // partial and mutations could act on it. Verdict: current only when the
-// local base head CONTAINS origin's head (read via gh api — no fetch, so the
-// clone itself is never touched). Every failure is null (unknown) and the
-// guard only bites on a positive "behind" — a gh outage must not lock the
-// owner out. Accepted residual gap: a clone pulled fresh during a remote
+// local base head CONTAINS origin's head (read via the forge API — no fetch,
+// so the clone itself is never touched). Every failure is null (unknown) and
+// the guard only bites on a positive "behind" — a forge outage must not lock
+// the owner out. Accepted residual gap: a clone pulled fresh during a remote
 // mid-window still looks current.
-const cloneCurrency = async (project) => {
+const cloneCurrency = async (project, forge) => {
   const base = readJson(path.join(stateDir(project), "config.json"))?.baseBranch ?? "main";
   const localSha = await gitIn(project, ["rev-parse", base]);
   if (!localSha) return null;
-  const remote = await ghJson(project, ["api", `repos/{owner}/{repo}/branches/${base}`]);
-  const remoteSha = remote.data?.commit?.sha;
+  const remoteSha = await forge.async.remoteBranchSha(base);
   if (!remoteSha) return null;
   const behind = localSha === remoteSha ? false
     : (await gitIn(project, ["merge-base", "--is-ancestor", remoteSha, base])) === null;
@@ -237,15 +239,21 @@ const cloneCurrency = async (project) => {
 
 const refreshGh = async (project) => {
   if (!fs.existsSync(path.join(project, ".git"))) return;
-  const prs = await ghJson(project, ["pr", "list", "--state", "open",
-    "--json", "number,title,url,isDraft,headRefName,statusCheckRollup"]);
-  const issues = await ghJson(project, ["issue", "list", "--state", "open",
-    "--json", "number,title,url,labels"]);
+  let forge, tracker;
+  try {
+    ({ forge, tracker } = forgeFor(project));
+  } catch (e) {
+    // e.g. a typo'd cfg.forge — the card must show why, not silently stall
+    ghCache.set(project, { fetchedAt: new Date().toISOString(), error: String(e.message ?? e).split("\n")[0].slice(0, 120), prs: [], needsHuman: [], dailyLogUrl: null, clone: null });
+    return;
+  }
+  const prs = await forge.async.prList();
+  const issues = await tracker.async.issueList();
   const entry = {
     fetchedAt: new Date().toISOString(),
     error: prs.error ?? issues.error ?? null,
     prs: [], needsHuman: [], dailyLogUrl: null,
-    clone: await cloneCurrency(project),
+    clone: await cloneCurrency(project, forge),
   };
   if (!prs.error) {
     entry.prs = prs.data.map((p) => ({

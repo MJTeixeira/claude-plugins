@@ -225,8 +225,11 @@ this file to tune behavior — nothing here is required reading on day one.
 | `model` | `"sonnet"` | default model for sessions (also seeds `triageModel`) — individual backlog tasks can override via `Model:`/`Effort:`/`Turns:` hints |
 | `effort` | *(unset)* | default reasoning effort |
 | `mirrors` | `[]` | `["notion"]` and/or `["jira"]` status mirroring — needs tokens in `.env` |
+| `tracker` | `"github"` | the forge's own issue tracker; `"jira"` routes needs-human questions + the daily log to a Jira project instead (repo tracker off) — also set `jiraProject` and the `JIRA_*` keys in `.env` |
+| `jiraProject` | *(unset)* | Jira project key (e.g. `"FACT"`), required by `tracker: "jira"` and `board: {"jira": true}` |
+| `jiraEpic` | *(unset)* | anchor epic key in a SHARED Jira project — the factory creates and scans only under this epic |
 | `notify` | *(unset)* | `{"telegram": true}` for phone notifications (section 4) |
-| `board` | *(unset)* | `{"github": true}` for a GitHub Projects board (section 4) |
+| `board` | *(unset)* | `{"github": true}` for a GitHub Projects board, or `{"jira": true}` for a two-way Jira board (section 4) |
 
 Budget note: there is no per-dollar cap in Claude Code — `windowHours`,
 `maxSessionsPerWindow`, `maxTurnsPerSession`, and `sessionTimeoutMin`
@@ -241,7 +244,7 @@ file is optional):
 | `ANTHROPIC_API_KEY` | the machine has no logged-in Claude subscription |
 | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` | Telegram notifications enabled |
 | `NOTION_TOKEN` | Notion mirror enabled |
-| `JIRA_BASE_URL`, `JIRA_EMAIL`, `JIRA_API_TOKEN` | Jira mirror enabled |
+| `JIRA_BASE_URL`, `JIRA_EMAIL`, `JIRA_API_TOKEN` | Jira mirror enabled, or `tracker: "jira"` |
 
 ## 4. Optional features (all off by default)
 
@@ -263,6 +266,9 @@ file is optional):
   two-way: the factory pushes task status; cards you add or move get
   folded in at the next triage. Setup: `factory/FACTORY.md`
   ("GitHub Projects board").
+- **Jira board** — the same two-way view on a Jira project (any forge;
+  in a shared project, anchor the factory under one epic with
+  `jiraEpic`). Setup: `factory/FACTORY.md` ("Jira board").
 - **Notion / Jira mirrors** — read-mostly status copies for stakeholders:
   `config.json → mirrors` + tokens in `.env`.
 

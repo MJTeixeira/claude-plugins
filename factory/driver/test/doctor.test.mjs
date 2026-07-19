@@ -322,3 +322,36 @@ test("no machine runtime → plugin check skips (dev-checkout run)", (t) => {
   assert.equal(r.code, 0, `stdout:\n${r.stdout}\nstderr:\n${r.stderr}`);
   assert.match(r.stdout, /– code4food plugins/);
 });
+
+// ---------- jira tracker (cfg.tracker: "jira") ----------
+
+test("tracker jira without JIRA_* env keys fails doctor, naming the keys", (t) => {
+  const world = makeFactory(t, { config: { tracker: "jira", jiraProject: "FACT" } });
+
+  const r = runDriver(world, "doctor");
+
+  assert.equal(r.code, 1, `stdout:\n${r.stdout}\nstderr:\n${r.stderr}`);
+  assert.match(r.stdout, /JIRA_BASE_URL/);
+  assert.match(r.stdout, /JIRA_EMAIL/);
+  assert.match(r.stdout, /JIRA_API_TOKEN/);
+});
+
+test("tracker jira with keys probes Jira auth and reports the account", (t) => {
+  const world = makeFactory(t, { config: { tracker: "jira", jiraProject: "FACT" } });
+  fs.writeFileSync(path.join(world.root, "bin", "curl"), `#!/bin/sh
+for a in "$@"; do url="$a"; done
+case "$url" in
+  *"/rest/api/3/myself"*) cat > /dev/null; echo '{"displayName": "Marcos T"}' ;;
+  *) cat > /dev/null; echo '{}' ;;
+esac
+exit 0
+`);
+  fs.chmodSync(path.join(world.root, "bin", "curl"), 0o755);
+  fs.appendFileSync(path.join(world.stateDir, ".env"),
+    "JIRA_BASE_URL=https://acme.atlassian.net\nJIRA_EMAIL=m@example.com\nJIRA_API_TOKEN=tok\n");
+
+  const r = runDriver(world, "doctor");
+
+  assert.equal(r.code, 0, `stdout:\n${r.stdout}\nstderr:\n${r.stderr}`);
+  assert.match(r.stdout, /✓ jira auth.*Marcos T/);
+});

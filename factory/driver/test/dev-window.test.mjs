@@ -308,3 +308,47 @@ printf '%s\\n' '{"ts":"t","event":"report_status","taskId":"T-001","status":"blo
   assert.match(epic, /- Question: https:\/\/github\.com\/o\/r\/issues\/42/,
     "the filed issue must be linked on the task");
 });
+
+test("with tracker jira, a session question files to Jira and never touches the forge tracker", (t) => {
+  const world = makeFactory(t, { config: { tracker: "jira", jiraProject: "FACT" } });
+  // curl stub answers the Jira API; gh logs would betray a forge-tracker leak.
+  const ghDir = path.join(world.root, "stub-gh");
+  fs.mkdirSync(ghDir, { recursive: true });
+  fs.writeFileSync(path.join(ghDir, "gh"), `#!/bin/sh
+printf '%s\\n' "$*" >> "${ghDir}/gh-calls.log"
+echo ""
+exit 0
+`);
+  fs.chmodSync(path.join(ghDir, "gh"), 0o755);
+  fs.appendFileSync(path.join(world.stateDir, ".env"),
+    `STUB_GH_DIR=${ghDir}\nJIRA_BASE_URL=https://acme.atlassian.net\nJIRA_EMAIL=m@example.com\nJIRA_API_TOKEN=tok\n`);
+  fs.writeFileSync(path.join(world.root, "bin", "curl"), `#!/bin/sh
+printf '%s\\n' "$*" >> "${ghDir}/curl-calls.log"
+for a in "$@"; do url="$a"; done
+case "$url" in
+  *"/rest/api/3/search/jql"*) cat > /dev/null; echo '{"issues": []}' ;;
+  *"/rest/api/3/issue"*) cat > /dev/null; echo '{"key": "FACT-7"}' ;;
+  *) cat > /dev/null; echo '{}' ;;
+esac
+exit 0
+`);
+  fs.chmodSync(path.join(world.root, "bin", "curl"), 0o755);
+  queueSessions(world, [
+    {
+      script: `printf '%s\\n' '{"ts":"t","event":"open_question","title":"T-001 rig quality needs owner eyes","body":"cannot judge clips headless","taskId":"T-001"}' >> "$FACTORY_MCP_EVENTS"
+printf '%s\\n' '{"ts":"t","event":"report_status","taskId":"T-001","status":"blocked","summary":"cannot self-judge","pr":null}' >> "$FACTORY_MCP_EVENTS"`,
+      stdout: JSON.stringify({ type: "result", subtype: "success", result: "blocked", total_cost_usd: 0.02, num_turns: 5, usage: { input_tokens: 1, output_tokens: 1 } }) + "\n",
+      exit: 0,
+    },
+  ]);
+
+  const r = runDriver(world, "dev", ["--max-sessions", "1"]);
+
+  assert.equal(r.code, 0, `driver exited ${r.code}\nstdout:\n${r.stdout}\nstderr:\n${r.stderr}`);
+  const epic = fs.readFileSync(path.join(world.factoryDir, "backlog", "e1.md"), "utf8");
+  assert.match(epic, /- Status: needs-human/);
+  assert.match(epic, /- Question: https:\/\/acme\.atlassian\.net\/browse\/FACT-7/,
+    "the filed Jira issue must be linked on the task");
+  const ghCalls = fs.existsSync(path.join(ghDir, "gh-calls.log")) ? fs.readFileSync(path.join(ghDir, "gh-calls.log"), "utf8") : "";
+  assert.ok(!/issue/.test(ghCalls), `question leaked to the forge tracker:\n${ghCalls}`);
+});

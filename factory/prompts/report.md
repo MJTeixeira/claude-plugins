@@ -14,12 +14,34 @@ one honest, readable summary for humans. You do NOT implement anything.
   session died or its log is unreadable.
 - Backlog diff: `git log --since=<window start> -- .factory/backlog` plus
   current index.md counts (tasks done/in-review/blocked today).
-- Open `[factory]` PRs (`gh pr list`) and their check status.
+- Open `[factory]` PRs and their check status — `gh pr list` on a GitHub
+  origin; on Bitbucket, REST
+  (`echo "user = \"$BITBUCKET_EMAIL:$BITBUCKET_API_TOKEN\"" | curl -sS -K -
+  "https://api.bitbucket.org/2.0/repositories/<workspace>/<slug>/pullrequests?state=OPEN"`
+  — creds on stdin via `-K -`, never `-u`, argv is host-visible; per-PR
+  statuses under `.../pullrequests/<id>/statuses` — empty means the repo
+  has no CI, not pending).
 - Open `needs-human` issues (these are the asks).
 
 ## 2. Write the report
 
-Comment on the `[factory] daily log` issue (create if missing):
+Comment on the `[factory] daily log` issue (create if missing).
+
+Config `tracker: "jira"` moves that issue — and the `needs-human`
+questions you read in step 1 — to the Jira project named by `jiraProject`;
+the repo's own tracker is not used. Via REST
+(`echo "user = \"$JIRA_EMAIL:$JIRA_API_TOKEN\"" | curl -sS -K -
+"$JIRA_BASE_URL/rest/api/3/..."` — creds on stdin, never `-u`):
+find issues with `GET /search/jql?jql=<urlencoded JQL>&fields=summary,status`
+(the legacy `/search` endpoint is gone), comment with
+`POST /issue/<KEY>/comment`, create with `POST /issue` — write bodies are
+ADF documents (`{"type": "doc", "version": 1, "content": [...]}`).
+**If config sets `jiraEpic`, the project is SHARED**: append
+`AND parent = "<jiraEpic>"` to every JQL, add
+`"parent": {"key": "<jiraEpic>"}` to the fields of any issue you create
+(the daily log included), and never touch issues outside that epic.
+
+The report format:
 
 ```markdown
 ## Window report — <date>
