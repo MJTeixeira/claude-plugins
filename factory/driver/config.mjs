@@ -9,7 +9,7 @@ import { stateDir, writeJsonAtomic } from "./paths.mjs";
 import { detectStack, parseAnswerFile } from "./workspace.mjs";
 import { declarationFromAnswers } from "./schedule.mjs";
 
-export const PLATFORM_SCHEDULER = { darwin: "launchd", linux: "systemd", win32: "schtasks" };
+export const PLATFORM_SCHEDULER = { darwin: "launchd", linux: "systemd" };
 
 export const DEFAULTS = {
   stack: "node",           // node | python | rust | go | dotnet | other

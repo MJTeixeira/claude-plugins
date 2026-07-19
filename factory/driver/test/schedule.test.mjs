@@ -282,7 +282,7 @@ test("generateSupervisorUnits(launchd): a KeepAlive plist execing the runtime su
 });
 
 test("generateSupervisorUnits: kinds without a keep-alive manager produce no files, only a note", () => {
-  for (const kind of ["cron", "schtasks", "manual"]) {
+  for (const kind of ["cron", "manual"]) {
     const { files, notes } = generateSupervisorUnits(kind, SUP_CTX);
     assert.deepEqual(files, {}, kind);
     assert.ok(notes.some((n) => n.includes(kind)), `${kind}: ${notes}`);

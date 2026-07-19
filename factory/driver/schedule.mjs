@@ -11,7 +11,7 @@
 // (declaration from wizard answers), so generation and verification can
 // never drift apart.
 
-export const SCHEDULE_KINDS = ["systemd", "cron", "launchd", "schtasks", "manual"];
+export const SCHEDULE_KINDS = ["systemd", "cron", "launchd", "manual"];
 export const SCHEDULE_MODES = ["triage", "dev", "report"];
 
 // Mon-first (ISO) everywhere a human reads days; converters map to each
@@ -219,8 +219,8 @@ ${cal}
 // Supervisor daemon unit (PR-D): machine-level, one per machine, no project.
 // The OS keeps it alive (systemd Restart=always / launchd KeepAlive) — a
 // supervisor that dies silently is the exact failure it exists to prevent.
-// Only kinds with a keep-alive process manager can host it; cron/schtasks/
-// manual get a note instead of files.
+// Only kinds with a keep-alive process manager can host it; cron/manual get
+// a note instead of files.
 export const generateSupervisorUnits = (kind, ctx) => {
   const { runtimeSupervisor, nodeBin, pathLine, logDir } = ctx;
   const files = {};
