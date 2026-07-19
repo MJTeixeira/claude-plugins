@@ -153,7 +153,7 @@ export const runDriver = (world, mode, extraArgs = [], { timeoutMs = 120_000, in
       // input undefined leaves stdin closed (non-TTY, empty) — confirm
       // prompts must then abort, never hang.
       input: input ?? "",
-      env: { ...process.env, HOME: world.home, PATH: `${path.join(world.root, "bin")}:${process.env.PATH}` },
+      env: { ...process.env, HOME: world.home, PATH: `${path.join(world.root, "bin")}:${process.env.PATH}`, ...(world.extraEnv ?? {}) },
     }
   );
   return { code: r.status, stdout: r.stdout ?? "", stderr: r.stderr ?? "", signal: r.signal };
