@@ -15,28 +15,52 @@ branches, no checkouts, no commits, no merges.
 - Read the **Factory config** section at the end of this prompt (tracker,
   mirrors) — env tokens are already set. (No config file in this checkout:
   factory config lives on the machine, outside the repo.)
-- **GitHub** (`gh`, works with GH_TOKEN): new/updated issues since the last
-  triage (`gh issue list --state open`), new comments on `[factory]` PRs and
-  on `needs-human` issues. A closed `needs-human` issue with an answer =
-  a decision: unblock the task and record the answer in its Notes.
+- **Repo forge** — on GitHub via `gh` (works with GH_TOKEN); on Bitbucket
+  via REST (`echo "user = \"$BITBUCKET_EMAIL:$BITBUCKET_API_TOKEN\"" |
+  curl -sS -K - https://api.bitbucket.org/2.0/repositories/<ws>/<slug>/...`
+  — creds on stdin via `-K -`, never `-u` (argv is host-visible);
+  PRs under `/pullrequests`, comments under `/pullrequests/<id>/comments`,
+  issues under `/issues`): new/updated open issues since the last triage,
+  new comments on `[factory]` PRs and on `needs-human` issues. A closed
+  `needs-human` issue with an answer = a decision: unblock the task and
+  record the answer in its Notes.
+- **Jira tracker** (only if config `tracker: "jira"`): `needs-human`
+  questions and the daily log live in the Jira project `jiraProject`, NOT
+  the repo's tracker — apply the previous bullet's issue reading there
+  instead. Via REST (`echo "user = \"$JIRA_EMAIL:$JIRA_API_TOKEN\"" |
+  curl -sS -K -
+  "$JIRA_BASE_URL/rest/api/3/search/jql?jql=<urlencoded>&fields=summary,status"`
+  — creds on stdin, never `-u`; the legacy `/search` endpoint is gone),
+  read open `[factory] question:`
+  issues plus those closed/Done since the last triage, and their comments
+  (`GET /issue/<KEY>/comment`). A Done question with an answer = a
+  decision, exactly as on GitHub.
+  **If config sets `jiraEpic`, the project is SHARED**: append
+  `AND parent = "<jiraEpic>"` to every JQL and never read or touch
+  issues outside that epic — they belong to other teams.
 - **Notion mirror** (only if `"notion"` in mirrors): via the project's Notion
   MCP tools, check the pages named in `.factory/spec/decisions.md` or the
   config's `notionPageId` for new comments/edits.
 - **Jira mirror** (only if `"jira"` in mirrors): via REST
-  (`curl -u "$JIRA_EMAIL:$JIRA_API_TOKEN" "$JIRA_BASE_URL/rest/api/3/search?jql=..."`)
+  (`echo "user = \"$JIRA_EMAIL:$JIRA_API_TOKEN\"" | curl -sS -K -
+  "$JIRA_BASE_URL/rest/api/3/search/jql?jql=<urlencoded>&fields=summary"`)
   for new/updated issues labeled `factory`.
 - **Inbox**: every file in `.factory/inbox/` is a note from a human. Process
   each, then delete it (its content must land in the backlog or a decision
   record, never be silently dropped). `rm` is not allowlisted — delete via
   `node -e 'require("fs").rmSync(".factory/inbox/<file>")'` (`node` is),
   and never leave a processed note behind with just a marker comment.
-  - `board-delta.md` is generated: human edits on the GitHub Project board.
-    New cards → new backlog tasks (or reject with a reason in the daily
-    log). Human status moves → judge the intent — the factory already
-    restored its own status on the board, so a done task dragged back to
-    todo usually means a re-open request (new bug task); when in doubt,
-    ask via the `open_question` MCP tool instead of guessing — the driver
-    dedupes it and files/updates the GitHub issue itself.
+  - `board-delta.md` is generated: human edits on the project board
+    (GitHub Projects or Jira, per config `board`). New cards → new backlog
+    tasks (or reject with a reason in the daily log); a captured JIRA
+    issue additionally gets closed by you with a comment naming the new
+    task id (read its description via REST first — the delta only carries
+    its key and summary; the issue keeps its `factory-captured` label
+    either way). Human status moves → judge the intent — the factory
+    already restored its own status on the board, so a done task dragged
+    back to todo usually means a re-open request (new bug task); when in
+    doubt, ask via the `open_question` MCP tool instead of guessing — the
+    driver dedupes it and files/updates the tracker issue itself.
 
 ## 2. Fold into the backlog (per the `code4food-factory:backlog` skill format)
 
@@ -74,7 +98,8 @@ branches, no checkouts, no commits, no merges.
 - Answered questions → unblock tasks (`blocked → todo`, or
   `needs-human → todo` once the owner's answer is in), record decisions.
 - Safety net: a task whose PR is **merged** but whose file status lags
-  (check `gh pr list --state merged` and the **Driver state overlay** in
+  (check the merged-PR list — `gh pr list --state merged`, or on Bitbucket
+  `.../pullrequests?state=MERGED` — and the **Driver state overlay** in
   this prompt) → flip its Status line to `done`. The driver normally does
   this inside the merge commit; you are the backstop, not the norm.
 - `index.md` epic lines carry counts and durable guidance ONLY — never
@@ -87,7 +112,9 @@ branches, no checkouts, no commits, no merges.
 
 ## 3. Plan of day
 
-Comment on (or create) the tracking issue `[factory] daily log`:
+Comment on (or create) the tracking issue `[factory] daily log` — in the
+Jira project when config says `tracker: "jira"` (ADF comment bodies), on
+the repo tracker otherwise:
 what came in, what changed in the backlog, what the next window will likely
 work on (first 2-3 eligible tasks), open `needs-human` questions. If any
 tasks sit at `needs-human`, add explicit "waiting on owner: T-…" lines —

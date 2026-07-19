@@ -90,10 +90,10 @@ summary.
 - Respect the escalation rule strictly: ~3 failed attempts with no new
   information → call `open_question` with the question and your findings,
   report status `blocked`, and end the session.
-- **needs-human = `open_question`, never `gh issue create`**: the driver
-  dedupes your question against open ones and files or updates the GitHub
-  issue itself at session end. One call, then move on (or end, if it
-  blocks you).
+- **needs-human = `open_question`, never a tracker issue you file
+  yourself**: the driver dedupes your question against open ones and files
+  or updates the tracker issue itself at session end. One call, then move
+  on (or end, if it blocks you).
 - **Unsure whether you can self-judge the acceptance criteria** (visual
   quality, game feel, anything needing human eyes on a running build)?
   Fail toward the owner: call `open_question` WITH the `taskId`, report
@@ -129,6 +129,18 @@ the merge gate arrives too late).
   `[factory] T-<id>: <title>`, body: what/why/how-verified + REQ ids), then
   IMMEDIATELY call `report_status` (status `review`, the PR url) — before
   anything else, so a turn cap after this point loses nothing.
+  On a GitHub origin use `gh pr create`; on a Bitbucket origin `gh` does
+  not exist — REST instead:
+  `echo "user = \"$BITBUCKET_EMAIL:$BITBUCKET_API_TOKEN\"" | curl -sS -K -
+  -X POST -H "Content-Type: application/json" --data '{"title": "...",
+  "description": "...", "source": {"branch": {"name": "<your branch>"}},
+  "destination": {"branch": {"name": "<the base branch>"}}}'
+  https://api.bitbucket.org/2.0/repositories/<workspace>/<slug>/pullrequests`
+  (workspace/slug from `git remote get-url origin`; keys are already in
+  your environment and MUST ride stdin via `-K -` as shown, never `-u` —
+  argv is world-readable while curl runs. `destination` is NOT optional:
+  omitted, Bitbucket targets the repo's main branch instead of the
+  factory base branch. The PR url is `links.html.href` in the response.)
 - `pr-only`: that's it. Humans merge.
 - `auto-merge-dev` / `milestone-gates`: that's it too — **never merge, never
   poll CI**. The driver watches checks, merges on green, and flips the

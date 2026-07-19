@@ -20,6 +20,22 @@ export const factoryKey = (project) =>
 export const stateDir = (project, home = os.homedir()) =>
   path.join(home, ".factory", "projects", factoryKey(project));
 
+// <state>/.env: KEY=VALUE lines, # comments. No expansion. Shared by the
+// driver (session env, forge credentials) and the dashboard (per-project
+// forge credentials) so the parse can't drift.
+export const readEnvFile = (stateRoot) => {
+  const p = path.join(stateRoot, ".env");
+  const env = {};
+  if (!fs.existsSync(p)) return env;
+  for (const line of fs.readFileSync(p, "utf8").split("\n")) {
+    const t = line.trim();
+    if (!t || t.startsWith("#")) continue;
+    const eq = t.indexOf("=");
+    if (eq > 0) env[t.slice(0, eq).trim()] = t.slice(eq + 1).trim();
+  }
+  return env;
+};
+
 // Atomic JSON write: tmp file in the same dir, then rename over. For state
 // files whose corruption is expensive (~/.claude.json, config.json,
 // state.json, registry.json) — a crash mid-write must never leave a torn file.

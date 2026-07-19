@@ -475,3 +475,46 @@ test("clone current with origin: mutations stay available", async (t) => {
   const f = encodeURIComponent(world.project);
   assert.equal((await req(base, "POST", `/api/stop?factory=${f}&token=t`)).status, 200);
 });
+
+// ---------- jira tracker routing ----------
+
+test("tracker jira: needs-human pill and daily log come from Jira while PRs stay on the forge", async (t) => {
+  const world = makeFactory(t, { config: { tracker: "jira", jiraProject: "FACT" } });
+  register(world);
+  seedTemplate(world);
+  fs.appendFileSync(path.join(world.stateDir, ".env"),
+    "JIRA_BASE_URL=https://acme.atlassian.net\nJIRA_EMAIL=m@example.com\nJIRA_API_TOKEN=tok\n");
+  // Forge (gh) answers PRs; issues must NOT come from here — its issue list
+  // is empty on purpose.
+  const ghDir = path.join(world.root, "ghstub-jira");
+  fs.mkdirSync(ghDir, { recursive: true });
+  fs.writeFileSync(path.join(ghDir, "gh"), `#!/bin/sh
+case "$1" in
+  pr) echo '[{"number": 5, "title": "[factory] T-001: t", "url": "u", "isDraft": false, "headRefName": "b", "statusCheckRollup": []}]';;
+  *) echo "[]";;
+esac
+exit 0
+`);
+  fs.chmodSync(path.join(ghDir, "gh"), 0o755);
+  // Jira (curl) answers the open-issue search.
+  fs.writeFileSync(path.join(world.root, "bin", "curl"), `#!/bin/sh
+cat > /dev/null
+echo '{"issues": [
+  {"key": "FACT-3", "fields": {"summary": "[factory] question: pick a color"}},
+  {"key": "FACT-1", "fields": {"summary": "[factory] daily log"}}
+]}'
+exit 0
+`);
+  fs.chmodSync(path.join(world.root, "bin", "curl"), 0o755);
+
+  const { base } = await startDashboard(t, world, { token: "t", env: { STUB_GH_DIR: ghDir } });
+  let fac = null;
+  for (let i = 0; i < 100 && !(fac?.gh?.needsHuman?.length); i++) {
+    const s = await getState(base, "?token=t");
+    fac = s.factories.find((x) => x.path === world.project);
+    await new Promise((r) => setTimeout(r, 300));
+  }
+  assert.deepEqual(fac.gh.needsHuman, [{ number: "FACT-3", title: "[factory] question: pick a color", url: "https://acme.atlassian.net/browse/FACT-3" }]);
+  assert.equal(fac.gh.dailyLogUrl, "https://acme.atlassian.net/browse/FACT-1");
+  assert.equal(fac.gh.prs[0].number, 5, "PR list must still come from the forge");
+});
