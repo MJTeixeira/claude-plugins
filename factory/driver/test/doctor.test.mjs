@@ -400,3 +400,75 @@ test("a legacy schtasks schedule declaration fails doctor — the kind is retire
   assert.match(r.stdout, /"schtasks" is not one of/);
   assert.doesNotMatch(r.stdout, /systemd\|cron\|launchd\|schtasks/, "schtasks must be gone from the offered kinds");
 });
+
+// Milestone heading drift (2026-07-19): the index format was never written
+// down, three dialects grew, and both consumers (promote, dashboard) read
+// only one — silently. The parser now tolerates the known dialects; this row
+// is what catches the next one.
+test("an unreadable milestone heading dialect warns, naming the canonical shape", (t) => {
+  const world = makeFactory(t);
+  fs.writeFileSync(path.join(world.factoryDir, "backlog", "index.md"),
+    "# Backlog\n\n## Phase 1: Foundations — active\n## Sprint 2 — not-started\n");
+
+  const r = runDriver(world, "doctor");
+
+  assert.equal(r.code, 0, "unreadable headings are a warning, not a window-blocking failure");
+  assert.match(r.stdout, /! milestone headings/);
+  assert.match(r.stdout, /## M<n>: <title> — <status>/, "the warn must name the canonical shape");
+});
+
+test("the dialects real factories use all doctor green, active milestone named", (t) => {
+  const world = makeFactory(t);
+  fs.writeFileSync(path.join(world.factoryDir, "backlog", "index.md"),
+    "## Milestones\n\n### M1: Login — active\n\n## Milestone 2 — Phase 1 (not-started)\n\n## M3 Ship — done\n");
+
+  const r = runDriver(world, "doctor");
+
+  assert.equal(r.code, 0, `stdout:\n${r.stdout}`);
+  assert.match(r.stdout, /✓ milestone headings — 3 parse clean \(active: M1\)/);
+});
+
+test("a backlog that declares no milestones skips the check — milestone-free is legal", (t) => {
+  const world = makeFactory(t);
+  fs.writeFileSync(path.join(world.factoryDir, "backlog", "index.md"),
+    "# Backlog\n\nEpics only, no milestones.\n- [e1-a](e1-a.md) — 2 tasks\n");
+
+  const r = runDriver(world, "doctor");
+
+  assert.equal(r.code, 0);
+  assert.match(r.stdout, /– milestone headings/);
+});
+
+// The first-live-pilot hole (2026-07-19): a repo whose issue tracker is switched
+// off answers every OTHER forge call normally, so the whole preflight stayed
+// green while three needs-human questions queued into the void for a full
+// window. Doctor must SAY so — but only warn, never fail: doctor is the
+// scheduled preflight, and that same pilot window shipped T-001 with its
+// tracker off. Killing the window would have cost the work to protect the
+// questions. Visibility for the queue itself lives in the driver, which
+// announces the stranded count on every session end (mcp-server.test.mjs).
+test("a native tracker whose issues are DISABLED warns doctor without failing the window", (t) => {
+  const world = makeFactory(t);
+  const ghDir = path.join(world.root, "gh-off");
+  fs.mkdirSync(ghDir);
+  fs.writeFileSync(path.join(ghDir, "gh"), `#!/bin/sh
+if [ "$1 $2" = "issue list" ]; then echo "GraphQL: Issues are disabled for this repository" >&2; exit 1; fi
+echo ""
+exit 0
+`);
+  fs.chmodSync(path.join(ghDir, "gh"), 0o755);
+  fs.appendFileSync(path.join(world.stateDir, ".env"), `STUB_GH_DIR=${ghDir}\n`);
+
+  const r = runDriver(world, "doctor");
+
+  assert.equal(r.code, 0, `a closed question mailbox must not abort the window:\n${r.stdout}`);
+  assert.match(r.stdout, /! github issue tracker/);
+  assert.match(r.stdout, /"tracker": "jira"/, "the row must name the way out");
+});
+
+test("a healthy native tracker is one green doctor row", (t) => {
+  const world = makeFactory(t);
+  const r = runDriver(world, "doctor");
+  assert.equal(r.code, 0, `stdout:\n${r.stdout}`);
+  assert.match(r.stdout, /✓ github issue tracker/);
+});

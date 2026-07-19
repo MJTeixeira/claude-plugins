@@ -131,12 +131,22 @@ the merge gate arrives too late).
   IMMEDIATELY call `report_status` (status `review`, the PR url) — before
   anything else, so a turn cap after this point loses nothing.
   On a GitHub origin use `gh pr create`; on a Bitbucket origin `gh` does
-  not exist — REST instead:
-  `echo "user = \"$BITBUCKET_EMAIL:$BITBUCKET_API_TOKEN\"" | curl -sS -K -
-  -X POST -H "Content-Type: application/json" --data '{"title": "...",
-  "description": "...", "source": {"branch": {"name": "<your branch>"}},
-  "destination": {"branch": {"name": "<the base branch>"}}}'
-  https://api.bitbucket.org/2.0/repositories/<workspace>/<slug>/pullrequests`
+  not exist — REST instead, in TWO steps:
+  1. Write the request body to `.factory/tmp/pr.json` **with the Write
+     tool** — never a heredoc, never inline in the command:
+     `{"title": "...", "description": "...", "source": {"branch": {"name":
+     "<your branch>"}}, "destination": {"branch": {"name": "<the base
+     branch>"}}}`
+  2. Then ONE single-line command:
+     `echo "user = \"$BITBUCKET_EMAIL:$BITBUCKET_API_TOKEN\"" | curl -sS -K - -X POST -H "Content-Type: application/json" --data @.factory/tmp/pr.json https://api.bitbucket.org/2.0/repositories/<workspace>/<slug>/pullrequests`
+
+  **A JSON payload inline in the command is what makes this fail.** A
+  multi-line `--data '{...}'` is denied outright under `dontAsk` (the Bash
+  permission matcher cannot decompose a command carrying newlines) — a
+  live pilot session lost its PR to exactly this and the operator had to
+  open it by hand. The body file keeps the command one line and short.
+  `.factory/tmp/` is gitignored, so the file never dirties your branch.
+
   (workspace/slug from `git remote get-url origin`; keys are already in
   your environment and MUST ride stdin via `-K -` as shown, never `-u` —
   argv is world-readable while curl runs. `destination` is NOT optional:

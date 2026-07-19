@@ -100,3 +100,36 @@ test("promote without a milestone argument fails with usage", (t) => {
   assert.equal(r.code, 1);
   assert.match(r.stderr, /promote <milestone>/);
 });
+
+// The index format was never specified, so real factories carry three
+// heading dialects. promote read only `## M1 …` and answered "milestone not
+// found" on the other two — 4 of 6 fleet factories (2026-07-19).
+const DIALECTS = {
+  "h3 + colon (two fleet projects)": {
+    index: "## Milestones\n\n### M1: Login — active\n\n### M2: Accounts — not-started\n- [e2](e2.md) — 3 tasks\n",
+    promoted: /^### M2: Accounts — active$/m,
+    untouched: /^### M1: Login — active$/m,
+  },
+  "spelled id + parenthesized status (a fleet project)": {
+    index: "## Milestone 1 — Phase 0: Foundations (active)\n- e0-skeleton — 6/6 done\n\n## Milestone 2 — Phase 1: Grind loop (not-started)\n- e9-combat — 0/4 done\n",
+    promoted: /^## Milestone 2 — Phase 1: Grind loop \(active\)$/m,
+    untouched: /^## Milestone 1 — Phase 0: Foundations \(active\)$/m,
+  },
+};
+
+for (const [name, d] of Object.entries(DIALECTS)) {
+  test(`promote works on the ${name} index dialect`, (t) => {
+    const world = makeFactory(t);
+    fs.writeFileSync(path.join(world.factoryDir, "backlog", "index.md"), d.index);
+    gitIn(world.project, "add", "-A", ".factory");
+    gitIn(world.project, "commit", "-q", "-m", "index in another dialect");
+    gitIn(world.project, "push", "-q", "origin", "main");
+
+    const r = runDriver(world, "promote", ["M2"]);
+
+    assert.equal(r.code, 0, `promote failed on this dialect:\n${r.stdout}\n${r.stderr}`);
+    const idx = originIndex(world);
+    assert.match(idx, d.promoted, `M2 not flipped in place:\n${idx}`);
+    assert.match(idx, d.untouched, `the prior active milestone was disturbed:\n${idx}`);
+  });
+}

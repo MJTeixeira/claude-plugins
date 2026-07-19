@@ -50,7 +50,9 @@ ${REPORT({ taskId: null, status: "no-tasks", summary: "none" })}`,
   // PR-F: top deny offenders from the 2026-07 session-log audit joined the
   // base preset — a session must be able to inspect, move files, and fetch
   // assets without burning turns on denials.
-  for (const rule of ["Bash(find:*)", "Bash(curl:*)", "Bash(unzip:*)", "Bash(cd:*)", "Bash(cp:*)", "Bash(sed:*)"]) {
+  // printf joined them after the first live Bitbucket pilot: the session reached for it to
+  // feed curl's `-K -` credential config and lost a turn to the denial.
+  for (const rule of ["Bash(find:*)", "Bash(curl:*)", "Bash(unzip:*)", "Bash(cd:*)", "Bash(cp:*)", "Bash(sed:*)", "Bash(printf:*)"]) {
     assert.ok(allow.includes(rule), `audited base rule ${rule} missing: ${allow}`);
   }
   const guardEntry = (settings.hooks?.PreToolUse ?? []).find((e) =>

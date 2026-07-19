@@ -8,7 +8,7 @@ import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { createForge } from "../forge.mjs";
+import { createForge, nativeTrackerCheck } from "../forge.mjs";
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "bb-forge-test-"));
 
@@ -277,4 +277,31 @@ test("async remoteBranchSha resolves the branch head hash, null when unknown", a
 test("a non-bitbucket origin fails loudly, naming the url", () => {
   const f = createForge({ kind: "bitbucket", project: makeProject("git@github.com:o/r.git"), env: ENV });
   assert.throws(() => f.prListOpen(), /github\.com/);
+});
+
+// nativeTrackerCheck on Bitbucket — the client shape that exposed it: issues are OFF by
+// default and the API answers 410 Gone, while every PR call keeps working.
+test("nativeTrackerCheck: 410 Gone (issues off — the Bitbucket default) → WARN naming both ways out", () => {
+  set("issues-fail", "curl: (22) The requested URL returned error: 410");
+  const row = nativeTrackerCheck(forge);
+  assert.equal(row.level, "warn");
+  assert.equal(row.name, "bitbucket issue tracker");
+  assert.match(row.detail, /queue silently/, "the cost must be spelled out — filings vanish, nothing else shows it");
+  assert.match(row.detail, /enable it in the repo settings/i);
+  assert.match(row.detail, /"tracker": "jira"/);
+  set("issues-fail", "");
+});
+
+test("nativeTrackerCheck: a reachable Bitbucket tracker is one ok row", () => {
+  set("issues-fail", "");
+  set("issue-list.json", JSON.stringify({ values: [] }));
+  const row = nativeTrackerCheck(forge);
+  assert.equal(row.level, "ok");
+});
+
+test("nativeTrackerCheck: a transient 503 only WARNS — a blip must not abort a scheduled window", () => {
+  set("issues-fail", "curl: (22) The requested URL returned error: 503");
+  const row = nativeTrackerCheck(forge);
+  assert.equal(row.level, "warn");
+  set("issues-fail", "");
 });

@@ -44,6 +44,10 @@ export const makeFactory = (t, { config = {}, tasks, plan } = {}) => {
     `#!/bin/sh
 if [ "$1 $2" = "auth status" ]; then echo "Token scopes: 'repo', 'project'"; exit 0; fi
 if [ -n "$STUB_GH_DIR" ] && [ -x "$STUB_GH_DIR/gh" ]; then exec "$STUB_GH_DIR/gh" "$@"; fi
+# A repo whose issue tracker is ON and empty — doctor probes it (forge.mjs
+# nativeTrackerCheck) and JSON-parses the answer. After the STUB_GH_DIR
+# hand-off so a test's own issue-list fixture still wins.
+if [ "$1 $2" = "issue list" ]; then echo "[]"; exit 0; fi
 echo ""
 exit 0
 `

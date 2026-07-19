@@ -24,6 +24,8 @@
 //   issueCreate({title, body}) -> issue url (trimmed)
 //   issueComment(number, body)
 //   authCheck({wantBoard})  doctor rows [{level: ok|fail|skip, name, detail}]
+//                           (tracker reachability is NOT part of authCheck —
+//                            nativeTrackerCheck below probes it separately)
 //   async.prList()          {data: [{number, title, url, isDraft, headRefName,
 //                            statusCheckRollup}]} | {error} — never rejects
 //   async.issueList()       {data: [{number, title, url, labels}]} | {error}
@@ -110,6 +112,34 @@ export const createForge = ({ kind = "github", project, env = {} }) => {
   if (kind === "github") return githubForge({ project, env });
   if (kind === "bitbucket") return bitbucketForge({ project, env });
   throw new Error(`unknown forge "${kind}" — supported: github, bitbucket`);
+};
+
+// Native-tracker reachability, as a doctor row. Every other forge call can
+// succeed while the repo's own issue tracker is switched OFF — Bitbucket
+// ships it off by default and answers 410 Gone — and then needs-human
+// filings queue forever with nothing on screen to say so (the first live Bitbucket pilot,
+// 2026-07-19: three questions "kept pending" through a whole window).
+// One cheap list call is the only way to see it before a window burns.
+//
+// Everything here warns rather than fails, including a definite tracker-is-off
+// signal: doctor doubles as the scheduled-run preflight, and a closed question
+// mailbox must not cancel a window that would otherwise ship working code (the
+// 2026-07-19 pilot window shipped T-001 with its tracker off). Filings queue in
+// state and retry; the driver announces the stranded count out-of-band on every
+// session end, which is the visibility this row cannot provide on its own. The
+// off-vs-unreachable split stays because the two need different fixes.
+export const nativeTrackerCheck = (forge) => {
+  const name = `${forge.kind} issue tracker`;
+  try {
+    forge.issueListOpen();
+    return { level: "ok", name, detail: "reachable" };
+  } catch (e) {
+    const msg = (String(e.stderr ?? "").trim() || e.message || "").split("\n")[0].slice(0, 160);
+    const off = /\b410\b/.test(msg) || /issues? (?:are |is )?disabled|disabled.*issues?/i.test(msg);
+    return off
+      ? { level: "warn", name, detail: `the repo's issue tracker is OFF — needs-human questions cannot be filed and will queue silently; enable it in the repo settings, or set "tracker": "jira" in config.json (${msg})` }
+      : { level: "warn", name, detail: `could not read the issue tracker: ${msg}` };
+  }
 };
 
 // Tracker seam: where needs-human questions and the daily log live. Default
