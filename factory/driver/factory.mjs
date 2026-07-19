@@ -21,7 +21,7 @@ import { healConfigSchema } from "./config.mjs";
 import { SCHEDULE_KINDS, SCHEDULE_MODES, normalizeSchedule, validateDeclaration, generateUnits, parseInstalled, compareInstalled, defaultPathLine } from "./schedule.mjs";
 import { deriveFactoryStatus } from "./status.mjs";
 import { createForge, createTracker, nativeTrackerCheck } from "./forge.mjs";
-import { parseMilestones, unparsedMilestoneHeadings } from "./backlog-index.mjs";
+import { parseMilestones, unparsedMilestoneHeadings, parseBacklogTasks as parseTasksInDir } from "./backlog-index.mjs";
 import { jiraTracker } from "./jira.mjs";
 import { jiraBoardInit, syncJiraBoard } from "./jira-board.mjs";
 import { expectedOrigin, sameOrigin } from "./distribution.mjs";
@@ -391,31 +391,8 @@ const tierOf = (m) => {
 
 // root: which .factory to read — the project checkout (doctor, read-only
 // callers) or the meta worktree (runtime callers; see runtimeFactoryDir).
-const parseBacklogTasks = (root = dataDir) => {
-  const dir = path.join(root, "backlog");
-  const tasks = [];
-  if (!fs.existsSync(dir)) return tasks;
-  for (const f of fs.readdirSync(dir).filter((f) => f.endsWith(".md") && f !== "index.md")) {
-    const text = fs.readFileSync(path.join(dir, f), "utf8");
-    for (const block of text.split(/^## /m).slice(1)) {
-      const head = block.match(/^(T-[\w-]+):\s*(.*)/);
-      if (!head) continue;
-      tasks.push({
-        id: head[1],
-        title: head[2].trim(),
-        status: block.match(/- Status:\s*(\S+)/)?.[1] ?? "todo",
-        // `- Gate: human (<reason>)` marks a task whose acceptance needs owner
-        // judgment — the merge-gate never auto-merges it on green.
-        gate: block.match(/- Gate:\s*human\b/) ? "human" : null,
-        epic: f.replace(/\.md$/, ""),
-        model: block.match(/- Model:\s*(\S+)/)?.[1] ?? null,
-        effort: block.match(/- Effort:\s*(\S+)/)?.[1] ?? null,
-        links: [...block.matchAll(/https?:\/\/\S+/g)].map((x) => x[0].replace(/[).,]$/, "")),
-      });
-    }
-  }
-  return tasks;
-};
+// The parsing itself lives in backlog-index.mjs, shared with the dashboard.
+const parseBacklogTasks = (root = dataDir) => parseTasksInDir(path.join(root, "backlog"));
 
 // ---------- repo state machine (NOTES item 23) ----------
 // The working tree is a driver-owned resource: clean, on the base branch,

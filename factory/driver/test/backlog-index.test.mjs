@@ -5,7 +5,10 @@
 // so 4 of 6 factories parsed to zero milestones and nothing said so).
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { parseMilestones, unparsedMilestoneHeadings } from "../backlog-index.mjs";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
+import { parseMilestones, unparsedMilestoneHeadings, parseTaskFile, parseBacklogTasks } from "../backlog-index.mjs";
 
 // --- the three dialects found on disk ---------------------------------
 
@@ -180,4 +183,77 @@ test("a genuinely broken milestone heading is still caught after the prose fix",
   assert.deepEqual(unparsedMilestoneHeadings("## Phase 1: Foundations — active"), ["## Phase 1: Foundations — active"]);
   assert.deepEqual(unparsedMilestoneHeadings("## Sprint 2 — not-started"), ["## Sprint 2 — not-started"]);
   assert.deepEqual(unparsedMilestoneHeadings("## Milestone A — active"), ["## Milestone A — active"]);
+});
+
+// --- task parsing (the same one-format-two-parsers shape, closed before
+// --- it bit: factory.mjs and dashboard.mjs each carried a private copy) --
+
+test("a full task block yields every field either consumer reads", () => {
+  const tasks = parseTaskFile(`# e2-oauth
+
+## T-021: Add OAuth login
+- Status: in-progress
+- Gate: human (owner reviews the consent screen)
+- Model: opus
+- Effort: high
+- Question: https://github.com/o/r/issues/7
+- PR: https://github.com/o/r/pull/12
+
+## T-022: Refresh tokens
+- Status: todo
+`, "e2-oauth");
+  assert.equal(tasks.length, 2);
+  const t = tasks[0];
+  assert.equal(t.id, "T-021");
+  assert.equal(t.title, "Add OAuth login");
+  assert.equal(t.status, "in-progress");
+  assert.equal(t.gate, "human");
+  assert.equal(t.model, "opus");
+  assert.equal(t.effort, "high");
+  assert.equal(t.epic, "e2-oauth");
+  assert.equal(t.question, "https://github.com/o/r/issues/7");
+  assert.deepEqual(t.links, ["https://github.com/o/r/issues/7", "https://github.com/o/r/pull/12"]);
+  assert.deepEqual(tasks[1], {
+    id: "T-022", title: "Refresh tokens", status: "todo", gate: null,
+    model: null, effort: null, epic: "e2-oauth", question: null, links: [],
+  });
+});
+
+test("a task with no Status line defaults to todo", () => {
+  const tasks = parseTaskFile("## T-001: Bootstrap\n", "e1");
+  assert.equal(tasks[0].status, "todo");
+});
+
+test("non-task h2 headings and prose are ignored", () => {
+  const tasks = parseTaskFile(`## Context
+
+Some prose about the epic.
+
+## T-002: Real task
+- Status: done
+
+## Open questions
+- none
+`, "e1");
+  assert.deepEqual(tasks.map((t) => t.id), ["T-002"]);
+});
+
+test("Question: accepts only http(s) URLs — it lands in a dashboard href", () => {
+  const tasks = parseTaskFile("## T-003: Risky\n- Status: todo\n- Question: javascript:alert(1)\n", "e1");
+  assert.equal(tasks[0].question, null);
+});
+
+test("parseBacklogTasks walks the dir, skips index.md, epic = filename minus .md", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "backlog-test-"));
+  fs.writeFileSync(path.join(dir, "index.md"), "## M1: X — active\n## T-999: not a task, lives in the index\n- Status: todo\n");
+  fs.writeFileSync(path.join(dir, "e1-scaffolding.md"), "## T-001: A\n- Status: done\n");
+  fs.writeFileSync(path.join(dir, "e2.md.notes.md"), "## T-002: B\n- Status: todo\n");
+  fs.writeFileSync(path.join(dir, "notes.txt"), "## T-003: not markdown\n");
+  const tasks = parseBacklogTasks(dir);
+  assert.deepEqual(tasks.map((t) => [t.id, t.epic]).sort(), [["T-001", "e1-scaffolding"], ["T-002", "e2.md.notes"]]);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test("parseBacklogTasks on a missing dir returns []", () => {
+  assert.deepEqual(parseBacklogTasks("/nonexistent/backlog"), []);
 });

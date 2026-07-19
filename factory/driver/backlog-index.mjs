@@ -1,6 +1,7 @@
-// Backlog index parsing — milestones and their epics, from
-// `.factory/backlog/index.md`. ONE parser, shared by every consumer
-// (dashboard cards, the `promote` verb, doctor's drift row).
+// Backlog parsing — milestones and their epics from
+// `.factory/backlog/index.md`, and TASK blocks from the per-epic files
+// beside it. ONE parser per shape, shared by every consumer (dashboard
+// cards, the `promote` verb, doctor's drift row, the driver's task loop).
 //
 // It lives here because the alternative already cost us: dashboard.mjs and
 // factory.mjs each carried their own regex, both assuming `## M1 …`, while
@@ -24,6 +25,9 @@
 //   `## Milestone 1 — Phase 0: Foundations (active)`  spelled id, ( ) status
 // Anything that still fails to parse is surfaced by doctor rather than
 // silently dropped — invisibility, not the format itself, was the bug.
+
+import * as fs from "node:fs";
+import * as path from "node:path";
 
 // Heading: 2-3 hashes, `M<n>` or `Milestone <n>`, an optional separator,
 // then the title. The separator alternatives matter: `M1: Title` uses a
@@ -135,4 +139,58 @@ export const unparsedMilestoneHeadings = (text) => {
   return String(text ?? "").split("\n")
     .map((l) => (l.endsWith("\r") ? l.slice(0, -1) : l))
     .filter((l) => SMELLS_LIKE_MILESTONE.test(l) && !actionable.has(l));
+};
+
+// ---------- tasks (the per-epic files beside index.md) ----------
+// The TASK block format from the backlog skill:
+//
+//   ## T-021: Add OAuth login
+//   - Status: in-progress
+//   - Gate: human (owner reviews the consent screen)
+//   - Model: opus
+//   - Effort: high
+//   - Question: https://github.com/o/r/issues/7
+//
+// factory.mjs and dashboard.mjs each carried a private copy of this parser —
+// the exact one-format-two-parsers shape that silently diverged for the
+// milestone headings above. Merged here before it bit: the copies already
+// disagreed on epic naming (`.md$` anchored vs first-occurrence replace)
+// and each read a field the other ignored (Gate: vs Question:).
+
+// One epic file's text → its tasks. Every field either consumer reads:
+// the driver acts on status/gate/model/effort, the dashboard renders
+// status/links/model/effort/question.
+export const parseTaskFile = (text, epic) => {
+  const tasks = [];
+  for (const block of String(text ?? "").split(/^## /m).slice(1)) {
+    const head = block.match(/^(T-[\w-]+):\s*(.*)/);
+    if (!head) continue;
+    tasks.push({
+      id: head[1],
+      title: head[2].trim(),
+      status: block.match(/- Status:\s*(\S+)/)?.[1] ?? "todo",
+      // `- Gate: human (<reason>)` marks a task whose acceptance needs owner
+      // judgment — the merge-gate never auto-merges it on green.
+      gate: block.match(/- Gate:\s*human\b/) ? "human" : null,
+      epic,
+      model: block.match(/- Model:\s*(\S+)/)?.[1] ?? null,
+      effort: block.match(/- Effort:\s*(\S+)/)?.[1] ?? null,
+      // The issue a session filed for this task (driver writes `- Question:`
+      // under the Status line) — the needs-human pill links straight to it.
+      // http(s) only: this lands in an href, and backlog files are written
+      // by autonomous sessions — a bare \S+ would let a `javascript:` token
+      // ride into the owner's click.
+      question: block.match(/- Question:\s*(https?:\/\/\S+)/)?.[1] ?? null,
+      links: [...block.matchAll(/https?:\/\/\S+/g)].map((x) => x[0].replace(/[).,]$/, "")),
+    });
+  }
+  return tasks;
+};
+
+// Every task in a backlog directory. index.md holds milestones, never tasks.
+export const parseBacklogTasks = (backlogDir) => {
+  if (!fs.existsSync(backlogDir)) return [];
+  return fs.readdirSync(backlogDir)
+    .filter((f) => f.endsWith(".md") && f !== "index.md")
+    .flatMap((f) => parseTaskFile(fs.readFileSync(path.join(backlogDir, f), "utf8"), f.replace(/\.md$/, "")));
 };
