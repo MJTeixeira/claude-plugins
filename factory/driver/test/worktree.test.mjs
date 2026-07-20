@@ -1,6 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
+import * as os from "node:os";
 import * as path from "node:path";
 import { makeFactory, queueSessions, runDriver, gitIn } from "./helpers.mjs";
 import { factoryKey } from "../paths.mjs";
@@ -218,4 +220,65 @@ echo '{"taskId":"T-001","status":"review","summary":"built","pr":"https://github
   // The owner's checkout: still on their branch, not fast-forwarded into a
   // different branch, no gate droppings.
   assert.equal(gitIn(world.project, "branch", "--show-current"), "owner-wip");
+});
+
+// ---------- prep prunes stale-locked worktrees (ops backlog item 4) ----------
+// A LOCKED registered worktree whose locker died lingers forever: `worktree
+// prune` skips locked entries, and quarantine can't remove a registered
+// worktree (git resurrects it). A bridge/cloud session crash left one in a
+// fleet repo for days (2026-07-14): permanent dirty tree, window-end ff
+// refused. Only locks whose reason carries a DEAD pid are pruned — a human
+// lock (no pid in the reason) is preserved and logged, never broken.
+
+const addLockedWorktree = (world, name, reason) => {
+  const p = path.join(world.project, ".claude", "worktrees", name);
+  gitIn(world.project, "worktree", "add", "--detach", p);
+  gitIn(world.project, "worktree", "lock", "--reason", reason, p);
+  return p;
+};
+
+const worktreeList = (world) => gitIn(world.project, "worktree", "list", "--porcelain");
+
+// A pid that is certainly dead: a child that already exited.
+const deadPid = () => spawnSync("true").pid;
+
+test("prep removes a locked worktree whose lock pid is dead, quarantining its dirty bytes", (t) => {
+  const world = makeFactory(t);
+  // Mirror the fleet mitigation: bridge worktrees are globally gitignored.
+  fs.mkdirSync(path.join(world.home, ".config", "git"), { recursive: true });
+  fs.writeFileSync(path.join(world.home, ".config", "git", "ignore"), "**/.claude/worktrees/\n");
+  const wt = addLockedWorktree(world, "bridge-dead", `claude bridge session pid ${deadPid()}`);
+  fs.writeFileSync(path.join(wt, "uncommitted.txt"), "unsaved work\n");
+
+  const r = runDriver(world, "prep");
+
+  assert.equal(r.code, 0, `prep failed\n${r.stdout}\n${r.stderr}`);
+  assert.match(r.stdout, /stale-locked worktree/);
+  assert.ok(!worktreeList(world).includes(wt), "stale-locked worktree still registered");
+  assert.ok(!fs.existsSync(wt), "stale-locked worktree dir still on disk");
+  const logDir = path.join(world.stateDir, "log");
+  const qdirs = fs.readdirSync(logDir).filter((d) => d.startsWith("quarantine-"));
+  assert.ok(qdirs.some((d) => fs.existsSync(path.join(logDir, d, "uncommitted.txt"))),
+    "dirty bytes were not quarantined before removal");
+});
+
+test("prep leaves a locked worktree whose lock pid is alive", (t) => {
+  const world = makeFactory(t);
+  const wt = addLockedWorktree(world, "bridge-live", `claude bridge session pid ${process.pid}`);
+
+  const r = runDriver(world, "prep");
+
+  assert.equal(r.code, 0, `prep failed\n${r.stdout}\n${r.stderr}`);
+  assert.ok(worktreeList(world).includes(wt), "live-locked worktree was removed");
+});
+
+test("prep preserves a human lock (no pid in the reason) and says so", (t) => {
+  const world = makeFactory(t);
+  const wt = addLockedWorktree(world, "held", "manual hold for review");
+
+  const r = runDriver(world, "prep");
+
+  assert.equal(r.code, 0, `prep failed\n${r.stdout}\n${r.stderr}`);
+  assert.ok(worktreeList(world).includes(wt), "human-locked worktree was removed");
+  assert.match(r.stdout, /no pid in lock reason|leaving/i);
 });

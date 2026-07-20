@@ -207,7 +207,8 @@ const escalate = async ({ project, name, type, detail, key }) => {
   const creds = telegramCreds();
   if (creds) {
     try {
-      const res = await fetch(`https://api.telegram.org/bot${creds.token}/sendMessage`, {
+      // FACTORY_TELEGRAM_API: test double (helpers.mjs startTelegramStub).
+      const res = await fetch(`${process.env.FACTORY_TELEGRAM_API ?? "https://api.telegram.org"}/bot${creds.token}/sendMessage`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({

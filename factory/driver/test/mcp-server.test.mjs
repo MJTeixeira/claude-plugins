@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { makeFactory, queueSessions, runDriver, readUsageRows, driverPath } from "./helpers.mjs";
+import { makeFactory, queueSessions, runDriver, readUsageRows, driverPath, startTelegramStub } from "./helpers.mjs";
 
 const eventsPathFor = (world) => path.join(world.stateDir, "log", "mcp-test-session.jsonl");
 
@@ -313,7 +313,14 @@ test("a failed gh create keeps the question pending; the next session end retrie
 // on a channel that does not depend on the tracker (first live Bitbucket pilot,
 // 2026-07-19: two real diagnoses queued and nobody saw either).
 test("questions that never file announce the stranded count, not just per-question lines", (t) => {
-  const world = makeFactory(t);
+  const world = makeFactory(t, { config: { notify: { telegram: true } } });
+  // The Telegram leg is the load-bearing half of the announcement (the log
+  // line scrolls past inside a long window) — assert it through the stub,
+  // not by inference from the log.
+  const tg = startTelegramStub(t);
+  fs.appendFileSync(path.join(world.stateDir, ".env"),
+    "TELEGRAM_BOT_TOKEN=stub-token\nTELEGRAM_CHAT_ID=7\n");
+  world.extraEnv = { ...(world.extraEnv ?? {}), FACTORY_TELEGRAM_API: tg.url };
   installQuestionGh(world, { failAllCreates: true });
   queueSessions(world, [
     {
@@ -329,6 +336,11 @@ test("questions that never file announce the stranded count, not just per-questi
   assert.match(r.stdout, /Bitbucket REST is blocked/, "the summary names what is stranded");
   const state = JSON.parse(fs.readFileSync(path.join(world.stateDir, "log", "state.json"), "utf8"));
   assert.equal(state.pendingQuestions.length, 2);
+  const announcement = tg.messages().find((m) => /could not be filed/.test(m.text ?? ""));
+  assert.ok(announcement, `no stranded-count Telegram message; got: ${JSON.stringify(tg.messages().map((m) => m.text))}`);
+  assert.equal(announcement.chat_id, "7");
+  assert.match(announcement.text, /2 question\(s\)/, "the Telegram text carries the count");
+  assert.match(announcement.text, /Bitbucket REST is blocked/, "the Telegram text names what is stranded");
 });
 
 test("triage sessions file questions through the driver too", (t) => {

@@ -74,7 +74,8 @@ const notify = async (registry, text) => {
   const creds = telegramCreds(registry);
   if (!creds) return;
   try {
-    const res = await fetch(`https://api.telegram.org/bot${creds.token}/sendMessage`, {
+    // FACTORY_TELEGRAM_API: test double (helpers.mjs startTelegramStub).
+    const res = await fetch(`${process.env.FACTORY_TELEGRAM_API ?? "https://api.telegram.org"}/bot${creds.token}/sendMessage`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ chat_id: creds.chatId, text: `[runtime] ${text}`, disable_web_page_preview: true }),
@@ -309,7 +310,10 @@ fs.writeFileSync(path.join(os.homedir(), ".factory", "runtime-deploy.json"), JSO
   ref,
   factoriesChecked: Object.keys(registry?.factories ?? {}).length,
 }, null, 2) + "\n");
-log(`runtime advanced ${head.slice(0, 7)} → ${candidate.slice(0, 7)} (${count} commit(s))`);
+// Answer first: the sha the runtime is at NOW. The old "advanced <from> →
+// <to>" shape led with the sha it came FROM and was read as the new one in
+// practice (2026-07-19) — technically accurate but misread is a defect.
+log(`runtime now at ${candidate.slice(0, 7)} (was ${head.slice(0, 7)}, ${count} commit(s))`);
 syncPlugins();
 // The dashboard is the one long-lived process running this checkout — a
 // deploy advances the files under it, but the process keeps serving the old
@@ -319,4 +323,4 @@ if (git(["diff", "--name-only", `${head}..${candidate}`]).split("\n").includes("
   dashboardHint = "dashboard.mjs changed — the running dashboard still serves the OLD code; restart it (systemctl --user restart factory-dashboard)";
   log(`⚠ ${dashboardHint}`);
 }
-await notify(registry, `✓ runtime advanced ${head.slice(0, 7)} → ${candidate.slice(0, 7)} (${count} commit(s), ${Object.keys(registry?.factories ?? {}).length} factory doctor(s) green)${dashboardHint ? `\n⚠ ${dashboardHint}` : ""}`);
+await notify(registry, `✓ runtime now at ${candidate.slice(0, 7)} (was ${head.slice(0, 7)}, ${count} commit(s), ${Object.keys(registry?.factories ?? {}).length} factory doctor(s) green)${dashboardHint ? `\n⚠ ${dashboardHint}` : ""}`);
