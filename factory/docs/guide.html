@@ -44,14 +44,200 @@ th{color:var(--ink);font-weight:600;background:var(--accent-dim)}
 .never{border-left:3px solid var(--danger)}
 .tblwrap{overflow-x:auto}
 .foot{color:var(--mute);font-size:12px;margin-top:26px}
+.fd{display:block;width:100%;height:auto;margin:14px 0}
+.fd .bx{fill:var(--surface);stroke:var(--hair2);stroke-width:1.2}
+.fd .by{fill:var(--accent-dim);stroke:var(--accent);stroke-width:1.2}
+.fd .t{font:700 13px var(--sans);fill:var(--ink)}
+.fd .s{font:11px var(--sans);fill:var(--body)}
+.fd .n{font:italic 11px var(--sans);fill:var(--mute)}
+.fd .a{stroke:var(--accent);stroke-width:1.5;fill:none}
+.fd .aw{stroke:var(--warn);stroke-width:1.5;fill:none;stroke-dasharray:4 3}
+.fd #ah path,.fd #ah2 path,.fd #ah3 path{fill:var(--accent)}
+.fd #ahw path,.fd #ahw3 path{fill:var(--warn)}
+.fd .ct{fill:none;stroke:var(--hair2);stroke-width:1.2;stroke-dasharray:6 4}
+.fd .lbl{font:700 10px var(--sans);letter-spacing:.08em;fill:var(--mute)}
+.fd .tt{font:700 11.5px var(--sans);fill:var(--ink)}
+dl.gloss dt{font-family:var(--mono);font-size:12px;color:var(--ink);float:left;clear:left;width:132px;padding-top:2px}
+dl.gloss dd{margin:0 0 7px 148px;color:var(--body)}
+@media(max-width:560px){dl.gloss dt{float:none;width:auto}dl.gloss dd{margin:0 0 8px}}
 </style></head><body><div class="wrap">
 <header class="page"><h1>Factory — how it works</h1>
 <span class="crumb"><a id="toqa" href="/docs/qa">owner's Q&amp;A</a> · <a id="toboard" href="/">dashboard</a></span></header>
 <p class="sub">The product manual, condensed for owners and monitors. Full authority: <code>~/.factory/runtime/factory/FACTORY.md</code> — on any conflict, its <strong>§Architecture &amp; contracts</strong> and the driver source win over this page.</p>
 
 <nav class="toc"><b>Sections</b><br>
-<a href="#overview">Overview</a> <a href="#invariant">The invariant</a> <a href="#layers">Three layers</a> <a href="#windows">Windows</a> <a href="#live">Live sessions</a> <a href="#rc">rc sessions</a> <a href="#monitoring">Monitoring</a> <a href="#rules">Where the rules live</a> <a href="#docs">Docs upkeep</a>
+<a href="#picture">One picture</a> <a href="#machinery">Machinery</a> <a href="#loop">The dials</a> <a href="#glossary">Glossary</a> <a href="#overview">Overview</a> <a href="#invariant">The invariant</a> <a href="#layers">Three layers</a> <a href="#windows">Windows</a> <a href="#live">Live sessions</a> <a href="#rc">rc sessions</a> <a href="#monitoring">Monitoring</a> <a href="#rules">Where the rules live</a> <a href="#docs">Docs upkeep</a>
 </nav>
+
+<section id="picture"><h2>The factory in one picture</h2>
+<p>A factory is Claude Code building your product on a schedule, one task at a time, asking you only when a decision is truly yours. You describe the product once; the factory does the rest and reports back. You never need to touch git.</p>
+<svg class="fd" viewBox="0 0 560 430" role="img" aria-label="Flow: you describe what to build; a scheduled window opens; Claude builds the next task; it proposes the change as a PR; green checks merge and land. Side lane: if stuck it asks you on the project's issue board and Telegram; you answer whenever; with no answer the task parks safely as waiting on owner.">
+<defs>
+<marker id="ah" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L8 4L0 8z"/></marker>
+<marker id="ahw" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L8 4L0 8z"/></marker>
+</defs>
+<rect class="bx" x="12" y="12" width="316" height="56" rx="10"/>
+<text class="t" x="25" y="36">1 · You describe what to build</text>
+<text class="s" x="25" y="54">spec + backlog — the product's to-do list</text>
+<line class="a" x1="170" y1="68" x2="170" y2="92" marker-end="url(#ah)"/>
+<rect class="bx" x="12" y="96" width="316" height="56" rx="10"/>
+<text class="t" x="25" y="120">2 · A scheduled window opens</text>
+<text class="s" x="25" y="138">the clock starts it — no one needs to be awake</text>
+<line class="a" x1="170" y1="152" x2="170" y2="176" marker-end="url(#ah)"/>
+<rect class="bx" x="12" y="180" width="316" height="56" rx="10"/>
+<text class="t" x="25" y="204">3 · Claude builds the next task</text>
+<text class="s" x="25" y="222">codes and tests it in its own sandbox</text>
+<line class="a" x1="170" y1="236" x2="170" y2="260" marker-end="url(#ah)"/>
+<rect class="bx" x="12" y="264" width="316" height="56" rx="10"/>
+<text class="t" x="25" y="288">4 · It proposes the change — a PR</text>
+<text class="s" x="25" y="306">the product is never edited directly</text>
+<line class="a" x1="170" y1="320" x2="170" y2="344" marker-end="url(#ah)"/>
+<rect class="bx" x="12" y="348" width="316" height="56" rx="10"/>
+<text class="t" x="25" y="372">5 · Checks green → merged, landed</text>
+<text class="s" x="25" y="390">the daily log reports what happened</text>
+<line class="aw" x1="328" y1="208" x2="348" y2="208" marker-end="url(#ahw)"/>
+<rect class="by" x="352" y="180" width="196" height="56" rx="10"/>
+<text class="t" x="365" y="204">Stuck? It asks you</text>
+<text class="s" x="365" y="222">a question + Telegram ping</text>
+<line class="aw" x1="450" y1="236" x2="450" y2="260" marker-end="url(#ahw)"/>
+<rect class="by" x="352" y="264" width="196" height="56" rx="10"/>
+<text class="t" x="365" y="288">Answer whenever</text>
+<text class="s" x="365" y="306">the task resumes next window</text>
+<text class="n" x="352" y="346">No answer? The task parks safely —</text>
+<text class="n" x="352" y="362">the factory shows “waiting on owner”.</text>
+</svg>
+<h3>What runs when</h3>
+<p>Each factory has a schedule (say, every night). When it fires, a <strong>window</strong> opens for a few hours: the factory plans its day, works through tasks, and writes a daily log. Outside windows nothing runs. A machine-wide <strong>supervisor</strong> watches every window and shuts down anything hung. Pausing a factory (the enable switch on its card, or the STOP file) stops it at the end of the current task — an in-flight session finishes its work first, then nothing new starts.</p>
+<h3>How a task travels</h3>
+<p>The <strong>spec</strong> says what the product is; the <strong>backlog</strong> is its ordered to-do list. A window starts with <strong>triage</strong> — reading your notes and answered questions, updating the backlog, planning the day. Then, task by task: a fresh session builds and tests one task in a private sandbox and proposes the result as a <strong>PR</strong> — one bundled change with its test results attached. The <strong>merge gate</strong> lands only PRs whose checks are green; everything landed is listed in the daily log.</p>
+<h3>Where you come in</h3>
+<ul>
+<li><strong>Answer its questions.</strong> When a task needs a decision only you can make, it files a question on the project's issue board (GitHub or Jira) and pings Telegram where configured. Answer in your own time — the factory picks it up next window.</li>
+<li><strong>Read the daily log</strong> — one honest summary per window: what landed, what's parked, what it needs from you.</li>
+<li><strong>Nothing breaks while you're away.</strong> A task waiting on you parks as <em>needs-human</em> and the rest of the backlog continues; the factory's card here shows “waiting on owner”.</li>
+</ul></section>
+
+<section id="machinery"><h2>The machinery — who talks to whom</h2>
+<p>Three places, one conversation: you, your machine, and the forge where the code lives.</p>
+<svg class="fd" viewBox="0 0 560 400" role="img" aria-label="Component map: you (Telegram, browser, answers) on the left; your machine in the middle running schedule, driver, supervisor, dashboard, doctor and runtime; the forge on the right holding the repo, PRs with checks, and the issue board. The driver talks to the forge; Telegram and the dashboard talk to you; your answers land on the issue board.">
+<defs><marker id="ah2" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L8 4L0 8z"/></marker></defs>
+<rect class="ct" x="170" y="12" width="200" height="350" rx="12"/>
+<text class="lbl" x="185" y="32">YOUR MACHINE (MAC OR VPS)</text>
+<rect class="bx" x="185" y="44" width="170" height="46" rx="8"/>
+<text class="t" x="198" y="63">schedule</text>
+<text class="s" x="198" y="80">timers that open windows</text>
+<rect class="bx" x="185" y="96" width="170" height="46" rx="8"/>
+<text class="t" x="198" y="115">driver</text>
+<text class="s" x="198" y="132">runs the windows</text>
+<rect class="bx" x="185" y="148" width="170" height="46" rx="8"/>
+<text class="t" x="198" y="167">supervisor</text>
+<text class="s" x="198" y="184">watchdog over every window</text>
+<rect class="bx" x="185" y="200" width="170" height="46" rx="8"/>
+<text class="t" x="198" y="219">dashboard</text>
+<text class="s" x="198" y="236">this site — live state</text>
+<rect class="bx" x="185" y="252" width="170" height="46" rx="8"/>
+<text class="t" x="198" y="271">doctor</text>
+<text class="s" x="198" y="288">health check — ✓ per need</text>
+<rect class="bx" x="185" y="304" width="170" height="46" rx="8"/>
+<text class="t" x="198" y="323">runtime</text>
+<text class="s" x="198" y="340">the installed software</text>
+<rect class="ct" x="400" y="12" width="148" height="250" rx="12"/>
+<text class="lbl" x="410" y="32">THE FORGE</text>
+<text class="s" x="410" y="48">GitHub or Bitbucket</text>
+<rect class="bx" x="408" y="64" width="132" height="46" rx="8"/>
+<text class="t" x="420" y="83">your repo</text>
+<text class="s" x="420" y="100">the product's code</text>
+<rect class="bx" x="408" y="116" width="132" height="46" rx="8"/>
+<text class="t" x="420" y="135">PRs + checks</text>
+<text class="s" x="420" y="152">proposed changes</text>
+<rect class="bx" x="408" y="168" width="132" height="60" rx="8"/>
+<text class="t" x="420" y="187">issue board</text>
+<text class="s" x="420" y="203">questions · daily log</text>
+<text class="s" x="420" y="218">(GitHub or Jira)</text>
+<rect class="by" x="12" y="96" width="130" height="46" rx="8"/>
+<text class="t" x="25" y="115">Telegram</text>
+<text class="s" x="25" y="132">pings when needed</text>
+<rect class="by" x="12" y="200" width="130" height="46" rx="8"/>
+<text class="t" x="25" y="219">your browser</text>
+<text class="s" x="25" y="236">opens the dashboard</text>
+<rect class="by" x="12" y="304" width="130" height="46" rx="8"/>
+<text class="t" x="25" y="323">your answers</text>
+<text class="s" x="25" y="340">on the issue board</text>
+<line class="a" x1="370" y1="119" x2="396" y2="119" marker-end="url(#ah2)"/>
+<line class="a" x1="170" y1="119" x2="146" y2="119" marker-end="url(#ah2)"/>
+<line class="a" x1="142" y1="223" x2="166" y2="223" marker-end="url(#ah2)"/>
+<polyline class="aw" points="77,350 77,378 472,378 472,266" marker-end="url(#ah2)"/>
+</svg>
+<p>Everything on your machine is one installed <strong>runtime</strong>, advanced only by a deploy — every factory on the machine runs the same software. The <strong>doctor</strong> is the health check run at setup, after updates, and before every deploy: one ✓/!/✗ row per requirement — tools installed, logins working, schedule in place, backlog readable. And the factory talks to the <strong>forge</strong> through one adapter, so a GitHub project and a Bitbucket + Jira project behave identically; questions and the daily log simply go wherever that project's issue board lives.</p></section>
+
+<section id="loop"><h2>Inside a window — the dials</h2>
+<p>Numbers below are the defaults; each factory can set its own.</p>
+<svg class="fd" viewBox="0 0 560 320" role="img" aria-label="Timeline of one four-hour window: triage, then task sessions one to three and more, a sweep, and a report. Zoom into one task session: fresh sandbox, build and test capped at 80 turns and 45 minutes, open a PR, merge gate waits up to 10 minutes for green; then a dashed loop back to the next task, up to 12 sessions per window.">
+<defs>
+<marker id="ah3" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L8 4L0 8z"/></marker>
+<marker id="ahw3" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L8 4L0 8z"/></marker>
+</defs>
+<text class="lbl" x="12" y="16">ONE WINDOW — 4 HOURS (windowHours: 4)</text>
+<rect class="bx" x="12" y="24" width="536" height="72" rx="10"/>
+<rect class="by" x="26" y="40" width="64" height="40" rx="7"/><text class="tt" x="36" y="64">triage</text>
+<rect class="by" x="100" y="40" width="60" height="40" rx="7"/><text class="tt" x="110" y="64">task 1</text>
+<rect class="by" x="168" y="40" width="60" height="40" rx="7"/><text class="tt" x="178" y="64">task 2</text>
+<rect class="by" x="236" y="40" width="60" height="40" rx="7"/><text class="tt" x="246" y="64">task 3</text>
+<text class="t" x="308" y="66">…</text>
+<rect class="by" x="376" y="40" width="70" height="40" rx="7"/><text class="tt" x="386" y="64">sweep</text>
+<rect class="by" x="460" y="40" width="76" height="40" rx="7"/><text class="tt" x="470" y="64">report</text>
+<text class="n" x="100" y="114">each task = one fresh session — up to 12 per window (maxSessionsPerWindow: 12)</text>
+<line class="ct" x1="168" y1="84" x2="14" y2="134"/>
+<line class="ct" x1="228" y1="84" x2="546" y2="134"/>
+<rect class="ct" x="12" y="136" width="536" height="150" rx="10"/>
+<text class="lbl" x="26" y="156">INSIDE ONE TASK SESSION</text>
+<rect class="bx" x="26" y="170" width="118" height="52" rx="8"/>
+<text class="t" x="38" y="190">fresh sandbox</text>
+<text class="s" x="38" y="208">a clean repo copy</text>
+<rect class="bx" x="158" y="170" width="118" height="52" rx="8"/>
+<text class="t" x="170" y="190">build + test</text>
+<text class="s" x="170" y="208">≤80 turns · ≤45 min</text>
+<rect class="bx" x="290" y="170" width="118" height="52" rx="8"/>
+<text class="t" x="302" y="190">open a PR</text>
+<text class="s" x="302" y="208">the change, tested</text>
+<rect class="bx" x="422" y="170" width="118" height="52" rx="8"/>
+<text class="t" x="434" y="190">merge gate</text>
+<text class="s" x="434" y="208">≤10 min for green</text>
+<line class="a" x1="144" y1="196" x2="154" y2="196" marker-end="url(#ah3)"/>
+<line class="a" x1="276" y1="196" x2="286" y2="196" marker-end="url(#ah3)"/>
+<line class="a" x1="408" y1="196" x2="418" y2="196" marker-end="url(#ah3)"/>
+<polyline class="aw" points="481,222 481,252 85,252 85,228" marker-end="url(#ahw3)"/>
+<text class="n" x="140" y="268">next task — fresh session, fresh sandbox</text>
+<text class="n" x="26" y="308">Hit a cap (45 min / 80 turns)? The session ends safely — the task passes to the next session, or parks.</text>
+</svg>
+<p>Those four numbers — <code>windowHours: 4</code>, <code>maxSessionsPerWindow: 12</code>, <code>maxTurnsPerSession: 80</code>, <code>sessionTimeoutMin: 45</code> — are per-factory dials, and together they <em>are</em> the spending cap: a window can never cost more than its sessions allow, and it ends early when the backlog runs dry (a window with nothing to do skips itself entirely). A fifth dial, <code>mergeGateMinutes: 10</code>, is how long the gate waits on a PR's checks before leaving it for the end-of-window <strong>sweep</strong> — one last pass that lands any PR whose checks turned green late.</p></section>
+
+<section id="glossary"><h2>Glossary</h2>
+<dl class="gloss">
+<dt>factory</dt><dd>one project set up for scheduled autonomous development — each card on the dashboard is one.</dd>
+<dt>window</dt><dd>one scheduled work period, a few hours long. Everything happens inside windows.</dd>
+<dt>session</dt><dd>one fresh Claude Code run inside a window — it does one job, then ends.</dd>
+<dt>turn</dt><dd>one model step inside a session; the turn cap keeps a session from wandering.</dd>
+<dt>triage</dt><dd>the window's first session: reads the inbox and answered questions, updates the backlog, plans the day.</dd>
+<dt>spec</dt><dd>the written description of the product — the factory's source of truth for <em>what</em> to build.</dd>
+<dt>backlog</dt><dd>the ordered task list derived from the spec; lives in the repo.</dd>
+<dt>inbox</dt><dd>where you drop free-form notes and ideas; triage turns them into tasks.</dd>
+<dt>PR</dt><dd>pull request — one proposed change, bundled with its test results. All work arrives this way.</dd>
+<dt>checks</dt><dd>the automatic tests a PR must pass; “green” means all passed.</dd>
+<dt>forge</dt><dd>where the repo lives and PRs are made — GitHub or Bitbucket.</dd>
+<dt>merge gate</dt><dd>the step that lands green PRs into the product; red ones wait.</dd>
+<dt>sandbox</dt><dd>(worktree) the throwaway copy of the repo each session works in — your files are never touched.</dd>
+<dt>needs-human</dt><dd>a task parked until you answer — the only state that waits on you.</dd>
+<dt>blocked</dt><dd>a task parked on something the factory can clear itself later.</dd>
+<dt>daily log</dt><dd>the issue on the project's tracker where each window reports what it did.</dd>
+<dt>issue board</dt><dd>(the “tracker”) where questions and the daily log live — GitHub issues or Jira.</dd>
+<dt>driver</dt><dd>the program that runs windows (<code>factory.mjs</code>).</dd>
+<dt>supervisor</dt><dd>the per-machine watchdog: kills hung windows, escalates wedged factories.</dd>
+<dt>doctor</dt><dd>the health check: one ✓/!/✗ row per requirement; run at setup, after updates, before deploys.</dd>
+<dt>runtime</dt><dd>the installed copy of the factory software on a machine, advanced only by deploy.</dd>
+<dt>dashboard</dt><dd>this web UI — the live state of every factory on the machine.</dd>
+<dt>STOP</dt><dd>the brake: a file whose presence ends the window at the next task boundary — the current session finishes, nothing new starts.</dd>
+</dl></section>
 
 <section id="overview"><h2>Overview</h2>
 <p>Claude Code develops a fully-specced product alone in scheduled windows: a fresh headless session per task, state carried in files, humans feeding input async. The same driver runs macOS, Linux/VPS, and Windows. State splits in two:</p>
@@ -189,7 +375,7 @@ th{color:var(--ink);font-weight:600;background:var(--accent-dim)}
 <li>Machine memories hold machine facts and dated journals only; fleet-wide doctrine goes in the repo, where it travels through origin like code.</li>
 </ul></section>
 
-<p class="foot">Condensed 2026-07-15 from <code>FACTORY.md</code>, updated 2026-07-16 (skillset 1.4.0, supervisor factory-stuck) · served by the factory dashboard (<code>/docs</code>, Q&amp;A at <code>/docs/qa</code>) · source: <code>factory/docs/guide.html</code></p>
+<p class="foot">Condensed 2026-07-15 from <code>FACTORY.md</code>, updated 2026-07-16 (skillset 1.4.0, supervisor factory-stuck), 2026-07-20 (owner-first layer: one picture, machinery, dials, glossary) · served by the factory dashboard (<code>/docs</code>, Q&amp;A at <code>/docs/qa</code>) · source: <code>factory/docs/guide.html</code></p>
 </div>
 <script>
 // carry the dashboard token on internal links
