@@ -31,6 +31,15 @@ const adf = (text) => ({
   })),
 });
 
+// The inverse, for reading comments back: flatten an ADF document to plain
+// text — one line per top-level block, recursing into nested containers
+// (bulletList → listItem → paragraph → text): owners answer questions with
+// lists, and only FORMATTING may be lost, never content.
+const adfText = (doc) => {
+  const walk = (n) => n?.text ?? (n?.content ?? []).map(walk).join(n?.type === "paragraph" ? "" : " ");
+  return (doc?.content ?? []).map(walk).filter((l) => l.trim()).join("\n");
+};
+
 export const jiraTracker = ({ cfg = {}, env = {} }) => {
   const key = (k) => env[k] ?? process.env[k];
   const cred = () => {
@@ -112,6 +121,10 @@ export const jiraTracker = ({ cfg = {}, env = {} }) => {
     kind: "jira",
 
     issueListOpen: () => (json(searchUrl()).issues ?? []).map(mapIssue),
+    issueListClosed: () => {
+      const jql = `${scope()} AND statusCategory = Done ORDER BY updated DESC`;
+      return (json(`${api()}/search/jql?jql=${encodeURIComponent(jql)}&fields=summary&maxResults=20`).issues ?? []).map(mapIssue);
+    },
     issueCreate: ({ title, body }) => {
       const r = json(`${api()}/issue`, { method: "POST", body: { fields: {
         project: { key: project() }, issuetype: { name: "Task" },
@@ -120,6 +133,8 @@ export const jiraTracker = ({ cfg = {}, env = {} }) => {
       return browse(r.key);
     },
     issueComment: (issueKey, body) => { req(`${api()}/issue/${issueKey}/comment`, { method: "POST", body: { body: adf(body) } }); },
+    issueComments: (issueKey) => (json(`${api()}/issue/${issueKey}/comment`).comments ?? [])
+      .map((c) => ({ author: c.author?.displayName ?? null, body: adfText(c.body), createdAt: c.created ?? null })),
 
     // Board primitives (jira-board.mjs): the two-way board view over the
     // same scope. Cards are plain Tasks; status is the project's real

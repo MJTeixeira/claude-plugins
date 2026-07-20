@@ -20,10 +20,17 @@
 //                           read (never the flaky check-rollup query)
 //   prMerge(pr)             merge an open PR (throws on refusal)
 //   prComment(pr, body)
+//   prComments(pr)          [{author, body, createdAt}] — conversation
+//                           comments (how humans answer factory PRs)
 //   prCreate({title, body, head, base}) -> new PR url (trimmed)
+//   prListMerged()          [{number, url, title, headRefName}] — the
+//                           triage safety net's merged-but-status-lags check
 //   issueListOpen()         [{number, title, url}]
+//   issueListClosed()       [{number, title, url}] — recent first; where
+//                           answered needs-human questions live
 //   issueCreate({title, body}) -> issue url (trimmed)
 //   issueComment(number, body)
+//   issueComments(number)   [{author, body, createdAt}]
 //   authCheck({wantBoard})  doctor rows [{level: ok|fail|skip, name, detail}]
 //                           (tracker reachability is NOT part of authCheck —
 //                            nativeTrackerCheck below probes it separately)
@@ -71,11 +78,19 @@ const githubForge = ({ project, env = {} }) => {
     prState: (pr) => jsonOut(["pr", "view", pr, "--json", "state"]).state,
     prMerge: (pr) => { out(["pr", "merge", pr, "--merge"]); },
     prComment: (pr, body) => { out(["pr", "comment", pr, "--body", body]); },
+    prComments: (pr) => (jsonOut(["pr", "view", pr, "--json", "comments"]).comments ?? [])
+      .map((c) => ({ author: c.author?.login ?? null, body: c.body ?? "", createdAt: c.createdAt ?? null })),
     prCreate: ({ title, body, head, base }) => out(["pr", "create", "--head", head, "--base", base, "--title", title, "--body", body]).trim(),
+    prListMerged: () => jsonOut(["pr", "list", "--state", "merged", "--json", "number,url,title,headRefName", "--limit", "30"]),
 
     issueListOpen: () => jsonOut(["issue", "list", "--state", "open", "--limit", "100", "--json", "number,title,url"]),
+    // sort:updated-desc, not gh's created-desc default: an old question
+    // closed-with-answer today must surface in the 20-item window.
+    issueListClosed: () => jsonOut(["issue", "list", "--state", "closed", "--search", "sort:updated-desc", "--limit", "20", "--json", "number,title,url"]),
     issueCreate: ({ title, body }) => out(["issue", "create", "--title", title, "--body", body]).trim(),
     issueComment: (number, body) => { out(["issue", "comment", String(number), "--body", body]); },
+    issueComments: (number) => (jsonOut(["issue", "view", String(number), "--json", "comments"]).comments ?? [])
+      .map((c) => ({ author: c.author?.login ?? null, body: c.body ?? "", createdAt: c.createdAt ?? null })),
 
     // Doctor rows. Runs OUTSIDE the project cwd and without the .factory
     // .env merge, like every other doctor probe — auth is host-level state.

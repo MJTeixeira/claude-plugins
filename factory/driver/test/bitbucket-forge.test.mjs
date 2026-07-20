@@ -32,11 +32,15 @@ case "$url" in
     cat "$ROOT/user.json" ;;
   */statuses*) cat "$ROOT/pr-statuses.json" ;;
   */pullrequests/*/merge*) echo '{}' ;;
-  */pullrequests/*/comments*) echo '{}' ;;
+  */pullrequests/*/comments*)
+    if [ "$post" = 1 ]; then echo '{}'; else cat "$ROOT/pr-comments.json"; fi ;;
+  *"state=MERGED"*) cat "$ROOT/pr-merged.json" ;;
   *"/pullrequests?"*) cat "$ROOT/pr-list.json" ;;
   */pullrequests/*) cat "$ROOT/pr.json" ;;
   */pullrequests) cat "$ROOT/pr-create.json" ;;
-  */issues/*/comments*) echo '{}' ;;
+  */issues/*/comments*)
+    if [ "$post" = 1 ]; then echo '{}'; else cat "$ROOT/issue-comments.json"; fi ;;
+  *resolved*) cat "$ROOT/issue-closed.json" ;;
   */issues*)
     if [ "$post" = 1 ]; then cat "$ROOT/issue-create.json"
     elif [ -s "$ROOT/issues-fail" ]; then cat "$ROOT/issues-fail" >&2; exit 22
@@ -168,6 +172,52 @@ test("prCreate posts source/destination branches and returns the new PR url — 
   assert.match(argv, /"destination":\{"branch":\{"name":"develop"\}\}/);
   assert.doesNotMatch(argv, /sekret-tok/, "token must not be visible to ps");
   assert.match(lastStdin(), /user = "m@example\.com:sekret-tok"/);
+});
+
+test("prComments maps PR comments to {author, body, createdAt}", () => {
+  clearCalls();
+  set("pr-comments.json", JSON.stringify({ values: [
+    { user: { display_name: "Owner One" }, content: { raw: "use develop" }, created_on: "2026-07-20T10:00:00Z" },
+  ] }));
+  assert.deepEqual(forge.prComments(PR_URL), [
+    { author: "Owner One", body: "use develop", createdAt: "2026-07-20T10:00:00Z" },
+  ]);
+  assert.match(calls().join("\n"), /pullrequests\/7\/comments/);
+});
+
+test("issueComments maps issue comments to {author, body, createdAt}", () => {
+  clearCalls();
+  set("issue-comments.json", JSON.stringify({ values: [
+    { user: { display_name: "Owner One" }, content: { raw: "answer: option 2" }, created_on: "2026-07-20T11:00:00Z" },
+  ] }));
+  assert.deepEqual(forge.issueComments(3), [
+    { author: "Owner One", body: "answer: option 2", createdAt: "2026-07-20T11:00:00Z" },
+  ]);
+  assert.match(calls().join("\n"), /issues\/3\/comments/);
+});
+
+test("issueListClosed queries the closed states and maps to issue rows", () => {
+  clearCalls();
+  set("issue-closed.json", JSON.stringify({ values: [
+    { id: 4, state: "resolved", title: "[factory] question: which db", links: { html: { href: "u4" } } },
+  ] }));
+  assert.deepEqual(forge.issueListClosed(), [{ number: 4, title: "[factory] question: which db", url: "u4" }]);
+  const line = calls().find((l) => /\/issues\?/.test(l) && /resolved/.test(l));
+  assert.ok(line, "must query closed-ish states server-side");
+});
+
+test("prListMerged hits state=MERGED and maps to the open-list row shape", () => {
+  clearCalls();
+  set("pr-merged.json", JSON.stringify({ values: [{
+    id: 2, title: "[factory] T-002: fe scaffold",
+    links: { html: { href: "https://bitbucket.org/acme/widget/pull-requests/2" } },
+    source: { branch: { name: "factory/T-002" } },
+  }] }));
+  assert.deepEqual(forge.prListMerged(), [{
+    number: 2, url: "https://bitbucket.org/acme/widget/pull-requests/2",
+    title: "[factory] T-002: fe scaffold", headRefName: "factory/T-002",
+  }]);
+  assert.match(calls().join("\n"), /pullrequests\?state=MERGED/);
 });
 
 test("prComment posts content.raw", () => {

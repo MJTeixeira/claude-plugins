@@ -24,11 +24,23 @@ case "$1 $2" in
   "auth status")
     if [ -s "$ROOT/auth-err" ]; then cat "$ROOT/auth-err" >&2; exit 1; fi
     cat "$ROOT/auth.txt"; exit 0 ;;
-  "pr view") cat "$ROOT/pr-view.json" ;;
-  "pr list") cat "$ROOT/pr-list.out" ;;
+  "pr view")
+    case "$*" in
+      *"--json comments"*) cat "$ROOT/pr-comments.json" ;;
+      *) cat "$ROOT/pr-view.json" ;;
+    esac ;;
+  "pr list")
+    case "$*" in
+      *"--state merged"*) cat "$ROOT/pr-merged.json" ;;
+      *) cat "$ROOT/pr-list.out" ;;
+    esac ;;
+  "issue view") cat "$ROOT/issue-comments.json" ;;
   "issue list")
     if [ -s "$ROOT/issues-err" ]; then cat "$ROOT/issues-err" >&2; exit 1; fi
-    cat "$ROOT/issue-list.json" ;;
+    case "$*" in
+      *"--state closed"*) cat "$ROOT/issue-closed.json" ;;
+      *) cat "$ROOT/issue-list.json" ;;
+    esac ;;
   "issue create") echo "https://github.com/o/r/issues/12" ;;
   "pr create") echo "https://github.com/o/r/pull/33" ;;
   "pr merge") echo "merge blocked" >&2; exit 1 ;;
@@ -121,6 +133,42 @@ test("prCreate opens a PR with head, base, title and body, returning the trimmed
   for (const frag of ["--head factory/T-9", "--base develop", "--title [factory] T-9: add x", "--body what/why"]) {
     assert.ok(line.includes(frag), `argv must carry '${frag}' (got: ${line})`);
   }
+});
+
+test("prComments maps gh's conversation comments to {author, body, createdAt}", () => {
+  set("pr-comments.json", JSON.stringify({ comments: [
+    { author: { login: "owner1" }, body: "use develop", createdAt: "2026-07-20T10:00:00Z" },
+  ] }));
+  assert.deepEqual(forge.prComments("https://github.com/o/r/pull/7"), [
+    { author: "owner1", body: "use develop", createdAt: "2026-07-20T10:00:00Z" },
+  ]);
+});
+
+test("issueComments maps gh's issue comments to {author, body, createdAt}", () => {
+  set("issue-comments.json", JSON.stringify({ comments: [
+    { author: { login: "owner1" }, body: "answer: option 2", createdAt: "2026-07-20T11:00:00Z" },
+  ] }));
+  assert.deepEqual(forge.issueComments(3), [
+    { author: "owner1", body: "answer: option 2", createdAt: "2026-07-20T11:00:00Z" },
+  ]);
+});
+
+test("issueListClosed lists recently closed issues (where answered questions live)", () => {
+  clearCalls();
+  const rows = [{ number: 4, title: "[factory] question: which db", url: "u4" }];
+  set("issue-closed.json", JSON.stringify(rows));
+  assert.deepEqual(forge.issueListClosed(), rows);
+  const line = calls().find((l) => l.startsWith("issue list") && /--state closed/.test(l));
+  assert.ok(line, "must list closed issues");
+  assert.match(line, /sort:updated-desc/, "answer recency, not creation order — an old question answered today must surface");
+});
+
+test("prListMerged lists merged PRs in the open-list row shape", () => {
+  clearCalls();
+  const rows = [{ number: 6, url: "https://github.com/o/r/pull/6", title: "[factory] T-002: y", headRefName: "factory/T-002" }];
+  set("pr-merged.json", JSON.stringify(rows));
+  assert.deepEqual(forge.prListMerged(), rows);
+  assert.match(calls().find((l) => l.startsWith("pr list")), /--state merged/);
 });
 
 test("a failing forge command throws — callers' try/catch stays load-bearing", () => {

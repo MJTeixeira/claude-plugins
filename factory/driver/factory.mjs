@@ -1387,6 +1387,23 @@ if (mode === "mcp-server") {
         return { text: "logged" };
       },
     },
+    post_daily_log: {
+      description:
+        "Post the [factory] daily log entry (triage's plan of day, report's window summary). The DRIVER " +
+        "finds-or-creates the daily-log issue on the configured tracker with its own credentials at session " +
+        "end — never post it with shell credentials yourself. Include the date in the body.",
+      inputSchema: {
+        type: "object",
+        properties: { body: { type: "string", description: "the full markdown log entry" } },
+        required: ["body"],
+      },
+      call: (a) => {
+        const body = str(a.body, 20000);
+        if (!body) return { error: "body (non-empty string) is required" };
+        record("daily_log", { body });
+        return { text: "recorded — the driver posts it to the daily-log issue at session end" };
+      },
+    },
   };
   const respond = (id, body, isErr = false) =>
     process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id, ...(isErr ? { error: body } : { result: body }) }) + "\n");
@@ -1907,7 +1924,7 @@ if (mode === "doctor") {
 // into a handoff with facts. Questions are filed by the driver at session
 // end (Decision 1); progress lines are already in the file for post-mortems.
 const readMcpEvents = (eventsPath) => {
-  const out = { report: null, inProgress: null, questions: [], progress: [] };
+  const out = { report: null, inProgress: null, questions: [], progress: [], dailyLogs: [] };
   if (!eventsPath) return out;
   let text;
   try { text = fs.readFileSync(eventsPath, "utf8"); } catch { return out; }
@@ -1924,6 +1941,8 @@ const readMcpEvents = (eventsPath) => {
       out.questions.push({ title: e.title, body: e.body ?? "", taskId: e.taskId ?? null });
     } else if (e.event === "log_progress") {
       out.progress.push(e.message);
+    } else if (e.event === "daily_log") {
+      out.dailyLogs.push({ body: e.body ?? "" });
     }
   }
   return out;
@@ -2703,6 +2722,52 @@ const processQuestions = async (newQuestions, context) => {
   return filed;
 };
 
+// Daily-log posting, driver-side (NOTES item 62): sessions record the entry
+// via the post_daily_log MCP tool; the driver finds-or-creates the tracker's
+// "[factory] daily log" issue and comments, with its own credentials.
+// Failures queue in state (pendingDailyLogs) under the same retry-and-
+// announce contract as questions — a rejected post must never be silent.
+const DAILY_LOG_TITLE = "[factory] daily log";
+const postDailyLogs = async (newLogs, context) => {
+  const s = readState();
+  const queue = [...(s.pendingDailyLogs ?? []), ...(newLogs ?? [])];
+  if (!queue.length) return;
+  s.pendingDailyLogs = [];
+  // One list fetch for the whole batch, and remember the issue we create:
+  // issueListOpen on Jira is a lagging search index (item 31's lesson), so
+  // re-listing per entry would file duplicate daily-log issues.
+  let dailyIssue; // undefined = not looked up yet; null = looked up, absent
+  for (const entry of queue) {
+    try {
+      if (dailyIssue === undefined) {
+        dailyIssue = tracker.issueListOpen().find((i) => normTitle(i.title) === normTitle(DAILY_LOG_TITLE)) ?? null;
+      }
+      if (dailyIssue) {
+        tracker.issueComment(dailyIssue.number, entry.body);
+        journal("daily-log:comment", "done", `#${dailyIssue.number}`);
+        log(`daily log posted (${context}): comment on #${dailyIssue.number}`);
+      } else {
+        const url = tracker.issueCreate({ title: DAILY_LOG_TITLE, body: entry.body });
+        // Remember the new issue for the rest of the batch (github/bitbucket
+        // urls end /issues/<n>, jira's /browse/<KEY> — the KEY is the id
+        // jira's issueComment takes). Unparseable → next entry re-lists.
+        const id = String(url ?? "").match(/\/issues\/(\d+)/)?.[1] ?? String(url ?? "").match(/\/browse\/([A-Z][A-Z0-9]*-\d+)/)?.[1];
+        dailyIssue = id ? { number: /^\d+$/.test(id) ? Number(id) : id } : undefined;
+        journal("daily-log:filed", "done", DAILY_LOG_TITLE);
+        log(`daily log posted (${context}): created "${DAILY_LOG_TITLE}"`);
+      }
+    } catch (e) {
+      s.pendingDailyLogs.push(entry);
+      dailyIssue = undefined; // the list itself may have failed — refetch next time
+      log(`daily log: posting failed (${firstLine(e)}) — queued, will retry next session`);
+    }
+  }
+  if (s.pendingDailyLogs.length) {
+    await notify(`⚠ ${s.pendingDailyLogs.length} daily-log entr${s.pendingDailyLogs.length > 1 ? "ies" : "y"} could not be posted — queued, will retry next session`);
+  }
+  writeState(s);
+};
+
 // Park tasks whose session filed a task-tied question: it cannot self-judge,
 // so the task waits on the owner (fail toward the owner — the T-017 twins
 // made opposite calls on the same gate). Exception: the session settled the
@@ -2737,6 +2802,49 @@ const configPromptNote = () =>
   `\n\n## Factory config (machine-side — this checkout has no .factory/config.json)\n\n` +
   "```json\n" + JSON.stringify(cfg, null, 2) + "\n```\n";
 
+// Driver-collected forge/tracker reads for triage/report prompts — sessions
+// consume these instead of shelling out with credentials (every credential
+// command form is denied live under dontAsk; NOTES items 61-62). Per-block
+// try/catch: one dead endpoint degrades its own block to "(unavailable)",
+// never the section — a session with partial inputs still beats no session.
+const forgeInputsNote = () => {
+  const block = (fn) => { try { return fn() || "(none)"; } catch (e) { return `(unavailable: ${firstLine(e)})`; } };
+  const fmtComments = (list) => list
+    .map((c) => `  - ${c.author ?? "?"} (${c.createdAt ?? "?"}): ${String(c.body).split("\n").join(" / ").slice(0, 500)}`)
+    .join("\n");
+  const openPRs = block(() => forge.prListOpen().slice(0, 10).map((p) => {
+    // Check status per PR (report.md's "In review" line needs it). An empty
+    // rollup reads "none" — the repo has no CI, which is not "pending".
+    const checks = block(() => {
+      const roll = forge.prView(p.url ?? p.number).statusCheckRollup ?? [];
+      if (!roll.length) return "none";
+      const counts = {};
+      for (const r of roll) { const k = r.conclusion ?? r.status ?? "PENDING"; counts[k] = (counts[k] ?? 0) + 1; }
+      return Object.entries(counts).map(([k, n]) => `${k}×${n}`).join(", ");
+    });
+    let lines = `- #${p.number} ${p.title} (${p.headRefName}${p.isDraft ? ", draft" : ""}; checks: ${checks}) ${p.url ?? ""}`;
+    if (/^\[factory\]/.test(p.title ?? "")) {
+      const cs = block(() => fmtComments(forge.prComments(p.url ?? p.number)));
+      if (cs !== "(none)") lines += `\n${cs}`;
+    }
+    return lines;
+  }).join("\n"));
+  const merged = block(() => forge.prListMerged().map((p) => `- #${p.number} ${p.title} (${p.headRefName})`).join("\n"));
+  const issueLines = (list) => list.slice(0, 20).map((i) => {
+    let lines = `- #${i.number} ${i.title} ${i.url ?? ""}`;
+    const cs = block(() => fmtComments(tracker.issueComments(i.number)));
+    if (cs !== "(none)") lines += `\n${cs}`;
+    return lines;
+  }).join("\n");
+  const issues = block(() => issueLines(tracker.issueListOpen()));
+  const closed = block(() => issueLines(tracker.issueListClosed()));
+  return `\n\n## Forge inputs (driver-collected at session start — you have no forge credentials; read these instead of calling the forge or tracker yourself)\n\n` +
+    `### Open PRs (conversation comments inlined for [factory] PRs)\n\n${openPRs}\n\n` +
+    `### Recently merged PRs (the merged-but-status-lags safety net)\n\n${merged}\n\n` +
+    `### Open tracker issues, with comments\n\n${issues}\n\n` +
+    `### Recently closed tracker issues, with comments (owner answers land here)\n\n${closed}\n`;
+};
+
 const runSingle = async (name) => {
   log(`${name} session starting`);
   writeLock(stateD, { mode: name, startedAt: new Date().toISOString() });
@@ -2746,6 +2854,9 @@ const runSingle = async (name) => {
     const overlay = stateOverlayNote();
     if (overlay) promptText += `\n\n## Driver state overlay (runtime statuses — authoritative over backlog files)\n\n${overlay}\n`;
   }
+  // Triage/report consume the forge through the driver's eyes — they hold
+  // no credentials and every credential command form is denied live.
+  if (name === "triage" || name === "report") promptText += forgeInputsNote();
   // Triage/report run in the meta worktree: triage edits tracked metadata
   // exactly where the driver commits it; the owner's checkout stays theirs.
   const cwd = isGitRepo() ? metaPath() : project;
@@ -2761,7 +2872,9 @@ const runSingle = async (name) => {
     overrides: name === "triage" ? { model: cfg.triageModel } : {},
   });
   const row = recordUsage({ factoryDir: stateD, sessionLogPath: sessionLog, mode: name, status: exitCode === 0 ? "completed" : "failed", log });
-  const filedQuestions = await processQuestions(readMcpEvents(mcpEventsPath).questions, name);
+  const mcpEv = readMcpEvents(mcpEventsPath);
+  const filedQuestions = await processQuestions(mcpEv.questions, name);
+  await postDailyLogs(mcpEv.dailyLogs, name);
   if (name === "triage") {
     // The triage session edits backlog/spec/inbox but never commits — the
     // driver owns metadata commits (NOTES item 24).
@@ -3470,6 +3583,9 @@ while (true) {
   // Questions before any repo work: filing needs only gh, and a repo
   // failure below must not swallow a session's needs-human asks.
   const filedQuestions = await processQuestions(mcp.questions, "dev");
+  // Dev sessions don't write daily logs, but a queued entry from a failed
+  // triage/report post retries at every session end, like questions do.
+  await postDailyLogs(mcp.dailyLogs, "dev");
   // Session boundary: meta worktree back at origin tip before any driver
   // git work (flips, gate). The session's worktree is already gone; the
   // owner's checkout was never involved.

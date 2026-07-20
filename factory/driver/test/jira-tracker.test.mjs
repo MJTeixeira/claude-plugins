@@ -35,7 +35,11 @@ case "$url" in
       *"-X POST"*) echo '' ;;
       *) cat "$ROOT/transitions.json" ;;
     esac ;;
-  *"/rest/api/3/issue/"*"/comment"*) echo '{}' ;;
+  *"/rest/api/3/issue/"*"/comment"*)
+    case "$*" in
+      *"-X POST"*) echo '{}' ;;
+      *) cat "$ROOT/comments.json" ;;
+    esac ;;
   *"/rest/api/3/issue"*) cat "$ROOT/issue-create.json" ;;
   *"/rest/api/3/myself"*)
     if [ -s "$ROOT/auth-fail" ]; then cat "$ROOT/auth-fail" >&2; exit 22; fi
@@ -119,6 +123,38 @@ test("issueCreate posts summary + ADF description to the project and returns the
   const text = JSON.stringify(body.fields.description);
   assert.match(text, /which one\?/);
   assert.match(text, /second line/);
+});
+
+test("issueListClosed searches Done issues in scope (answered questions live there)", () => {
+  clearCalls();
+  set("search.json", JSON.stringify({ issues: [{ key: "FACT-4", fields: { summary: "[factory] question: which db" } }] }));
+  assert.deepEqual(tracker.issueListClosed(), [
+    { number: "FACT-4", title: "[factory] question: which db", url: "https://acme.atlassian.net/browse/FACT-4" },
+  ]);
+  const line = calls().find((l) => /search\/jql/.test(l) && /Done/.test(decodeURIComponent(l)));
+  assert.ok(line, "must query statusCategory = Done");
+});
+
+test("issueComments flattens ADF comment bodies to plain text {author, body, createdAt}", () => {
+  clearCalls();
+  set("comments.json", JSON.stringify({ comments: [{
+    author: { displayName: "Owner One" },
+    created: "2026-07-20T11:00:00Z",
+    body: { type: "doc", version: 1, content: [
+      { type: "paragraph", content: [{ type: "text", text: "answer: " }, { type: "text", text: "option 2" }] },
+      { type: "paragraph", content: [{ type: "text", text: "second line" }] },
+      // Owners answer with lists — nested content must survive, not just
+      // top-level paragraphs (list → listItem → paragraph → text).
+      { type: "bulletList", content: [
+        { type: "listItem", content: [{ type: "paragraph", content: [{ type: "text", text: "use postgres" }] }] },
+        { type: "listItem", content: [{ type: "paragraph", content: [{ type: "text", text: "skip redis" }] }] },
+      ] },
+    ] },
+  }] }));
+  assert.deepEqual(tracker.issueComments("FACT-3"), [
+    { author: "Owner One", body: "answer: option 2\nsecond line\nuse postgres skip redis", createdAt: "2026-07-20T11:00:00Z" },
+  ]);
+  assert.ok(calls().find((l) => /issue\/FACT-3\/comment/.test(l)), "must hit the comment endpoint");
 });
 
 test("issueComment posts an ADF body to the issue's comment endpoint by key", () => {
