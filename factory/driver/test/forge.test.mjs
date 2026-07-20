@@ -30,6 +30,7 @@ case "$1 $2" in
     if [ -s "$ROOT/issues-err" ]; then cat "$ROOT/issues-err" >&2; exit 1; fi
     cat "$ROOT/issue-list.json" ;;
   "issue create") echo "https://github.com/o/r/issues/12" ;;
+  "pr create") echo "https://github.com/o/r/pull/33" ;;
   "pr merge") echo "merge blocked" >&2; exit 1 ;;
   "api repos/o/r/branches/main"|"api repos/{owner}/{repo}/branches/main") cat "$ROOT/branch.json" ;;
   *) echo "" ;;
@@ -109,6 +110,17 @@ test("issueListOpen returns the parsed open issues (needs-human dedupe)", () => 
 test("issueCreate returns the new issue's trimmed url", () => {
   const url = forge.issueCreate({ title: "[factory] question: x", body: "b" });
   assert.equal(url, "https://github.com/o/r/issues/12");
+});
+
+test("prCreate opens a PR with head, base, title and body, returning the trimmed url", () => {
+  clearCalls();
+  const url = forge.prCreate({ title: "[factory] T-9: add x", body: "what/why", head: "factory/T-9", base: "develop" });
+  assert.equal(url, "https://github.com/o/r/pull/33");
+  const line = calls().find((l) => l.startsWith("pr create"));
+  assert.ok(line, "must call gh pr create");
+  for (const frag of ["--head factory/T-9", "--base develop", "--title [factory] T-9: add x", "--body what/why"]) {
+    assert.ok(line.includes(frag), `argv must carry '${frag}' (got: ${line})`);
+  }
 });
 
 test("a failing forge command throws — callers' try/catch stays load-bearing", () => {

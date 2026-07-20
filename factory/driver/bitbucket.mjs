@@ -124,6 +124,13 @@ export const bitbucketForge = ({ project, env = {} }) => {
     },
     prState: (pr) => mapPrState(json(`${base()}/pullrequests/${prId(pr)}?fields=state`).state),
     prMerge: (pr) => { req(`${base()}/pullrequests/${prId(pr)}/merge`, { method: "POST", body: {} }); },
+    prCreate: ({ title, body, head, base: baseBranch }) => {
+      const r = json(`${base()}/pullrequests`, { method: "POST", body: {
+        title, description: body,
+        source: { branch: { name: head } }, destination: { branch: { name: baseBranch } },
+      } });
+      return r.links?.html?.href ?? `https://bitbucket.org/${repo()}/pull-requests/${r.id}`;
+    },
     prComment: (pr, body) => { req(`${base()}/pullrequests/${prId(pr)}/comments`, { method: "POST", body: { content: { raw: body } } }); },
 
     issueListOpen: () => (json(`${base()}/issues?pagelen=100&q=${OPEN_ISSUE_Q}`).values ?? [])
