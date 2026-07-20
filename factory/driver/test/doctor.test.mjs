@@ -177,9 +177,17 @@ test("doctor skips runtime checks when no machine runtime is installed", (t) => 
 
 // ---------- schedule declaration and drift (P3) ----------
 
+// list-timers must name the fixture home's timers: on Linux doctor's check 8
+// asks systemctl and marks unlisted timers dead (the REAL user systemd knows
+// nothing about $HOME fixture units); macOS never runs the check.
 const stubSystemctl = (world) => {
   const p = path.join(world.root, "bin", "systemctl");
-  fs.writeFileSync(p, "#!/bin/sh\nexit 0\n");
+  fs.writeFileSync(p, `#!/bin/sh
+case "$*" in
+  *list-timers*) ls "$HOME/.config/systemd/user" 2>/dev/null | grep '\\.timer$' ;;
+esac
+exit 0
+`);
   fs.chmodSync(p, 0o755);
 };
 
@@ -227,6 +235,7 @@ test("doctor fails on semantic drift: an installed timer firing at a different t
 
 test("doctor only warns on a kind-only declaration with installed units — adopt imports them", (t) => {
   const world = makeFactory(t, { config: { schedule: "systemd" } }); // legacy string form
+  stubSystemctl(world);
   const ud = path.join(world.home, ".config", "systemd", "user");
   fs.mkdirSync(ud, { recursive: true });
   // PATH must resolve claude+gh (check 2 verifies it wherever units exist)

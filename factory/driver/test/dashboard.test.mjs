@@ -252,6 +252,22 @@ test("/docs serves the shipped product docs; unknown names 404; token gates", as
   assert.equal((await fetch(base + "/docs")).status, 401);
 });
 
+test("the guide opens owner-first: one-picture flow diagram, then glossary", async (t) => {
+  const world = makeFactory(t);
+  register(world);
+  const { base } = await startDashboard(t, world, { token: "sekret" });
+  const html = await (await fetch(base + "/docs?token=sekret")).text();
+  assert.match(html, /id="picture"/, "owner one-picture section");
+  assert.match(html, /<svg/i, "flow diagram is real SVG, not ASCII");
+  assert.match(html, /id="machinery"/, "component-map section");
+  assert.match(html, /id="loop"/, "window-loop section with the dials");
+  assert.match(html, /id="glossary"/, "glossary section");
+  for (const [a, b] of [["picture", "machinery"], ["machinery", "loop"], ["loop", "glossary"], ["glossary", "invariant"]]) {
+    assert.ok(html.indexOf(`id="${a}"`) < html.indexOf(`id="${b}"`),
+      `owner layer order: #${a} before #${b}`);
+  }
+});
+
 // ---------- /api/state new fields ----------
 
 test("/api/state carries declared state, scaffold currency, and a version cache", async (t) => {
