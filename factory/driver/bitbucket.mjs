@@ -40,6 +40,7 @@ const OPEN_ISSUE_STATES = new Set(["new", "open", "on hold"]);
 // `gh issue list --state open --limit 100`), not the tracker's full history
 // — resolved needs-human questions accumulate past 100 in normal operation.
 const OPEN_ISSUE_Q = encodeURIComponent([...OPEN_ISSUE_STATES].map((s) => `state="${s}"`).join(" OR "));
+const CLOSED_ISSUE_Q = encodeURIComponent(["resolved", "closed", "invalid", "duplicate", "wontfix"].map((s) => `state="${s}"`).join(" OR "));
 
 export const bitbucketForge = ({ project, env = {} }) => {
   const key = (k) => env[k] ?? process.env[k];
@@ -132,15 +133,24 @@ export const bitbucketForge = ({ project, env = {} }) => {
       return r.links?.html?.href ?? `https://bitbucket.org/${repo()}/pull-requests/${r.id}`;
     },
     prComment: (pr, body) => { req(`${base()}/pullrequests/${prId(pr)}/comments`, { method: "POST", body: { content: { raw: body } } }); },
+    prComments: (pr) => (json(`${base()}/pullrequests/${prId(pr)}/comments?pagelen=100`).values ?? [])
+      .map((c) => ({ author: c.user?.display_name ?? null, body: c.content?.raw ?? "", createdAt: c.created_on ?? null })),
+    prListMerged: () => (json(`${base()}/pullrequests?state=MERGED&pagelen=30`).values ?? []).map((p) => ({
+      number: p.id, url: p.links?.html?.href ?? null, title: p.title, headRefName: p.source?.branch?.name ?? null,
+    })),
 
     issueListOpen: () => (json(`${base()}/issues?pagelen=100&q=${OPEN_ISSUE_Q}`).values ?? [])
       .filter((i) => OPEN_ISSUE_STATES.has(i.state)) // belt over the q= braces
+      .map((i) => ({ number: i.id, title: i.title, url: i.links?.html?.href ?? null })),
+    issueListClosed: () => (json(`${base()}/issues?pagelen=20&q=${CLOSED_ISSUE_Q}&sort=-updated_on`).values ?? [])
       .map((i) => ({ number: i.id, title: i.title, url: i.links?.html?.href ?? null })),
     issueCreate: ({ title, body }) => {
       const r = json(`${base()}/issues`, { method: "POST", body: { title, content: { raw: body } } });
       return r.links?.html?.href ?? `https://bitbucket.org/${repo()}/issues/${r.id}`;
     },
     issueComment: (number, body) => { req(`${base()}/issues/${number}/comments`, { method: "POST", body: { content: { raw: body } } }); },
+    issueComments: (number) => (json(`${base()}/issues/${number}/comments?pagelen=100`).values ?? [])
+      .map((c) => ({ author: c.user?.display_name ?? null, body: c.content?.raw ?? "", createdAt: c.created_on ?? null })),
 
     authCheck: ({ wantBoard = false } = {}) => {
       const rows = [];

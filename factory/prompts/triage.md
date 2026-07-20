@@ -13,36 +13,21 @@ branches, no checkouts, no commits, no merges.
 ## 1. Collect inputs
 
 - Read the **Factory config** section at the end of this prompt (tracker,
-  mirrors) — env tokens are already set. (No config file in this checkout:
-  factory config lives on the machine, outside the repo.)
-- **Repo forge** — on GitHub via `gh` (works with GH_TOKEN); on Bitbucket
-  via REST (`echo "user = \"$BITBUCKET_EMAIL:$BITBUCKET_API_TOKEN\"" |
-  curl -sS -K - https://api.bitbucket.org/2.0/repositories/<ws>/<slug>/...`
-  — creds on stdin via `-K -`, never `-u` (argv is host-visible);
-  PRs under `/pullrequests`, comments under `/pullrequests/<id>/comments`,
-  issues under `/issues`. **Any request that SENDS a body — a comment, a
-  new issue — writes that JSON to `.factory/tmp/<name>.json` with the
-  Write tool first, then rides a single-line `--data
-  @.factory/tmp/<name>.json`**: a payload inline in the command makes it
-  multi-line, and `dontAsk` denies multi-line commands outright.
-  `.factory/tmp/` is gitignored): new/updated open issues since the last triage,
-  new comments on `[factory]` PRs and on `needs-human` issues. A closed
-  `needs-human` issue with an answer = a decision: unblock the task and
-  record the answer in its Notes.
-- **Jira tracker** (only if config `tracker: "jira"`): `needs-human`
-  questions and the daily log live in the Jira project `jiraProject`, NOT
-  the repo's tracker — apply the previous bullet's issue reading there
-  instead. Via REST (`echo "user = \"$JIRA_EMAIL:$JIRA_API_TOKEN\"" |
-  curl -sS -K -
-  "$JIRA_BASE_URL/rest/api/3/search/jql?jql=<urlencoded>&fields=summary,status"`
-  — creds on stdin, never `-u`; the legacy `/search` endpoint is gone),
-  read open `[factory] question:`
-  issues plus those closed/Done since the last triage, and their comments
-  (`GET /issue/<KEY>/comment`). A Done question with an answer = a
-  decision, exactly as on GitHub.
-  **If config sets `jiraEpic`, the project is SHARED**: append
-  `AND parent = "<jiraEpic>"` to every JQL and never read or touch
-  issues outside that epic — they belong to other teams.
+  mirrors). (No config file in this checkout: factory config lives on the
+  machine, outside the repo.)
+- **Read the `## Forge inputs` section at the end of this prompt** — the
+  driver collected the forge and tracker state for you at session start:
+  open PRs with their `[factory]` conversation comments, recently merged
+  PRs, and open tracker issues with comments (already routed to the
+  repo tracker or Jira per config, and epic-scoped where that applies).
+  **You hold no forge credentials — never call the forge or tracker
+  yourself; every credential command form is denied in this context.**
+  Work the inputs as before: new comments on `[factory]` PRs and on
+  `needs-human` issues are answers/asks; a `needs-human` issue that no
+  longer appears in the open list was closed — treat its last comment
+  (inlined) as the decision: unblock the task and record the answer in
+  its Notes. A block reading `(unavailable: …)` means that read failed
+  this session — note it in the daily log and work with what you have.
 - **Notion mirror** (only if `"notion"` in mirrors): via the project's Notion
   MCP tools, check the pages named in `.factory/spec/decisions.md` or the
   config's `notionPageId` for new comments/edits.
@@ -117,13 +102,15 @@ branches, no checkouts, no commits, no merges.
 
 ## 3. Plan of day
 
-Comment on (or create) the tracking issue `[factory] daily log` — in the
-Jira project when config says `tracker: "jira"` (ADF comment bodies), on
-the repo tracker otherwise:
-what came in, what changed in the backlog, what the next window will likely
-work on (first 2-3 eligible tasks), open `needs-human` questions. If any
-tasks sit at `needs-human`, add explicit "waiting on owner: T-…" lines —
-the owner reads this digest to find what only they can clear.
+Post the daily digest **with the `post_daily_log` MCP tool** (one call,
+the full markdown body, date included) — the DRIVER puts it on the
+`[factory] daily log` tracker issue with its own credentials at session
+end, routed to the repo tracker or Jira per config; never post it
+yourself. Content: what came in, what changed in the backlog, what the
+next window will likely work on (first 2-3 eligible tasks), open
+`needs-human` questions. If any tasks sit at `needs-human`, add explicit
+"waiting on owner: T-…" lines — the owner reads this digest to find what
+only they can clear.
 
 ## 4. Session plan for the next window
 

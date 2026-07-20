@@ -319,9 +319,12 @@ display on 4 of 6 fleet factories (2026-07-19).
   sessions are the sanctioned exception: they ship their OWN tasks' `Status:`
   flips inside the PR that ships the work — see the Piloting contract.) They report MID-RUN through the
   driver's stdio MCP server (v2 O2: `report_status`, `open_question`,
-  `log_progress`, plus `create_pr` since factory 1.7.0 — the driver opens
-  the PR itself via the forge adapter with its own credentials, so sessions
-  never shell out with keys; validated tool calls appended to
+  `log_progress`, plus `create_pr` since factory 1.7.0 and
+  `post_daily_log` since 1.8.0 — the driver opens PRs and posts the
+  daily log itself via the forge/tracker adapters with its own
+  credentials, and pre-collects every forge/tracker READ into the
+  triage/report prompts' `## Forge inputs` section, so sessions never
+  shell out with keys; validated tool calls appended to
   `<state>/log/<mode>-<ts>.mcp.jsonl`; a session killed at minute 40 has
   already reported everything up to minute 40, and its last settled report
   stands in for `<state>/log/last-session.json`, which survives as the
@@ -473,8 +476,12 @@ service, `factory-onfailure@.service`) live in `factory/schedulers/`.
   `create_pr` MCP tool (factory 1.7.0) — the driver makes the forge call
   with its own credentials. Every shell-side credential recipe was
   live-disproven 2026-07-20 (all command forms denied in real worktrees
-  under `dontAsk`), which is why PR creation is driver-side by contract;
-  a session must never fall back to shelling out with keys.
+  under `dontAsk`), which is why ALL session forge access is driver-side
+  by contract since 1.8.0: PR creation via `create_pr`, the daily log
+  via `post_daily_log` (failures queue in state and retry, same as
+  questions), and triage/report reads via the driver-collected
+  `## Forge inputs` prompt section. A session must never fall back to
+  shelling out with keys.
   **A Bitbucket repo ships with its issue tracker OFF**, and the API then
   answers 410 Gone on `/issues` while every PR call keeps working — so
   needs-human questions queue silently. Doctor probes the native tracker

@@ -36,7 +36,7 @@ const readEvents = (world) => {
 const init = { jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "test", version: "0" } } };
 const call = (id, name, args) => ({ jsonrpc: "2.0", id, method: "tools/call", params: { name, arguments: args } });
 
-test("mcp-server initializes and lists the four session tools", async (t) => {
+test("mcp-server initializes and lists the five session tools", async (t) => {
   const world = makeFactory(t);
   const rs = await runMcp(world, [init, { jsonrpc: "2.0", id: 2, method: "tools/list" }]);
   const initR = rs.find((r) => r.id === 1);
@@ -45,9 +45,29 @@ test("mcp-server initializes and lists the four session tools", async (t) => {
   const list = rs.find((r) => r.id === 2);
   assert.deepEqual(
     list.result.tools.map((tl) => tl.name).sort(),
-    ["create_pr", "log_progress", "open_question", "report_status"]
+    ["create_pr", "log_progress", "open_question", "post_daily_log", "report_status"]
   );
   for (const tl of list.result.tools) assert.equal(tl.inputSchema.type, "object");
+});
+
+test("post_daily_log records the body for the driver to post at session end", async (t) => {
+  const world = makeFactory(t);
+  const rs = await runMcp(world, [init, call(2, "post_daily_log", { body: "## Plan of day: T-003 next" })]);
+  const r = rs.find((x) => x.id === 2);
+  assert.ok(!r.result.isError, `unexpected tool error: ${JSON.stringify(r.result)}`);
+  const events = readEvents(world);
+  assert.equal(events.length, 1);
+  assert.equal(events[0].event, "daily_log");
+  assert.match(events[0].body, /T-003 next/);
+});
+
+test("post_daily_log without a body is a validation error and writes no event", async (t) => {
+  const world = makeFactory(t);
+  const rs = await runMcp(world, [init, call(2, "post_daily_log", {})]);
+  const r = rs.find((x) => x.id === 2);
+  assert.equal(r.result.isError, true);
+  assert.match(r.result.content[0].text, /body/);
+  assert.equal(readEvents(world).length, 0);
 });
 
 test("valid report_status appends a validated row to the events file", async (t) => {
