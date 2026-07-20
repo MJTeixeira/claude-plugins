@@ -78,12 +78,18 @@ git push -u origin <branch>
 then open the PR per the forge (`git remote get-url origin`):
 
 - **GitHub**: `gh pr create --title "..." --body "..."`
-- **Bitbucket Cloud**: REST —
-  `echo "user = \"$BITBUCKET_EMAIL:$BITBUCKET_API_TOKEN\"" | curl -sS -K -
-  -X POST -H "Content-Type: application/json" --data '{"title": "...",
-  "description": "...", "source": {"branch": {"name": "<branch>"}},
-  "destination": {"branch": {"name": "<target branch>"}}}'
-  https://api.bitbucket.org/2.0/repositories/<workspace>/<slug>/pullrequests`
+- **Bitbucket Cloud**: REST, in TWO steps:
+  1. Write the request body to a scratch file (e.g. `/tmp/pr.json`) with
+     the Write tool — never a heredoc, never inline JSON in the command:
+     `{"title": "...", "description": "...", "source": {"branch": {"name":
+     "<branch>"}}, "destination": {"branch": {"name": "<target branch>"}}}`
+  2. Then ONE single-line command:
+     `echo "user = \"$BITBUCKET_EMAIL:$BITBUCKET_API_TOKEN\"" | curl -sS -K - -X POST -H "Content-Type: application/json" --data @/tmp/pr.json https://api.bitbucket.org/2.0/repositories/<workspace>/<slug>/pullrequests`
+
+  A multi-line `--data '{...}'` inline in the command is what fails: the
+  Bash permission matcher cannot decompose a command carrying newlines, so
+  restricted permission modes deny it outright. The body file keeps the
+  command one line and short.
   (workspace/slug from the origin URL; keys are an Atlassian API token —
   the username is the account EMAIL — and ride stdin via `-K -`, never
   `-u`: argv is visible to every process on the host. Always set

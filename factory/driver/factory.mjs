@@ -582,6 +582,43 @@ const removeWorktree = (p, context) => {
   }
 };
 
+// prep-only: a LOCKED registered worktree whose locker died lingers forever —
+// `worktree prune` skips locked entries, and quarantine can't remove a
+// registered worktree (git resurrects it). A bridge/cloud session crash left
+// one in a fleet repo for days (2026-07-14): permanent dirty tree, window-end
+// ff refused. Only locks whose reason carries a DEAD pid are pruned; a lock
+// with no parsable pid is a deliberate hold — preserved, but logged so it
+// never lingers invisibly. Any throw on the liveness probe counts as dead,
+// matching the window-lock check (same-user machine).
+const pruneStaleLockedWorktrees = () => {
+  let out;
+  try { out = git(["worktree", "list", "--porcelain"]); } catch { return; }
+  for (const block of out.split("\n\n")) {
+    const wtPath = block.match(/^worktree (.+)$/m)?.[1];
+    const locked = block.match(/^locked(?: (.*))?$/m);
+    if (!wtPath || !locked || path.resolve(wtPath) === path.resolve(project)) continue;
+    const pid = Number(locked[1]?.match(/\bpid[ =:]*(\d+)\b/i)?.[1] ?? (/^\s*(\d+)\s*$/.exec(locked[1] ?? "")?.[1]));
+    if (!pid) {
+      log(`prep: locked worktree ${wtPath} — no pid in lock reason ("${(locked[1] ?? "").trim()}"), leaving it`);
+      continue;
+    }
+    try { process.kill(pid, 0); continue; } catch { /* locker is dead */ }
+    try {
+      if (fs.existsSync(wtPath) && statusRecords(wtPath).some(({ rel }) => !isInjectedPath(rel))) {
+        const q = copyDirtyBytes(wtPath, nowStamp(), { skipInjected: true });
+        log(`prep: stale-locked worktree ${wtPath} — ${q.copied} dirty path(s) copied to ${q.qdir} before removal`);
+      }
+    } catch { /* unreadable worktree — the registration still has to go */ }
+    try {
+      git(["worktree", "remove", "--force", "--force", wtPath]);
+      log(`prep: removed stale-locked worktree ${wtPath} (locker pid ${pid} is dead)`);
+    } catch (e) {
+      log(`prep: stale-locked worktree ${wtPath} could not be removed (${firstLine(e)}) — remove it by hand`);
+    }
+  }
+  gitOk(["worktree", "prune"]);
+};
+
 // The driver's own working copy for tracked metadata (backlog flips, gate
 // merges, triage output): one persistent DETACHED worktree, refreshed from
 // origin at every boundary. Detached because the owner's checkout may hold
@@ -2207,7 +2244,8 @@ const notify = async (text) => {
     return;
   }
   try {
-    const res = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+    // FACTORY_TELEGRAM_API: test double (helpers.mjs startTelegramStub).
+    const res = await fetch(`${process.env.FACTORY_TELEGRAM_API ?? "https://api.telegram.org"}/bot${token}/sendMessage`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ chat_id: chatId, text: `[${factoryName}] ${text}`, disable_web_page_preview: true }),
@@ -3101,6 +3139,7 @@ if (mode === "prep") {
   writeLock(stateD, { mode: "prep", startedAt: new Date().toISOString() });
   try {
     log("prep: making the repo safe for the next factory window");
+    if (isGitRepo()) pruneStaleLockedWorktrees();
     await ensureCleanBase("prep");
     refreshMeta(); // flips edit the meta worktree — it must exist and be at origin tip
     const applied = applyFlips([]);

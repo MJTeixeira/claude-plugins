@@ -5,7 +5,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
-import { makeFactory } from "./helpers.mjs";
+import { makeFactory, startTelegramStub } from "./helpers.mjs";
 import { stateDir } from "../paths.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -88,7 +88,8 @@ const registerFactory = (world, factoryWorld) => {
 // expectedOrigin: what the deploy treats as the canonical distribution repo
 // (FACTORY_RUNTIME_ORIGIN). Defaults to the world's own bare origin; pass
 // null to leave the env unset and exercise the real hardcoded canonical URL.
-const runDeploy = (world, { extraPath = "", pathOverride = null, expectedOrigin = world.origin } = {}) => {
+// telegramApi: FACTORY_TELEGRAM_API override pointing at a startTelegramStub.
+const runDeploy = (world, { extraPath = "", pathOverride = null, expectedOrigin = world.origin, telegramApi = null } = {}) => {
   const r = spawnSync(
     process.execPath,
     [path.join(world.runtime, "factory", "driver", "deploy-runtime.mjs")],
@@ -101,6 +102,7 @@ const runDeploy = (world, { extraPath = "", pathOverride = null, expectedOrigin 
         CLAUDE_STUB_LOG: path.join(world.root, "claude-calls.log"),
         PATH: pathOverride ?? (extraPath ? `${extraPath}:${process.env.PATH}` : process.env.PATH),
         ...(expectedOrigin ? { FACTORY_RUNTIME_ORIGIN: expectedOrigin } : {}),
+        ...(telegramApi ? { FACTORY_TELEGRAM_API: telegramApi } : {}),
       },
     }
   );
@@ -299,6 +301,35 @@ test("a failing plugin sync warns but never fails an already-advanced deploy", (
   assert.equal(r.code, 0, `stdout:\n${r.stdout}\nstderr:\n${r.stderr}`);
   assert.equal(runtimeHead(world), target, "sync failure must not roll back or block the advance");
   assert.match(r.stdout, /plugins NOT synced/i);
+});
+
+// The deploy message must lead with the ANSWER — the sha the runtime is at
+// NOW. The old "advanced <from> → <to>" shape was read backwards in practice
+// (the owner took the FROM sha as the new one on 2026-07-19; technically
+// accurate but misread is a real defect). The Telegram leg is asserted
+// through the stub, not inferred from the log line.
+test("deploy Telegram and log lead with the new sha, old sha in parentheses", (t) => {
+  const world = makeRuntimeWorld(t);
+  const factory = makeFactory(t);
+  const binDir = registerFactory(world, factory);
+  const tg = startTelegramStub(t);
+  fs.writeFileSync(path.join(world.home, ".factory", "telegram.env"),
+    "TELEGRAM_BOT_TOKEN=stub-token\nTELEGRAM_CHAT_ID=42\n");
+  const before = runtimeHead(world);
+  const target = commitOnOrigin(world, (seed) => {
+    fs.appendFileSync(path.join(seed, "factory", "driver", "factory.mjs"), "// deploy-test marker\n");
+  });
+
+  const r = runDeploy(world, { extraPath: binDir, telegramApi: tg.url });
+
+  assert.equal(r.code, 0, `stdout:\n${r.stdout}\nstderr:\n${r.stderr}`);
+  const now = target.slice(0, 7), was = before.slice(0, 7);
+  assert.match(r.stdout, new RegExp(`runtime now at ${now} \\(was ${was}`), "log line must answer first");
+  const msgs = tg.messages();
+  assert.equal(msgs.length, 1, `exactly one Telegram message for a clean advance\nstdout:\n${r.stdout}`);
+  assert.equal(msgs[0].chat_id, "42");
+  assert.match(msgs[0].text, new RegExp(`✓ runtime now at ${now} \\(was ${was}, 1 commit\\(s\\), 1 factory doctor\\(s\\) green\\)`),
+    "Telegram must answer first: the sha the runtime is at NOW");
 });
 
 test("candidate with a syntax error is refused and the runtime stays put", (t) => {

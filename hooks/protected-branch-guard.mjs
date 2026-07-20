@@ -30,9 +30,36 @@ const deny = (reason) => {
   process.exit(0);
 };
 
-// Strip quoted strings first, so literal text like a commit message or a
+// Heredoc bodies are DATA (commit messages, PR bodies) — prose in them must
+// not trip the rules, and a stray apostrophe in prose must not unbalance
+// the quote-stripping below, so bodies go first. Everything from the line
+// after a `<<TAG` opener up to and including the terminator line is
+// dropped; multiple openers on one line consume their bodies in order.
+// `<<<` herestrings don't match (the tag pattern requires a word) and are
+// single words the quote-stripping already handles.
+const stripHeredocs = (s) => {
+  const lines = String(s).split("\n");
+  const out = [];
+  let i = 0;
+  while (i < lines.length) {
+    const line = lines[i];
+    out.push(line);
+    const tags = [...line.matchAll(/<<-?\s*(?:'([^']+)'|"([^"]+)"|\\?(\w+))/g)]
+      .map((m) => m[1] ?? m[2] ?? m[3]);
+    i++;
+    for (const tag of tags) {
+      // <<- allows tab-indented terminators; an unterminated heredoc eats
+      // the rest of the command, which is also what the shell would do.
+      while (i < lines.length && lines[i].replace(/^\t+/, "") !== tag) i++;
+      i++;
+    }
+  }
+  return out.join("\n");
+};
+
+// Strip quoted strings next, so literal text like a commit message or a
 // grep pattern containing "git push origin main" never trips the rules.
-const cmd = String(event.tool_input?.command ?? "").replace(/"[^"]*"|'[^']*'/g, '""');
+const cmd = stripHeredocs(event.tool_input?.command ?? "").replace(/"[^"]*"|'[^']*'/g, '""');
 // EVERY git invocation in the command decides (chains like
 // `git add -A && git commit` must not slip through on the first
 // subcommand), and each is judged with ITS OWN -C target: `git -C /repo

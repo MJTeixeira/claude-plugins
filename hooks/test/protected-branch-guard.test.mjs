@@ -75,6 +75,36 @@ test("bare and HEAD pushes keep the current-branch check; explicit refspecs don'
   assert.ok(allowed(run(main, "git push origin fix/typo")));
 });
 
+// Heredoc bodies are DATA — commit messages and PR bodies routinely contain
+// prose like "git push origin main" (this repo writes about the guard
+// itself; the fix's own test content tripped the old guard when appended
+// via a Bash heredoc). The body must be stripped like quoted strings; real
+// commands before/after the heredoc still count. (Hit live 2026-07-13: a
+// PR body mentioning push-to-main was denied on a feature branch.)
+test("prose about git push/commit inside a heredoc body never trips the rules", (t) => {
+  const feat = makeRepo(t, "feature/x");
+  assert.ok(allowed(run(feat, "git commit -F - <<'EOF'\ndocs: never git push origin main directly — the guard denies it\nEOF")),
+    "quoted-delimiter heredoc body is data");
+  assert.ok(allowed(run(feat, "gh pr create --body-file - <<EOF\nThis change means git commit and git push origin main are both guarded.\nEOF")),
+    "unquoted-delimiter heredoc body is data");
+  assert.ok(allowed(run(feat, 'git commit -F - <<"EOF"\ndon\'t git push main — it\'s guarded\nEOF')),
+    "double-quoted delimiter; an apostrophe in the body must not unbalance quote-stripping");
+});
+
+test("a real command after a heredoc block is still judged", (t) => {
+  const feat = makeRepo(t, "feature/x");
+  const main = makeRepo(t, "main");
+  assert.match(run(feat, "cat <<'EOF'\nharmless prose\nEOF\ngit push origin main"),
+    /targets protected branch 'main'/);
+  assert.match(run(main, "git commit -F - <<'EOF'\nprose that is fine\nEOF"),
+    /protected branch 'main'/, "the commit itself on main still denies — only the body is data");
+});
+
+test("<<- heredoc with a tab-indented terminator strips correctly", (t) => {
+  const feat = makeRepo(t, "feature/x");
+  assert.ok(allowed(run(feat, "git commit -F - <<-EOF\n\tprose: git push origin main\n\tEOF")));
+});
+
 test("quoted strings never trip the rules", (t) => {
   const feat = makeRepo(t, "feature/x");
   assert.ok(allowed(run(feat, 'git commit -m "docs: push main ideas"')));

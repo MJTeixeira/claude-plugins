@@ -1,7 +1,7 @@
 // Test harness for the factory driver: builds a throwaway factory project
 // with a file:// bare origin, a stub `claude`, and a fake $HOME (trust,
 // registry), then runs the real driver against it as a child process.
-import { execFileSync, spawnSync } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -166,3 +166,48 @@ export const readUsageRows = (world) => {
 };
 
 export const gitIn = (dir, ...args) => git(dir, ...args);
+
+// Telegram test double: a local HTTP server standing in for api.telegram.org
+// (every notify copy honors FACTORY_TELEGRAM_API). Captures each sendMessage
+// body so tests can assert the exact text the owner would receive — the leg
+// that was previously unproven (tests asserted only the log line).
+// A SEPARATE process on purpose: the harness drives the tool under test with
+// spawnSync, which blocks this process's event loop — an in-process server
+// could never answer and the tool's fetch would time out.
+export const startTelegramStub = (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "tg-stub-"));
+  const script = path.join(dir, "server.mjs");
+  const portFile = path.join(dir, "port");
+  const msgFile = path.join(dir, "messages.jsonl");
+  fs.writeFileSync(script, `
+import * as http from "node:http";
+import * as fs from "node:fs";
+const [portFile, msgFile] = process.argv.slice(2);
+const srv = http.createServer((req, res) => {
+  let b = "";
+  req.on("data", (c) => (b += c));
+  req.on("end", () => {
+    fs.appendFileSync(msgFile, JSON.stringify({ path: req.url, body: b }) + "\\n");
+    res.setHeader("content-type", "application/json");
+    res.end('{"ok":true}');
+  });
+});
+srv.listen(0, "127.0.0.1", () => fs.writeFileSync(portFile, String(srv.address().port)));
+`);
+  const child = spawn(process.execPath, [script, portFile, msgFile], { stdio: "ignore" });
+  t?.after(() => { try { child.kill(); } catch { /* already gone */ } fs.rmSync(dir, { recursive: true, force: true }); });
+  const deadline = Date.now() + 10_000;
+  while (!fs.existsSync(portFile)) {
+    if (Date.now() > deadline) throw new Error("telegram stub did not start");
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50);
+  }
+  const url = `http://127.0.0.1:${fs.readFileSync(portFile, "utf8").trim()}`;
+  // messages() re-reads on each call — spawnSync children write while this
+  // process is blocked, so a live array can't work here.
+  const messages = () => !fs.existsSync(msgFile) ? [] :
+    fs.readFileSync(msgFile, "utf8").trim().split("\n").filter(Boolean).map((l) => {
+      const r = JSON.parse(l);
+      try { return { path: r.path, ...JSON.parse(r.body) }; } catch { return r; }
+    });
+  return { url, messages };
+};

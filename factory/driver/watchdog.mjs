@@ -127,7 +127,8 @@ if (failures.length && telegram) {
     `🩺 watchdog: ${failures.length}/${Object.keys(reg.factories).length} factory(ies) failing doctor\n` +
     failures.map((f) => `• ${f.name}: ${f.fails.slice(0, 3).join("; ").slice(0, 250)}`).join("\n");
   try {
-    const res = await fetch(`https://api.telegram.org/bot${telegram.token}/sendMessage`, {
+    // FACTORY_TELEGRAM_API: test double (helpers.mjs startTelegramStub).
+    const res = await fetch(`${process.env.FACTORY_TELEGRAM_API ?? "https://api.telegram.org"}/bot${telegram.token}/sendMessage`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ chat_id: telegram.chatId, text: `[fleet] ${text}`, disable_web_page_preview: true }),
