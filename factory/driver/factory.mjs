@@ -176,7 +176,10 @@ const runSession = ({ project, cfg, env, promptText, sessionLogPath, log, mode, 
           factory: {
             command: process.execPath,
             args: [fileURLToPath(import.meta.url), "mcp-server", "--project", project],
-            env: { FACTORY_MCP_EVENTS: mcpEventsPath },
+            // The state dir rides the env because the server's --project is
+            // the session worktree, which has no machine-side state to
+            // derive it from (create_pr needs forge config + .env).
+            env: { FACTORY_MCP_EVENTS: mcpEventsPath, FACTORY_STATE_DIR: stateD },
           },
         },
       }, null, 2));
@@ -1250,8 +1253,10 @@ if (mode === "migrate") {
 
 // The MCP server dispatches BEFORE loadConfig on purpose: sessions pass
 // their throwaway worktree as --project (it is their cwd), which has no
-// machine-side state of its own. The server's only real input is the
-// FACTORY_MCP_EVENTS env var — it must never depend on project state.
+// machine-side state of its own. Its inputs are env vars only: the events
+// file (FACTORY_MCP_EVENTS) always, and the machine-side state dir
+// (FACTORY_STATE_DIR) for the one tool that needs config + credentials
+// (create_pr) — never derived from --project.
 // ---------- MCP reporting server (factory-v2 O2) ----------
 // `mcp-server` mode: claude spawns one instance per session (via the
 // per-session --mcp-config the driver writes) and talks newline-delimited
@@ -1320,6 +1325,54 @@ if (mode === "mcp-server") {
         return { text: "question recorded — the driver will file or update the GitHub issue at session end" };
       },
     },
+    create_pr: {
+      description:
+        "Open the pull request for your pushed branch. The DRIVER makes the forge call with its own " +
+        "credentials — never shell out with credentials yourself (on Bitbucket every credential command " +
+        "form is denied in this context). Targets the factory's configured base branch. Returns the PR " +
+        "url — pass it to report_status (status review) immediately.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          taskId: { type: ["string", "null"], description: "backlog task id, e.g. T-010" },
+          title: { type: "string", description: "PR title, e.g. [factory] T-010: <task title>" },
+          body: { type: "string", description: "PR body: what/why/how-verified + REQ ids" },
+          branch: { type: "string", description: "your pushed head branch, e.g. factory/T-010-slug" },
+        },
+        required: ["title", "branch"],
+      },
+      call: (a) => {
+        const title = str(a.title, 300);
+        if (!title) return { error: "title (non-empty string) is required" };
+        const branch = str(a.branch, 300);
+        if (!branch) return { error: "branch (non-empty string) is required" };
+        const taskId = str(a.taskId, 80);
+        const stateD = process.env.FACTORY_STATE_DIR;
+        if (!stateD || !fs.existsSync(path.join(stateD, "config.json"))) {
+          return { text: "create_pr unavailable: the driver did not hand over the factory state dir (FACTORY_STATE_DIR) — this driver spawn predates create_pr; report_status blocked instead", isError: true };
+        }
+        const cfg = loadConfig(stateD);
+        const forge = createForge({ kind: cfg.forge ?? "github", project, env: readEnvFile(stateD) });
+        try {
+          const url = forge.prCreate({ title, body: str(a.body, 10000) ?? "", head: branch, base: cfg.baseBranch });
+          record("create_pr", { taskId, branch, url });
+          return { text: `PR opened: ${url} — now call report_status (status review) with this url` };
+        } catch (e) {
+          // Idempotent under retries: a turn-capped session may have already
+          // created it — an open PR for this head branch is the answer.
+          try {
+            const existing = forge.prListOpen().find((p) => p.headRefName === branch);
+            if (existing?.url) {
+              record("create_pr", { taskId, branch, url: existing.url, existing: true });
+              return { text: `a PR for ${branch} is already open: ${existing.url} — now call report_status (status review) with this url` };
+            }
+          } catch { /* the create failure below is the real story */ }
+          const error = firstLine(e);
+          record("create_pr", { taskId, branch, error });
+          return { text: `create_pr FAILED: ${error} — do NOT fall back to shelling out with credentials; report_status blocked (open_question if the cause needs the owner)`, isError: true };
+        }
+      },
+    },
     log_progress: {
       description: "Leave a one-line breadcrumb in the factory journal (visible on the dashboard). Cheap — use at each milestone.",
       inputSchema: {
@@ -1366,7 +1419,7 @@ if (mode === "mcp-server") {
         try { r = tool.call(params?.arguments ?? {}); } catch (e) { r = { error: firstLine(e) }; }
         respond(id, r.error
           ? { content: [{ type: "text", text: `invalid arguments: ${r.error}` }], isError: true }
-          : { content: [{ type: "text", text: r.text }] });
+          : { content: [{ type: "text", text: r.text }], ...(r.isError ? { isError: true } : {}) });
       } else if (method === "ping") {
         respond(id, {});
       } else if (id !== undefined) {

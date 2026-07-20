@@ -11,9 +11,9 @@ import { makeFactory, queueSessions, runDriver, readUsageRows, driverPath, start
 const eventsPathFor = (world) => path.join(world.stateDir, "log", "mcp-test-session.jsonl");
 
 // Send the requests, close stdin, return parsed responses (order preserved).
-const runMcp = async (world, requests) => {
+const runMcp = async (world, requests, extraEnv = {}) => {
   const child = spawn(process.execPath, [driverPath, "mcp-server", "--project", world.project], {
-    env: { ...process.env, HOME: world.home, FACTORY_MCP_EVENTS: eventsPathFor(world) },
+    env: { ...process.env, HOME: world.home, FACTORY_MCP_EVENTS: eventsPathFor(world), ...extraEnv },
     stdio: ["pipe", "pipe", "pipe"],
   });
   let out = "";
@@ -36,7 +36,7 @@ const readEvents = (world) => {
 const init = { jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "test", version: "0" } } };
 const call = (id, name, args) => ({ jsonrpc: "2.0", id, method: "tools/call", params: { name, arguments: args } });
 
-test("mcp-server initializes and lists the three reporting tools", async (t) => {
+test("mcp-server initializes and lists the four session tools", async (t) => {
   const world = makeFactory(t);
   const rs = await runMcp(world, [init, { jsonrpc: "2.0", id: 2, method: "tools/list" }]);
   const initR = rs.find((r) => r.id === 1);
@@ -45,7 +45,7 @@ test("mcp-server initializes and lists the three reporting tools", async (t) => 
   const list = rs.find((r) => r.id === 2);
   assert.deepEqual(
     list.result.tools.map((tl) => tl.name).sort(),
-    ["log_progress", "open_question", "report_status"]
+    ["create_pr", "log_progress", "open_question", "report_status"]
   );
   for (const tl of list.result.tools) assert.equal(tl.inputSchema.type, "object");
 });
@@ -118,6 +118,99 @@ test("a request split mid-multibyte-character across stdin chunks still gets ser
   assert.equal(events[0].message, "café ouvert — étape franchie");
 });
 
+// ---------- create_pr (driver-side PR creation — sessions never touch creds) ----------
+
+// Programmable stub gh on PATH: `pr create` and `pr list` answers come from
+// canned files so each test scripts the forge's behavior.
+const withGh = (world, { createOut, createFail = false, listJson = "[]" } = {}) => {
+  const dir = path.join(world.root, "mcp-gh-bin");
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, "gh"), `#!/bin/sh
+ROOT="$(dirname "$0")"
+printf '%s\\n' "$*" >> "$ROOT/calls.log"
+case "$1 $2" in
+  "pr create")
+    if [ -s "$ROOT/create-fail" ]; then echo "GraphQL: something broke" >&2; exit 1; fi
+    echo "${createOut ?? ""}" ;;
+  "pr list") cat "$ROOT/pr-list.json" ;;
+  *) echo "" ;;
+esac
+exit 0
+`);
+  fs.chmodSync(path.join(dir, "gh"), 0o755);
+  fs.writeFileSync(path.join(dir, "create-fail"), createFail ? "yes" : "");
+  fs.writeFileSync(path.join(dir, "pr-list.json"), listJson);
+  return {
+    env: { FACTORY_STATE_DIR: world.stateDir, PATH: `${dir}${path.delimiter}${process.env.PATH}` },
+    calls: () => (fs.existsSync(path.join(dir, "calls.log")) ? fs.readFileSync(path.join(dir, "calls.log"), "utf8") : ""),
+  };
+};
+
+const CREATE_ARGS = { taskId: "T-001", title: "[factory] T-001: sample", body: "what/why", branch: "factory/T-001" };
+
+test("create_pr opens the PR on the configured forge — base branch from config, never the session", async (t) => {
+  const world = makeFactory(t);
+  const gh = withGh(world, { createOut: "https://github.com/o/r/pull/41" });
+  const rs = await runMcp(world, [init, call(2, "create_pr", CREATE_ARGS)], gh.env);
+  const r = rs.find((x) => x.id === 2);
+  assert.ok(!r.result.isError, `unexpected tool error: ${JSON.stringify(r.result)}`);
+  assert.match(r.result.content[0].text, /https:\/\/github\.com\/o\/r\/pull\/41/);
+  const createLine = gh.calls().split("\n").find((l) => l.startsWith("pr create"));
+  assert.ok(createLine.includes("--head factory/T-001"), `head branch missing: ${createLine}`);
+  assert.ok(createLine.includes("--base main"), `config base branch missing: ${createLine}`);
+  const events = readEvents(world);
+  assert.equal(events.length, 1);
+  assert.equal(events[0].event, "create_pr");
+  assert.equal(events[0].taskId, "T-001");
+  assert.equal(events[0].branch, "factory/T-001");
+  assert.equal(events[0].url, "https://github.com/o/r/pull/41");
+});
+
+test("create_pr without FACTORY_STATE_DIR (older driver spawn) is a clean tool error, not a crash", async (t) => {
+  const world = makeFactory(t);
+  const rs = await runMcp(world, [init, call(2, "create_pr", CREATE_ARGS)]);
+  const r = rs.find((x) => x.id === 2);
+  assert.equal(r.result.isError, true);
+  assert.match(r.result.content[0].text, /state dir|FACTORY_STATE_DIR/);
+  assert.equal(readEvents(world).length, 0);
+});
+
+test("create_pr without a branch is a validation error and writes no event", async (t) => {
+  const world = makeFactory(t);
+  const gh = withGh(world, { createOut: "https://github.com/o/r/pull/41" });
+  const rs = await runMcp(world, [init, call(2, "create_pr", { title: "t", body: "b" })], gh.env);
+  const r = rs.find((x) => x.id === 2);
+  assert.equal(r.result.isError, true);
+  assert.match(r.result.content[0].text, /branch/);
+  assert.equal(readEvents(world).length, 0);
+});
+
+test("create_pr failure falls back to an already-open PR for the same branch (turn-cap retry)", async (t) => {
+  const world = makeFactory(t);
+  const gh = withGh(world, {
+    createFail: true,
+    listJson: JSON.stringify([{ number: 7, url: "https://github.com/o/r/pull/7", title: "[factory] T-001: sample", headRefName: "factory/T-001", isDraft: false }]),
+  });
+  const rs = await runMcp(world, [init, call(2, "create_pr", CREATE_ARGS)], gh.env);
+  const r = rs.find((x) => x.id === 2);
+  assert.ok(!r.result.isError, `unexpected tool error: ${JSON.stringify(r.result)}`);
+  assert.match(r.result.content[0].text, /https:\/\/github\.com\/o\/r\/pull\/7/);
+  const events = readEvents(world);
+  assert.equal(events[0].url, "https://github.com/o/r/pull/7");
+});
+
+test("create_pr failure with no existing PR reports the forge error and records it — never asks for shell creds", async (t) => {
+  const world = makeFactory(t);
+  const gh = withGh(world, { createFail: true, listJson: "[]" });
+  const rs = await runMcp(world, [init, call(2, "create_pr", CREATE_ARGS)], gh.env);
+  const r = rs.find((x) => x.id === 2);
+  assert.equal(r.result.isError, true);
+  assert.match(r.result.content[0].text, /GraphQL: something broke/);
+  const events = readEvents(world);
+  assert.equal(events.length, 1);
+  assert.match(events[0].error, /GraphQL: something broke/);
+});
+
 // ---------- driver wiring (dev window × MCP) ----------
 
 const RESULT_EVENT = { type: "result", subtype: "success", result: "ok", total_cost_usd: 0.01, num_turns: 3, usage: { input_tokens: 10, output_tokens: 20 } };
@@ -144,6 +237,9 @@ test("dev sessions get --mcp-config wired to this driver and a per-session event
   const events = srv.env.FACTORY_MCP_EVENTS;
   assert.ok(events.startsWith(path.join(world.stateDir, "log")), `events file outside project log dir: ${events}`);
   assert.ok(events.endsWith(".mcp.jsonl"));
+  // create_pr needs machine-side state (forge config + .env) — the driver
+  // hands the state dir over explicitly; the server never derives it.
+  assert.equal(srv.env.FACTORY_STATE_DIR, world.stateDir);
   // The session's own env carries the path too (guard visibility, stub scripts).
   assert.equal(inv.factoryMcpEvents, events);
 });

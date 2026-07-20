@@ -20,6 +20,7 @@
 //                           read (never the flaky check-rollup query)
 //   prMerge(pr)             merge an open PR (throws on refusal)
 //   prComment(pr, body)
+//   prCreate({title, body, head, base}) -> new PR url (trimmed)
 //   issueListOpen()         [{number, title, url}]
 //   issueCreate({title, body}) -> issue url (trimmed)
 //   issueComment(number, body)
@@ -70,6 +71,7 @@ const githubForge = ({ project, env = {} }) => {
     prState: (pr) => jsonOut(["pr", "view", pr, "--json", "state"]).state,
     prMerge: (pr) => { out(["pr", "merge", pr, "--merge"]); },
     prComment: (pr, body) => { out(["pr", "comment", pr, "--body", body]); },
+    prCreate: ({ title, body, head, base }) => out(["pr", "create", "--head", head, "--base", base, "--title", title, "--body", body]).trim(),
 
     issueListOpen: () => jsonOut(["issue", "list", "--state", "open", "--limit", "100", "--json", "number,title,url"]),
     issueCreate: ({ title, body }) => out(["issue", "create", "--title", title, "--body", body]).trim(),

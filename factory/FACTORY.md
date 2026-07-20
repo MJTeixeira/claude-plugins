@@ -319,7 +319,9 @@ display on 4 of 6 fleet factories (2026-07-19).
   sessions are the sanctioned exception: they ship their OWN tasks' `Status:`
   flips inside the PR that ships the work — see the Piloting contract.) They report MID-RUN through the
   driver's stdio MCP server (v2 O2: `report_status`, `open_question`,
-  `log_progress` — validated tool calls appended to
+  `log_progress`, plus `create_pr` since factory 1.7.0 — the driver opens
+  the PR itself via the forge adapter with its own credentials, so sessions
+  never shell out with keys; validated tool calls appended to
   `<state>/log/<mode>-<ts>.mcp.jsonl`; a session killed at minute 40 has
   already reported everything up to minute 40, and its last settled report
   stands in for `<state>/log/last-session.json`, which survives as the
@@ -464,14 +466,15 @@ service, `factory-onfailure@.service`) live in `factory/schedulers/`.
   needs-human questions file into the repo's NATIVE issue tracker unless
   the Jira tracker below is configured, and dashboard check-chips read
   "none" until Pipelines statuses are wired. Sessions and the `finishing`
-  skill are forge-neutral (Bitbucket REST wording rides the prompts) — a
+  skill are forge-neutral — a
   Bitbucket factory ran its first live client pilot 2026-07-19: build,
   verify, review, session pushes, the turn-cap resume chain and the merge
-  all proven against the real API. **Session-opened PRs are NOT yet
-  proven** — the pilot's PR-create was denied (see Piloting gotchas: the
-  multi-line-command trap) and the operator opened PR #1 by hand; the
-  file-backed recipe that replaced it is untested in a live window. Watch
-  that leg on the next one.
+  all proven against the real API. Sessions open PRs through the
+  `create_pr` MCP tool (factory 1.7.0) — the driver makes the forge call
+  with its own credentials. Every shell-side credential recipe was
+  live-disproven 2026-07-20 (all command forms denied in real worktrees
+  under `dontAsk`), which is why PR creation is driver-side by contract;
+  a session must never fall back to shelling out with keys.
   **A Bitbucket repo ships with its issue tracker OFF**, and the API then
   answers 410 Gone on `/issues` while every PR call keeps working — so
   needs-human questions queue silently. Doctor probes the native tracker

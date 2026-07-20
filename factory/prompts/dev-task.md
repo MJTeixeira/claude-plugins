@@ -8,8 +8,9 @@ never ask questions, never wait — decide, or mark blocked and move on.
 Your task branch carries CODE ONLY: source, tests, `.docs/`. You never edit
 `.factory/backlog/` files, never commit to the base branch, and never merge
 anything. You report status exclusively through the **factory MCP tools**
-(`report_status`, `open_question`, `log_progress`) — the DRIVER edits the
-backlog, commits metadata, merges PRs, and files needs-human issues. If the
+(`report_status`, `open_question`, `log_progress`, `create_pr`) — the
+DRIVER edits the backlog, commits metadata, opens and merges PRs, and
+files needs-human issues. If the
 factory tools are missing from your toolset, fall back to writing
 `.factory/log/last-session.json` (same fields as `report_status`). If
 backlog files look stale (a task you know is merged still says `review`),
@@ -126,32 +127,23 @@ the merge gate arrives too late).
 
 ## Land it (per `autonomy` in config.json)
 
-- Every level: push the branch, open a PR to the base branch (title
-  `[factory] T-<id>: <title>`, body: what/why/how-verified + REQ ids), then
-  IMMEDIATELY call `report_status` (status `review`, the PR url) — before
-  anything else, so a turn cap after this point loses nothing.
-  On a GitHub origin use `gh pr create`; on a Bitbucket origin `gh` does
-  not exist — REST instead, in TWO steps:
-  1. Write the request body to `.factory/tmp/pr.json` **with the Write
-     tool** — never a heredoc, never inline in the command:
-     `{"title": "...", "description": "...", "source": {"branch": {"name":
-     "<your branch>"}}, "destination": {"branch": {"name": "<the base
-     branch>"}}}`
-  2. Then ONE single-line command:
-     `echo "user = \"$BITBUCKET_EMAIL:$BITBUCKET_API_TOKEN\"" | curl -sS -K - -X POST -H "Content-Type: application/json" --data @.factory/tmp/pr.json https://api.bitbucket.org/2.0/repositories/<workspace>/<slug>/pullrequests`
+- Every level: push the branch, then open the PR **with the `create_pr`
+  MCP tool** (title `[factory] T-<id>: <title>`, body: what/why/how-verified
+  + REQ ids, branch: your pushed branch). The driver makes the forge call
+  with its own credentials and answers with the PR url; the base branch
+  comes from config — you never pick it. Then IMMEDIATELY call
+  `report_status` (status `review`, that url) — before anything else, so a
+  turn cap after this point loses nothing. If the tool answers that a PR
+  for your branch already exists, that IS your PR (an earlier turn-capped
+  attempt) — report `review` with its url.
 
-  **A JSON payload inline in the command is what makes this fail.** A
-  multi-line `--data '{...}'` is denied outright under `dontAsk` (the Bash
-  permission matcher cannot decompose a command carrying newlines) — a
-  live pilot session lost its PR to exactly this and the operator had to
-  open it by hand. The body file keeps the command one line and short.
-  `.factory/tmp/` is gitignored, so the file never dirties your branch.
-
-  (workspace/slug from `git remote get-url origin`; keys are already in
-  your environment and MUST ride stdin via `-K -` as shown, never `-u` —
-  argv is world-readable while curl runs. `destination` is NOT optional:
-  omitted, Bitbucket targets the repo's main branch instead of the
-  factory base branch. The PR url is `links.html.href` in the response.)
+  **Never shell out with credentials to open a PR.** On a Bitbucket origin
+  every credential command form is denied in this context (live-proven —
+  pipes, netrc redirects, all of it); `create_pr` exists precisely so you
+  never touch the keys. If the `create_pr` tool is missing from your
+  toolset (older driver spawn): on a GitHub origin `gh pr create` still
+  works; on a Bitbucket origin leave the branch pushed and report
+  `blocked`.
 - `pr-only`: that's it. Humans merge.
 - `auto-merge-dev` / `milestone-gates`: that's it too — **never merge, never
   poll CI**. The driver watches checks, merges on green, and flips the

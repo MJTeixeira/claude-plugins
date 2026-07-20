@@ -35,6 +35,7 @@ case "$url" in
   */pullrequests/*/comments*) echo '{}' ;;
   *"/pullrequests?"*) cat "$ROOT/pr-list.json" ;;
   */pullrequests/*) cat "$ROOT/pr.json" ;;
+  */pullrequests) cat "$ROOT/pr-create.json" ;;
   */issues/*/comments*) echo '{}' ;;
   */issues*)
     if [ "$post" = 1 ]; then cat "$ROOT/issue-create.json"
@@ -151,6 +152,22 @@ test("prMerge posts to the merge endpoint of the PR parsed from its url", () => 
   clearCalls();
   forge.prMerge(PR_URL);
   assert.match(calls().join("\n"), /-X POST.*pullrequests\/7\/merge/);
+});
+
+test("prCreate posts source/destination branches and returns the new PR url — creds stay off argv", () => {
+  clearCalls();
+  set("pr-create.json", JSON.stringify({ id: 9, links: { html: { href: "https://bitbucket.org/acme/widget/pull-requests/9" } } }));
+  const url = forge.prCreate({ title: "[factory] T-9: add x", body: "what/why", head: "factory/T-9", base: "develop" });
+  assert.equal(url, "https://bitbucket.org/acme/widget/pull-requests/9");
+  const argv = calls().join("\n");
+  assert.match(argv, /-X POST/);
+  assert.match(argv, /repositories\/acme\/widget\/pullrequests(\s|$)/);
+  assert.match(argv, /"title":"\[factory\] T-9: add x"/);
+  assert.match(argv, /"description":"what\/why"/);
+  assert.match(argv, /"source":\{"branch":\{"name":"factory\/T-9"\}\}/);
+  assert.match(argv, /"destination":\{"branch":\{"name":"develop"\}\}/);
+  assert.doesNotMatch(argv, /sekret-tok/, "token must not be visible to ps");
+  assert.match(lastStdin(), /user = "m@example\.com:sekret-tok"/);
 });
 
 test("prComment posts content.raw", () => {
