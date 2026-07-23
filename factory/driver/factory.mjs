@@ -3153,21 +3153,27 @@ const mergeGate = async ({ pr, taskId }, budgetMs = cfg.mergeGateMinutes * 60 * 
 // nothing else ever re-reads it. Close the loop mechanically at every sweep:
 // check each parked gate-human PR and flip done on merge. Question-parked
 // tasks (no Gate: human) are NOT closed — the merge doesn't answer the issue.
+// Review-status tasks get the same closure regardless of gate: their PR is
+// the durable record, and once it's merged the task is done no matter who
+// merged it. Under pr-only the owner IS the merge path, and a task left at
+// review re-enters the next window's plan — each stale re-assignment burned
+// a paid session re-verifying a merge (4 sessions across two pr-only
+// pilots, fleet incident 2026-07-23).
 const closeOwnerMergedGates = () => {
   const s = readState();
-  const parked = Object.entries(s.tasks).filter(([, r]) => r.status === "needs-human" && r.pr);
+  const parked = Object.entries(s.tasks).filter(([, r]) => (r.status === "needs-human" || r.status === "review") && r.pr);
   if (!parked.length) return;
   const tasks = parseBacklogTasks(runtimeFactoryDir());
   for (const [id, rec] of parked) {
-    if (tasks.find((t) => t.id === id)?.gate !== "human") continue;
+    if (rec.status === "needs-human" && tasks.find((t) => t.id === id)?.gate !== "human") continue;
     try {
       if (forge.prState(rec.pr) !== "MERGED") continue;
       refreshMeta();
       const applied = applyFlips([{ taskId: id, status: "done" }]);
       if (applied.length) {
         commitMetadata(`${id} done (owner merged ${rec.pr})`);
-        log(`sweep: ${id} approved — owner merged ${rec.pr}`);
-        journal("gate:human-approved", "done", `${rec.pr} (${id})`);
+        log(`sweep: ${id} ${rec.status === "review" ? "closed" : "approved"} — owner merged ${rec.pr}`);
+        journal(rec.status === "review" ? "gate:external-merge" : "gate:human-approved", "done", `${rec.pr} (${id})`);
       }
     } catch (e) {
       log(`sweep: could not check parked PR ${rec.pr} (${firstLine(e)}) — next sweep retries`);
@@ -3383,6 +3389,16 @@ try {
   log(`window start: repo not ready (${firstLine(e)}) — aborting`);
   await notify(`✗ dev window ABORTED — repo not ready: ${firstLine(e)}`);
   process.exit(1);
+}
+
+// PRs merge between windows — under pr-only that's the ONLY way they merge,
+// and no sweep runs there at all. Close owner-merged PRs' tasks before the
+// skip check and the plan look at statuses, so a settled backlog skips and
+// a stale plan entry gets skipped instead of re-assigned.
+try {
+  closeOwnerMergedGates();
+} catch (e) {
+  log(`window start: owner-merged PR check failed (${firstLine(e)}) — continuing`);
 }
 
 // Zero actionable tasks → the window would only burn a paid probe session
