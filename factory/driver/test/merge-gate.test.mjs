@@ -235,6 +235,44 @@ test("the owner merging a parked human-gated PR flips the task done at the next 
     "the owner's merge is the approval — the sweep must close the loop mechanically");
 });
 
+test("an externally-merged PR for a review-status task closes at window start — no session re-verifies it", (t) => {
+  const world = makeFactory(t, {
+    config: { autonomy: "pr-only", mergeGateMinutes: 0.1, maxSessionsPerWindow: 1 },
+    tasks: `# Epic 1
+
+## T-001: sample task
+
+- Status: todo
+- Reqs: REQ-1
+- Acceptance: it works
+- Verify: true
+`,
+    // Stale-but-fresh plan from a triage that ran before the owner's merge —
+    // exactly what re-assigned two tasks per pilot (fleet incident 2026-07-23).
+    plan: { generatedAt: new Date().toISOString(), queue: [{ taskId: "T-001", model: "sonnet", effort: "high" }] },
+  });
+  // A previous pr-only window opened the PR and reported review; the owner
+  // merged it between windows. Nothing lists it anymore (pr list = open
+  // only), and no sweep runs under pr-only — only a window-start check sees it.
+  const logDir = path.join(world.stateDir, "log");
+  fs.mkdirSync(logDir, { recursive: true });
+  fs.writeFileSync(path.join(logDir, "state.json"), JSON.stringify({
+    tasks: { "T-001": { status: "review", pr: "https://github.com/o/r/pull/7", updatedAt: "2026-07-23T03:18:00Z" } },
+    pendingFlips: [],
+  }));
+  installGateGh(world, { prView: { state: "MERGED" }, prList: [] });
+  queueSessions(world, []); // the flip must land BEFORE any session spawns
+
+  const r = runDriver(world, "dev");
+
+  assert.equal(r.code, 0, `driver exited ${r.code}\nstdout:\n${r.stdout}\nstderr:\n${r.stderr}`);
+  assert.doesNotMatch(r.stdout, /session 1 starting/,
+    "a paid session must not burn re-verifying a merge the driver can check itself");
+  const epic = fs.readFileSync(path.join(world.factoryDir, "backlog", "e1.md"), "utf8");
+  assert.match(epic, /- Status: done/, "the merged PR is ground truth — the driver closes the loop mechanically");
+  assert.match(r.stdout, /window skipped/);
+});
+
 test("a draft PR is a human's task claim — the sweep leaves it alone, never gates or merges it", (t) => {
   const world = makeFactory(t, {
     config: { autonomy: "auto-merge-dev", mergeGateMinutes: 0.1, maxSessionsPerWindow: 1 },

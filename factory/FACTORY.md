@@ -422,6 +422,15 @@ the next session, and at window end a sweep gives every still-open green
 factory PR one more gate pass. Poll budget:
 `config.json → mergeGateMinutes` (default 10).
 
+PRs merged OUTSIDE the gate (the owner, any human) close their tasks
+mechanically: every dev window start — under every autonomy level, since
+pr-only has no other merge path and no sweeps — checks tasks sitting at
+`review` (any gate) or at `needs-human` with `Gate: human` that carry a
+recorded PR, and flips them `done` when that PR is merged. This runs before
+the skip check and before the plan assigns work, so a settled backlog skips
+its window and a stale plan entry is skipped instead of burning a session
+re-verifying a merge (fleet incident 2026-07-23).
+
 ## Scheduling (`factory.mjs schedule`)
 
 The schedule is a DECLARATION in machine config (`config.json → schedule`:
