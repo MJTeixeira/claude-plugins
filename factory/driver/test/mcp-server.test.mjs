@@ -36,7 +36,7 @@ const readEvents = (world) => {
 const init = { jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "test", version: "0" } } };
 const call = (id, name, args) => ({ jsonrpc: "2.0", id, method: "tools/call", params: { name, arguments: args } });
 
-test("mcp-server initializes and lists the six session tools", async (t) => {
+test("mcp-server initializes and lists the seven session tools", async (t) => {
   const world = makeFactory(t);
   const rs = await runMcp(world, [init, { jsonrpc: "2.0", id: 2, method: "tools/list" }]);
   const initR = rs.find((r) => r.id === 1);
@@ -45,7 +45,7 @@ test("mcp-server initializes and lists the six session tools", async (t) => {
   const list = rs.find((r) => r.id === 2);
   assert.deepEqual(
     list.result.tools.map((tl) => tl.name).sort(),
-    ["create_pr", "grade_verdict", "log_progress", "open_question", "post_daily_log", "report_status"]
+    ["create_pr", "grade_verdict", "log_progress", "open_question", "post_daily_log", "report_status", "submit_plan"]
   );
   for (const tl of list.result.tools) assert.equal(tl.inputSchema.type, "object");
 });
@@ -560,4 +560,39 @@ test("mcp-server serves from a session-worktree cwd — no machine config needed
   const rs = out.trim().split("\n").filter(Boolean).map((l) => JSON.parse(l));
   assert.ok(rs.find((x) => x.id === 1)?.result, `no initialize response: ${out}`);
   assert.equal(readEvents(world).at(-1)?.message, "alive");
+});
+
+// ---------- submit_plan (triage's next-window queue channel) ----------
+
+test("submit_plan records the queue for the driver to write plan.json", async (t) => {
+  const world = makeFactory(t);
+  const rs = await runMcp(world, [init, call(2, "submit_plan", {
+    queue: [{ taskId: "T-019", model: "sonnet", effort: "medium", maxTurns: 120, why: "pantheon page, well-specified" }],
+  })]);
+  const r = rs.find((x) => x.id === 2);
+  assert.ok(!r.result.isError, `unexpected tool error: ${JSON.stringify(r.result)}`);
+  const events = readEvents(world);
+  assert.equal(events.length, 1);
+  assert.equal(events[0].event, "submit_plan");
+  assert.deepEqual(events[0].queue.map((e) => e.taskId), ["T-019"]);
+});
+
+test("submit_plan accepts an explicit empty queue — 'nothing eligible' is a real answer", async (t) => {
+  const world = makeFactory(t);
+  const rs = await runMcp(world, [init, call(2, "submit_plan", { queue: [] })]);
+  const r = rs.find((x) => x.id === 2);
+  assert.ok(!r.result.isError, `unexpected tool error: ${JSON.stringify(r.result)}`);
+  assert.deepEqual(readEvents(world)[0].queue, []);
+});
+
+test("submit_plan rejects a missing queue and an entry without a taskId", async (t) => {
+  const world = makeFactory(t);
+  const rs = await runMcp(world, [
+    init,
+    call(2, "submit_plan", {}),
+    call(3, "submit_plan", { queue: [{ model: "sonnet" }] }),
+  ]);
+  assert.ok(rs.find((x) => x.id === 2).result.isError, "missing queue must be a validation error");
+  assert.ok(rs.find((x) => x.id === 3).result.isError, "taskId-less entry must be a validation error");
+  assert.equal(readEvents(world).length, 0, "invalid calls must write no event");
 });

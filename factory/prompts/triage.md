@@ -126,27 +126,29 @@ only they can clear.
 
 ## 4. Session plan for the next window
 
-Write `.factory/plan.json` (gitignored, overwritten daily) — the ordered
-queue of tasks the next dev window should run, picked exactly as a dev
-session would (HANDOFF / in-progress task first, then eligible `todo` tasks
-in index order), at most `maxSessionsPerWindow` entries:
+Call the `submit_plan` MCP tool with the ordered queue of tasks the next
+dev window should run, picked exactly as a dev session would (HANDOFF /
+in-progress task first, then eligible `todo` tasks in index order), at
+most `maxSessionsPerWindow` entries:
 
 ```json
-{"generatedAt": "<REAL now — run `date -u +%Y-%m-%dT%H:%M:%SZ`, never a
- placeholder; a fake timestamp makes the driver discard the plan>",
- "queue": [
+{"queue": [
   {"taskId": "T-019", "model": "sonnet", "effort": "medium", "maxTurns": 120,
    "why": "pantheon page, well-specified"}
 ]}
 ```
 
-Nothing eligible (everything done/blocked/needs-human)? Still write the
-plan, with a real timestamp and `"queue": []` — an explicit empty queue
-tells the driver "triage looked, nothing to do", which is different from a
-missing or stale plan. Never queue a `needs-human` task or a human-gated
-task whose machine part is done.
+The DRIVER writes `plan.json` and stamps the timestamp itself — never
+write the file (machine-side state; the write is denied). Call the tool
+once, as part of wrapping up; a repeated call supersedes the earlier one.
 
-BEFORE writing the plan: every non-done task in the ACTIVE milestone must
+Nothing eligible (everything done/blocked/needs-human)? Still call it,
+with `"queue": []` — an explicit empty queue tells the driver "triage
+looked, nothing to do", which is different from no submission at all.
+Never queue a `needs-human` task or a human-gated task whose machine part
+is done.
+
+BEFORE submitting the plan: every non-done task in the ACTIVE milestone must
 carry `Model:` and `Effort:` hints. Any task missing them is a defect —
 read the task against the spec, assign per the rubric in the `code4food-factory:backlog`
 skill, and fix the task file with your other backlog edits. Never paper
