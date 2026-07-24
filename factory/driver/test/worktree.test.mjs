@@ -166,7 +166,10 @@ test("a dirty session worktree is quarantined to log/ before removal", (t) => {
 });
 
 test("merge gate lands a green PR from the meta worktree: flip rides the merge commit, owner checkout untouched", (t) => {
-  const world = makeFactory(t, { config: { autonomy: "auto-merge-dev" } });
+  // gateCommand: this world has no CI, and the floor (gate-suite.test.mjs)
+  // refuses to merge on nothing — the landing mechanics under test need a
+  // passing verification to reach.
+  const world = makeFactory(t, { config: { autonomy: "auto-merge-dev", gateCommand: "true" } });
   // Owner parked on a branch; must still be there when the gate is done.
   gitIn(world.project, "checkout", "-b", "owner-wip");
 

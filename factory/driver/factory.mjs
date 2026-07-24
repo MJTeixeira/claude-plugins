@@ -10,7 +10,7 @@
 // All intelligence lives in the prompts and the project's skills. The
 // session<->driver contract is .factory/log/last-session.json.
 
-import { spawn, execFileSync } from "node:child_process";
+import { spawn, spawnSync, execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
@@ -44,6 +44,8 @@ const CONFIG_DEFAULTS = {
   sessionTimeoutMin: 45,
   maxSessionsPerWindow: 12,
   mergeGateMinutes: 10,
+  gateCommand: null, // repo suite the gate runs on the MERGED tree before pushing (null = rely on CI checks)
+  gateSuiteTimeoutMin: 15,
   permissionMode: "dontAsk", // or "bypassPermissions" (sandboxed machines only)
   claudeCmd: "claude",
 };
@@ -1895,12 +1897,18 @@ const runDoctor = () => {
     } else check("skip", "milestone headings", "backlog/index.md declares no milestones");
   }
 
-  // 15. auto-merge needs CI — with no checks, the gate merges on nothing
-  //     (fleet incident 2026-07-07: 12 sessions merged into dev totally ungated).
+  // 15. auto-merge needs verification — with no checks AND no gateCommand the
+  //     gate refuses to merge, so this state means the factory silently stops
+  //     shipping (fleet incident 2026-07-07: 12 sessions merged into dev
+  //     totally ungated; 2026-07-23: live Bitbucket factories, zero CI).
   if ((cfg.autonomy ?? "").startsWith("auto-merge") || cfg.autonomy === "milestone-gates") {
     const wf = path.join(project, ".github", "workflows");
-    const has = fs.existsSync(wf) && fs.readdirSync(wf).some((f) => /\.ya?ml$/.test(f));
-    check(has ? "ok" : "warn", "CI under auto-merge", has ? "workflows present" : "no .github/workflows — the merge gate has nothing to check");
+    const hasCi = fs.existsSync(wf) && fs.readdirSync(wf).some((f) => /\.ya?ml$/.test(f));
+    const hasSuite = Boolean(cfg.gateCommand);
+    check(hasCi || hasSuite ? "ok" : "fail", "CI under auto-merge",
+      hasCi ? `workflows present${hasSuite ? " + gateCommand" : ""}`
+        : hasSuite ? `gateCommand: ${cfg.gateCommand}`
+          : "no CI and no gateCommand — the gate refuses to auto-merge; add workflows or set gateCommand in config.json");
   }
 
   return results;
@@ -2952,6 +2960,36 @@ const failingNote = ({ pr, taskId, head }) =>
   `Your first job: checkout ${head}, reproduce and fix the failures, push. ` +
   `The driver merges once checks are green — do NOT merge yourself.`;
 
+// The gate floor (autonomy epic): run the repo's own suite (config
+// `gateCommand`) against the merged tree sitting uncommitted in the meta
+// worktree. Branch-side tests proved the branch; only this proves the
+// combination with base. A timeout is a failure — a hung suite must never
+// read as green. Output is captured to a log file; notes carry the tail.
+const runGateSuite = () => {
+  const timeoutMs = (cfg.gateSuiteTimeoutMin ?? 15) * 60 * 1000;
+  const r = spawnSync(cfg.gateCommand, {
+    cwd: metaPath(), shell: true, encoding: "utf8", timeout: timeoutMs,
+    maxBuffer: 64 * 1024 * 1024, // default 1MiB kills verbose GREEN suites as ENOBUFS-red
+  });
+  const timedOut = r.error?.code === "ETIMEDOUT";
+  // A spawn-level error is "the suite could not run", not "the suite
+  // failed" — the note must say which, or sessions chase phantom failures
+  // green suites can never explain.
+  const spawnError = !timedOut && r.error ? (r.error.code ?? firstLine(r.error)) : null;
+  const output = `${r.stdout ?? ""}${r.stderr ?? ""}`;
+  const logFile = path.join(logDir, `gate-suite-${nowStamp()}.log`);
+  try { fs.writeFileSync(logFile, output); } catch { /* capture is best-effort */ }
+  return { ok: !timedOut && !spawnError && r.status === 0, timedOut, spawnError,
+    tail: output.trim().split("\n").slice(-15).join("\n") };
+};
+
+const suiteNote = ({ pr, taskId, head, suite }) =>
+  `PR ${pr}${taskId ? ` (task ${taskId})` : ""} merges cleanly but the gate suite FAILED on the merged result ` +
+  `(${suite.timedOut ? `timed out after ${cfg.gateSuiteTimeoutMin}min` : suite.spawnError ? `the suite could not run: ${suite.spawnError}` : `command: ${cfg.gateCommand}`}). ` +
+  `Your first job: checkout ${head}, merge ${cfg.baseBranch} into it, run the suite, fix what fails, push. ` +
+  `The driver merges once checks and the suite are green — do NOT merge yourself.` +
+  (suite.tail ? `\nSuite output tail:\n${suite.tail}` : "");
+
 // The actual landing: local merge with the status flip folded into the
 // merge commit. Retries on push races; falls back to `gh pr merge` (flip
 // goes to pendingFlips) if local landing keeps failing.
@@ -2963,8 +3001,10 @@ const landMerge = async ({ pr, view, taskId }) => {
   const blocked = taskId && ["blocked", "needs-human"].includes(readState().tasks[taskId]?.status);
   if (blocked) log(`merge-gate: ${taskId} is parked (blocked/needs-human) — landing ${pr} without a status flip`);
   const flips = taskId && !blocked ? [{ taskId, status: "done" }] : [];
+  let suitePassed = false; // per-attempt: the fallback below may only merge what a suite blessed
   for (let attempt = 1; attempt <= 3; attempt++) {
     try {
+      suitePassed = false;
       // All gate git work happens in the driver's meta worktree (detached at
       // origin/<base>; the merge commit reaches origin via push HEAD:<base>).
       // The owner's checkout is never touched.
@@ -2997,6 +3037,20 @@ const landMerge = async ({ pr, view, taskId }) => {
           `it upstream. The driver merges once the branch is tooling-clean and checks are green.`;
       }
       git(["merge", "--no-ff", "--no-commit", `origin/${head}`], metaPath());
+      // Gate floor: the merged tree must pass the repo's own suite before
+      // this merge may exist anywhere but here.
+      if (cfg.gateCommand) {
+        const suite = runGateSuite();
+        if (!suite.ok) {
+          try { git(["merge", "--abort"], metaPath()); } catch { /* nothing staged */ }
+          log(`merge-gate: gate suite FAILED for ${pr}${suite.timedOut ? ` — timed out after ${cfg.gateSuiteTimeoutMin}min` : suite.spawnError ? ` — the suite could not run: ${suite.spawnError}` : ""} — leaving the fix for the next session`);
+          journal("gate:suite", "fail", `${pr}${suite.timedOut ? " (timeout)" : suite.spawnError ? ` (${suite.spawnError})` : ""}`);
+          return suiteNote({ pr, taskId, head, suite });
+        }
+        suitePassed = true;
+        log(`merge-gate: gate suite passed for ${pr}`);
+        journal("gate:suite", "done", pr);
+      }
       const applied = applyFlips(flips);
       // A live/piloting PR carries its own Status flips (piloting contract);
       // true up the index counters from the merged files so they ride this
@@ -3022,8 +3076,19 @@ const landMerge = async ({ pr, view, taskId }) => {
       log(`merge-gate: local merge attempt ${attempt}/3 failed (${firstLine(e)})${attempt < 3 ? " — retrying" : ""}`);
     }
   }
-  // Local landing kept failing (e.g. branch protection) — let GitHub merge
-  // and queue the flip for the next driver commit.
+  // Local landing kept failing (e.g. branch protection) — let the forge merge
+  // and queue the flip for the next driver commit. NEVER when a gateCommand
+  // gates this factory and the suite hasn't passed this landing: an early
+  // failure (fetch, refreshMeta) would otherwise ship a merge NO suite ever
+  // saw — on a no-CI repo that is a merge on zero verification, the exact
+  // hole the gate floor closes ("git fetch fails but the API works" is a
+  // demonstrated Bitbucket failure mode).
+  if (cfg.gateCommand && !suitePassed) {
+    log(`merge-gate: local landing failed and the gate suite never passed on the merged result — not falling back to a server-side merge (gateCommand is the merge floor)`);
+    return `PR ${pr}${taskId ? ` (task ${taskId})` : ""} could not be landed locally and the gate suite never passed ` +
+      `on the merged result — the driver will not merge it server-side (gateCommand is the merge floor). ` +
+      `Diagnose why the local landing fails (branch fetch, merge, or suite) and land it first.`;
+  }
   try {
     forge.prMerge(pr);
     if (flips.length) {
@@ -3135,7 +3200,16 @@ const mergeGate = async ({ pr, taskId }, budgetMs = cfg.mergeGateMinutes * 60 * 
       }
       return null;
     }
-    return await landMerge({ pr, view, taskId }); // "pass", or "none" = repo without CI
+    // The floor: "no checks at all" must never read as green. A repo without
+    // CI needs a gateCommand (the local suite IS the check); with neither,
+    // refuse — doctor is red for this exact state (2026-07-23: two live
+    // Bitbucket factories auto-merged on nothing but the session's word).
+    if (checks === "none" && !cfg.gateCommand) {
+      log(`merge-gate: ${pr} has no checks and no gateCommand — refusing to auto-merge (add CI or set gateCommand in config.json)`);
+      journal("gate:refused", "done", pr);
+      return null;
+    }
+    return await landMerge({ pr, view, taskId }); // checks pass, or gateCommand stands in for absent CI
   }
 };
 
