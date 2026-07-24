@@ -1330,6 +1330,47 @@ if (mode === "mcp-server") {
         return { text: "question recorded — the driver will file or update the GitHub issue at session end" };
       },
     },
+    submit_plan: {
+      description:
+        "TRIAGE ONLY: submit the ordered task queue for the next dev window. The DRIVER writes " +
+        "plan.json itself and stamps the timestamp — sessions never write machine-side state. " +
+        "Submit an explicit empty queue when nothing is eligible ('triage looked, nothing to do'). " +
+        "Call once, as part of wrapping up; a repeated call supersedes the earlier one.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          queue: {
+            type: "array",
+            description: "ordered next-window queue, at most maxSessionsPerWindow entries; [] = nothing eligible",
+            items: {
+              type: "object",
+              properties: {
+                taskId: { type: "string", description: "backlog task id, e.g. T-019" },
+                model: { type: ["string", "null"], description: "model for the session, per the task's Model: hint" },
+                effort: { type: ["string", "null"], description: "effort for the session, per the task's Effort: hint" },
+                maxTurns: { type: ["number", "null"], description: "turn cap override, if the task warrants one" },
+                why: { type: ["string", "null"], description: "one line: why this task, this order" },
+              },
+              required: ["taskId"],
+            },
+          },
+        },
+        required: ["queue"],
+      },
+      call: (a) => {
+        if (!Array.isArray(a.queue)) return { error: "queue (array, possibly empty) is required" };
+        if (a.queue.length > 50) return { error: "queue is implausibly long (>50) — submit at most maxSessionsPerWindow entries" };
+        const queue = [];
+        for (const e of a.queue) {
+          const taskId = e && typeof e === "object" ? str(e.taskId, 80) : null;
+          if (!taskId) return { error: "every queue entry needs a taskId (non-empty string)" };
+          const maxTurns = Number.isInteger(e.maxTurns) && e.maxTurns > 0 ? e.maxTurns : null;
+          queue.push({ taskId, model: str(e.model, 40), effort: str(e.effort, 20), maxTurns, why: str(e.why, 300) });
+        }
+        record("submit_plan", { queue });
+        return { text: `plan recorded (${queue.length} task(s)) — the driver writes plan.json at session end` };
+      },
+    },
     create_pr: {
       description:
         "Open the pull request for your pushed branch. The DRIVER makes the forge call with its own " +
@@ -2003,7 +2044,7 @@ if (mode === "doctor") {
 // into a handoff with facts. Questions are filed by the driver at session
 // end (Decision 1); progress lines are already in the file for post-mortems.
 const readMcpEvents = (eventsPath) => {
-  const out = { report: null, inProgress: null, questions: [], progress: [], dailyLogs: [], verdict: null };
+  const out = { report: null, inProgress: null, questions: [], progress: [], dailyLogs: [], verdict: null, plan: null };
   if (!eventsPath) return out;
   let text;
   try { text = fs.readFileSync(eventsPath, "utf8"); } catch { return out; }
@@ -2026,6 +2067,11 @@ const readMcpEvents = (eventsPath) => {
       // Last one wins — the tool asks for exactly one call, but a retried
       // final act must supersede, not duplicate.
       out.verdict = { criteria: Array.isArray(e.criteria) ? e.criteria : [], summary: e.summary ?? null };
+    } else if (e.event === "submit_plan") {
+      // Last one wins, same as the verdict. Shape re-checked here: the
+      // events file is session-writable, so a forged line must not crash
+      // ingestion or smuggle non-queue fields into plan.json.
+      out.plan = { queue: Array.isArray(e.queue) ? e.queue : null };
     }
   }
   return out;
@@ -2983,6 +3029,39 @@ const runSingle = async (name) => {
   const filedQuestions = await processQuestions(mcpEv.questions, name);
   await postDailyLogs(mcpEv.dailyLogs, name);
   if (name === "triage") {
+    // Plan handoff: triage submits its queue via submit_plan (the guard
+    // denies sessions the whole machine-side state dir, plan.json
+    // included) and the DRIVER writes the file — its own clock stamps
+    // generatedAt, killing the placeholder-timestamp failure class.
+    // Unknown task ids are dropped here: the meta worktree holds triage's
+    // fresh backlog edits, so a just-added task validates fine.
+    if (exitCode === 0 && mcpEv.plan) {
+      if (!Array.isArray(mcpEv.plan.queue)) {
+        log("plan: triage's submit_plan event is malformed (queue not an array) — ignoring it");
+      } else {
+        const known = new Set(parseBacklogTasks(runtimeFactoryDir()).map((x) => x.id));
+        const queue = [];
+        for (const e of mcpEv.plan.queue) {
+          const taskId = e && typeof e === "object" && typeof e.taskId === "string" ? e.taskId : null;
+          if (!taskId || !known.has(taskId)) {
+            log(`plan: dropping queued entry ${taskId ?? "(no taskId)"} — not in the backlog`);
+            continue;
+          }
+          queue.push({
+            taskId,
+            model: typeof e.model === "string" ? e.model : null,
+            effort: typeof e.effort === "string" ? e.effort : null,
+            maxTurns: Number.isInteger(e.maxTurns) && e.maxTurns > 0 ? e.maxTurns : null,
+            why: typeof e.why === "string" ? e.why : null,
+          });
+        }
+        fs.writeFileSync(
+          path.join(stateD, "plan.json"),
+          JSON.stringify({ generatedAt: new Date().toISOString(), queue }, null, 2) + "\n"
+        );
+        log(`plan: written from triage's submit_plan — ${queue.length} task(s)`);
+      }
+    }
     // The triage session edits backlog/spec/inbox but never commits — the
     // driver owns metadata commits (NOTES item 24).
     try {

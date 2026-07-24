@@ -14,12 +14,13 @@ const RESULT = {
   total_cost_usd: 0.02, num_turns: 5, usage: { input_tokens: 10, output_tokens: 20 },
 };
 
-// Triage stub: writes a fresh single-task plan through the meta worktree's
-// plan.json runtime link (generatedAt stamped at run time so it reads fresh).
-const triageStub = () => ({
-  script: `cat > .factory/plan.json <<EOF
-{"generatedAt":"$(date -u +%Y-%m-%dT%H:%M:%SZ)","queue":[{"taskId":"T-001","model":"sonnet","effort":"low"}]}
-EOF`,
+// Triage stub: submits the next window's queue via the submit_plan MCP
+// event — sessions never write plan.json (the guard denies the whole
+// machine-side state dir); the DRIVER writes the file and stamps the time.
+const planEvent = (queue) =>
+  `printf '%s\\n' '${JSON.stringify({ ts: "t", event: "submit_plan", queue })}' >> "$FACTORY_MCP_EVENTS"`;
+const triageStub = (queue = [{ taskId: "T-001", model: "sonnet", effort: "low" }]) => ({
+  script: planEvent(queue),
   stdout: JSON.stringify({ ...RESULT, result: "plan posted" }) + "\n",
   exit: 0,
 });
@@ -78,6 +79,36 @@ test("fresh empty queue is triage's real answer — probe, no auto-triage", (t) 
   // The one session is the probe dev session, not a triage.
   const inv1 = JSON.parse(fs.readFileSync(path.join(world.stubDir, "invocation-1.json"), "utf8"));
   assert.doesNotMatch(inv1.prompt, /plan\.json/i);
+});
+
+test("a queued task id not in the backlog is dropped from the plan with a warning", (t) => {
+  const world = makeFactory(t, { config: { maxSessionsPerWindow: 1 }, plan: null });
+  queueSessions(world, [
+    triageStub([
+      { taskId: "T-999", model: "sonnet", effort: "low" },
+      { taskId: "T-001", model: "sonnet", effort: "low" },
+    ]),
+    devStub(),
+  ]);
+
+  const r = runDriver(world, "dev");
+
+  assert.equal(r.code, 0, `driver exited ${r.code}\nstdout:\n${r.stdout}\nstderr:\n${r.stderr}`);
+  assert.match(r.stdout, /T-999.*not in the backlog/);
+  assert.match(r.stdout, /plan: 1 task\(s\) queued by triage — T-001/);
+  const written = JSON.parse(fs.readFileSync(path.join(world.stateDir, "plan.json"), "utf8"));
+  assert.deepEqual(written.queue.map((e) => e.taskId), ["T-001"]);
+});
+
+test("triage submitting an explicit empty queue is a real answer — probe path, not self-select", (t) => {
+  const world = makeFactory(t, { config: { maxSessionsPerWindow: 1 }, plan: null });
+  queueSessions(world, [triageStub([]), devStub()]);
+
+  const r = runDriver(world, "dev");
+
+  assert.equal(r.code, 0, `driver exited ${r.code}\nstdout:\n${r.stdout}\nstderr:\n${r.stderr}`);
+  assert.match(r.stdout, /plan: triage queued 0 tasks/);
+  assert.doesNotMatch(r.stdout, /wrote no usable plan/);
 });
 
 test("auto-triage failure falls back to self-select — the window still runs", (t) => {

@@ -430,9 +430,11 @@ Every not-yet-done task in the backlog carries `Model:` and `Effort:` hints
 (required — the dashboard flags gaps) plus an optional `Turns:` (see the
 backlog skill) — set by compile-spec/triage by difficulty, e.g. cheap model
 for well-specified CRUD, stronger model for novel game logic. Each triage
-writes `<state>/plan.json`: the ordered session
-queue for the next window with those settings resolved (corrected against
-usage.jsonl evidence — tasks that keep turn-capping get more). The driver
+submits the ordered session queue for the next window via the
+`submit_plan` MCP tool with those settings resolved (corrected against
+usage.jsonl evidence — tasks that keep turn-capping get more); the DRIVER
+writes `<state>/plan.json` from it, stamps `generatedAt` with its own
+clock, and drops queued ids that aren't in the backlog. The driver
 spawns each dev session with the entry's `--model`/`--effort`/`--max-turns`
 and assigns it the task; missing/stale plan or an exhausted queue falls back
 to sessions self-selecting with factory defaults (`config.json → model`,
