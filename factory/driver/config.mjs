@@ -50,6 +50,10 @@ export const buildConfig = (a) => ({
   // doctor goes red.
   gateCommand: null,
   gateSuiteTimeoutMin: 15,
+  // Risk tiers: PRs touching these path prefixes park for owner review
+  // exactly like `Gate: human` (literal prefix match — end directories
+  // with "/"). Empty = every path merges on the gate's other checks.
+  riskTiers: { high: [] },
   permissionMode: "dontAsk",
   claudeCmd: "claude",
 });

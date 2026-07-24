@@ -163,6 +163,17 @@ gate refuses to auto-merge and doctor fails (`CI under auto-merge`). The
 session's branch-side tests never stand in for either — they proved the
 branch, not the combination with base.
 
+**Risk tiers (autonomy epic, 1.10.0):** some paths are the owner's to
+judge no matter what the checks say. A PR touching a prefix listed in
+`config.json → riskTiers.high` (auth, payments, migrations, CI config…)
+never auto-merges: the gate parks its task at `needs-human` exactly like
+`Gate: human` — one PR comment naming the touched paths, and the owner's
+own merge flips the task done mechanically (a question-parked task stays
+parked, and a blocked task's risky PR is refused with no status change —
+a merge doesn't answer a question). Prefixes are literal path matches
+(end directories with `/`); a malformed `riskTiers` — wrong shape or a
+misspelled key — fails doctor rather than silently disabling the floor.
+
 ## Machine setup (once per machine)
 
 1. **The runtime** — every scheduler execs it, every worktree gets its
@@ -443,11 +454,19 @@ factory can never silently merge on nothing (fleet lesson, 2026-07-23).
 The command runs in the meta worktree: it must be self-contained
 (install deps itself or tolerate a warm worktree).
 
+Risk tiers ride the same landing: before the merge is even attempted, the
+gate diffs the PR against base and any file under a `riskTiers.high`
+prefix parks the task at `needs-human` for owner review (one PR comment,
+no suite run, no merge) — see §Verification & review contract for the
+full contract. A high-risk PR with no task id is refused silently: there
+is nothing to park, and the PR waits for the owner either way.
+
 PRs merged OUTSIDE the gate (the owner, any human) close their tasks
 mechanically: every dev window start — under every autonomy level, since
 pr-only has no other merge path and no sweeps — checks tasks sitting at
-`review` (any gate) or at `needs-human` with `Gate: human` that carry a
-recorded PR, and flips them `done` when that PR is merged. This runs before
+`review` (any gate) or at `needs-human` awaiting PR review (`Gate: human`
+or a risk-tier park) that carry a recorded PR, and flips them `done` when
+that PR is merged. This runs before
 the skip check and before the plan assigns work, so a settled backlog skips
 its window and a stale plan entry is skipped instead of burning a session
 re-verifying a merge (fleet incident 2026-07-23).

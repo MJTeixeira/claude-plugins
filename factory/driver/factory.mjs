@@ -760,6 +760,7 @@ const noteRuntimeStatus = (taskId, status, prUrl) => {
   if (!taskId || !status) return;
   const s = readState();
   s.tasks[taskId] = {
+    ...(s.tasks[taskId] ?? {}), // keep markers (parkedBy) across session reports
     status,
     pr: prUrl ?? s.tasks[taskId]?.pr ?? null,
     updatedAt: new Date().toISOString(),
@@ -1911,6 +1912,22 @@ const runDoctor = () => {
           : "no CI and no gateCommand — the gate refuses to auto-merge; add workflows or set gateCommand in config.json");
   }
 
+  // 16. risk tiers must be well-formed — the gate reads a malformed shape as
+  //     empty, so a config typo (wrong value type OR a misspelled key, which
+  //     the shallow config merge lets replace the default wholesale) would
+  //     silently turn the safety floor OFF.
+  if (cfg.riskTiers !== undefined) {
+    const rt = cfg.riskTiers;
+    const high = rt?.high;
+    const wellFormed = rt === null || (typeof rt === "object" && !Array.isArray(rt) &&
+      Object.keys(rt).every((k) => k === "high") &&
+      (high === undefined || (Array.isArray(high) && high.every((p) => typeof p === "string" && p))));
+    check(wellFormed ? (Array.isArray(high) && high.length ? "ok" : "skip") : "fail", "risk tiers",
+      !wellFormed ? `riskTiers is malformed — expected { high: ["path/prefix/", …] } and no other keys; until fixed the risk floor is OFF`
+        : Array.isArray(high) && high.length ? `${high.length} high-risk prefix(es) park PRs for owner review`
+          : "no high-risk prefixes declared");
+  }
+
   return results;
 };
 
@@ -3036,6 +3053,47 @@ const landMerge = async ({ pr, view, taskId }) => {
           `parts), push, and raise the removed change via the open_question tool so the owner can apply ` +
           `it upstream. The driver merges once the branch is tooling-clean and checks are green.`;
       }
+      // Risk tiers: a high-tier path is the owner's to judge — park the task
+      // like `Gate: human` and let the owner's own merge land it. The tooling
+      // refusal above wins on overlap (tooling edits need branch surgery, not
+      // review). Checked before the merge attempt: a parked PR earns no suite
+      // run. Malformed riskTiers reads as empty here — doctor fails loudly on
+      // that shape, so it cannot stay silently off.
+      const high = Array.isArray(cfg.riskTiers?.high)
+        ? cfg.riskTiers.high.filter((p) => typeof p === "string" && p) : [];
+      const risky = touched.split("\n").filter((f) => f && high.some((p) => f.startsWith(p)));
+      if (risky.length) {
+        const shown = risky.slice(0, 10).join(", ") + (risky.length > 10 ? ", …" : "");
+        log(`merge-gate: ${pr} touches high-risk path(s) (${shown}) — parking for owner review, not auto-merge`);
+        // No task, or a task already parked (blocked/needs-human): refuse
+        // quietly. Converting `blocked` into a risk park would let the
+        // owner's merge flip a task done with its blocking question still
+        // open (the T-032 invariant) — the status is not this branch's to
+        // touch.
+        if (!taskId || blocked) {
+          journal("gate:risk", "done", pr);
+          return null;
+        }
+        try {
+          // Dedupe on THIS task's flip landing (same trick as the human gate):
+          // repeat sweeps find needs-human already set and stay silent.
+          const applied = applyFlips([{ taskId, status: "needs-human" }]);
+          if (applied.some((a) => a.startsWith(`${taskId} `))) {
+            const s = readState();
+            if (s.tasks[taskId]) { s.tasks[taskId].parkedBy = "risk"; writeState(s); }
+            commitMetadata(`${taskId} needs-human: high-risk paths await owner review`);
+            forge.prComment(pr,
+              `Checks are green, but this PR touches high-risk path(s) configured for owner review ` +
+              `(${shown}) — the factory will not auto-merge. Review and merge it yourself ` +
+              `(your merge marks the task done), or comment what to change.`);
+            journal("gate:risk", "done", `${pr} (${taskId})`);
+            await notify(`🛑 owner review required (high-risk paths): ${pr} (${taskId})`);
+          }
+        } catch (e) {
+          log(`merge-gate: risk-tier parking failed (${firstLine(e)}) — ${pr} stays open`);
+        }
+        return null;
+      }
       git(["merge", "--no-ff", "--no-commit", `origin/${head}`], metaPath());
       // Gate floor: the merged tree must pass the repo's own suite before
       // this merge may exist anywhere but here.
@@ -3135,14 +3193,16 @@ const mergeGate = async ({ pr, taskId }, budgetMs = cfg.mergeGateMinutes * 60 * 
     }
     if (view.state !== "OPEN") {
       log(`merge-gate: ${pr} is already ${view.state}`);
-      const parkedStatus = taskId ? readState().tasks[taskId]?.status : null;
+      const rec = taskId ? readState().tasks[taskId] : null;
+      const parkedStatus = rec?.status ?? null;
       const parked = ["blocked", "needs-human"].includes(parkedStatus);
-      // A human-gated task at needs-human is the exception: that status MEANS
-      // "awaiting owner review of this PR" — the owner merging IS the
-      // approval. A blocked one keeps its status even with the gate: the
-      // dependency problem isn't answered by the PR landing.
-      const humanGate = taskId && parseBacklogTasks(runtimeFactoryDir()).find((x) => x.id === taskId)?.gate === "human";
-      if (view.state === "MERGED" && taskId && (!parked || (humanGate && parkedStatus === "needs-human"))) {
+      // A task at needs-human awaiting THIS PR's review (human gate or
+      // risk-tier park) is the exception: the owner merging IS the approval.
+      // A blocked one keeps its status even with the gate: the dependency
+      // problem isn't answered by the PR landing.
+      const awaitsReview = taskId && (rec?.parkedBy === "risk" ||
+        parseBacklogTasks(runtimeFactoryDir()).find((x) => x.id === taskId)?.gate === "human");
+      if (view.state === "MERGED" && taskId && (!parked || (awaitsReview && parkedStatus === "needs-human"))) {
         // Merged outside the gate (human, or a session on old prompts) —
         // land the flip as its own metadata commit. Blocked tasks keep
         // their status; the PR landing doesn't answer the open question.
@@ -3239,7 +3299,10 @@ const closeOwnerMergedGates = () => {
   if (!parked.length) return;
   const tasks = parseBacklogTasks(runtimeFactoryDir());
   for (const [id, rec] of parked) {
-    if (rec.status === "needs-human" && tasks.find((t) => t.id === id)?.gate !== "human") continue;
+    // needs-human closes on merge only when the PR IS the question: a human
+    // gate or a risk-tier park. A question-parked task stays — the merge
+    // doesn't answer the issue.
+    if (rec.status === "needs-human" && tasks.find((t) => t.id === id)?.gate !== "human" && rec.parkedBy !== "risk") continue;
     try {
       if (forge.prState(rec.pr) !== "MERGED") continue;
       refreshMeta();
@@ -3247,7 +3310,7 @@ const closeOwnerMergedGates = () => {
       if (applied.length) {
         commitMetadata(`${id} done (owner merged ${rec.pr})`);
         log(`sweep: ${id} ${rec.status === "review" ? "closed" : "approved"} — owner merged ${rec.pr}`);
-        journal(rec.status === "review" ? "gate:external-merge" : "gate:human-approved", "done", `${rec.pr} (${id})`);
+        journal(rec.status === "review" ? "gate:external-merge" : rec.parkedBy === "risk" ? "gate:risk-approved" : "gate:human-approved", "done", `${rec.pr} (${id})`);
       }
     } catch (e) {
       log(`sweep: could not check parked PR ${rec.pr} (${firstLine(e)}) — next sweep retries`);

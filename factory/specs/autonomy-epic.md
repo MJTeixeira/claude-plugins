@@ -33,10 +33,13 @@ proven").
    push); red aborts the merge and leaves a fix note with the output tail.
    No CI checks AND no gateCommand → the gate refuses to auto-merge and
    doctor's `CI under auto-merge` row is a hard fail (was a warn).
-2. **Risk tiers.** `riskTiers.high` path-prefix list in config; a PR
-   touching a high-tier path (auth, payments, migrations, CI config…)
-   parks for owner review exactly like `Gate: human`, at every autonomy
-   level. Generalizes the deployed-tooling refusal already in `landMerge`.
+2. **Risk tiers — SHIPPED (1.10.0).** `riskTiers.high` path-prefix list
+   in config; a PR touching a high-tier path (auth, payments, migrations,
+   CI config…) parks for owner review exactly like `Gate: human`, at
+   every autonomy level that reaches the gate. Generalizes the
+   deployed-tooling refusal already in `landMerge`; the owner's merge
+   closes the parked task mechanically; doctor fails on a malformed
+   `riskTiers` instead of letting a typo turn the floor off.
 3. **Injection posture.** `## Forge inputs` marks non-owner-authored
    comments as untrusted data; triage takes instructions only from
    owner-authored content; doctor warns on auto-merge + publicly writable
