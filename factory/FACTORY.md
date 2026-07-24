@@ -193,8 +193,13 @@ never a pass on the criteria it never examined. Fail —
 or no recorded verdict at all — means no merge, with the failed criteria
 and the grader's evidence left as the next session's fix note; the
 server-side merge fallback is equally refused for any task PR whose
-current head no grader passed. Live/piloting PRs (no task id in the
-title) merge ungraded — they are the owner's own work. Only dev windows
+current head no grader passed. A factory-branded PR with NO task id is
+ungradeable and never auto-merges: the gate parks it for the owner (one
+PR comment + notification, deduped in state) — retitling it with its
+task id re-enters grading, or the owner merges it themselves. Genuine
+piloting PRs are unaffected: the claim convention titles them with the
+task id and their branches are not factory-branded, so a taskId-less PR
+in the gate is a factory session that dropped its id. Only dev windows
 spawn graders; a prep sweep leaves ungraded PRs for the next window
 (prep spawns no sessions, by contract). Human-gated and risk-parked PRs
 are unchanged: the owner IS their acceptance check.
@@ -496,8 +501,9 @@ Risk tiers ride the same landing: before the merge is even attempted, the
 gate diffs the PR against base and any file under a `riskTiers.high`
 prefix parks the task at `needs-human` for owner review (one PR comment,
 no suite run, no merge) — see §Verification & review contract for the
-full contract. A high-risk PR with no task id is refused silently: there
-is nothing to park, and the PR waits for the owner either way.
+full contract. A high-risk PR with no task id never reaches the risk
+check: the ungradeable gate refuses it first (see the acceptance-grader
+contract), and the PR waits for the owner either way.
 
 The acceptance grader is the landing's last leg: after checks and the
 suite, the driver spawns an independent grader session (`config.json →

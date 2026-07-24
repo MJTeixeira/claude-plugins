@@ -3292,7 +3292,8 @@ const landMerge = async ({ pr, view, taskId }) => {
       // exact head SHA (see runGrader). Runs with the merge held open — the
       // grader works in its own worktree, the meta worktree is driver-
       // exclusive, and refreshMeta recovers a crash mid-grade. taskId-less
-      // PRs (live/piloting) are the owner's own work and merge ungraded.
+      // PRs never reach here — mergeGate parks them for the owner (the
+      // guard stays as a belt for future callers).
       if (taskId) {
         const sha = git(["rev-parse", `origin/${head}`], metaPath());
         let grade = readState().grades?.[sha] ?? null;
@@ -3475,6 +3476,36 @@ const mergeGate = async ({ pr, taskId }, budgetMs = cfg.mergeGateMinutes * 60 * 
         }
       } catch (e) {
         log(`merge-gate: human-gate handling failed (${firstLine(e)}) — ${pr} stays open`);
+      }
+      return null;
+    }
+    // Ungradeable: green, but with no task id there are no Acceptance lines
+    // to grade against — fail closed and hand the PR to the owner instead of
+    // merging unverified (2026-07-24 owner decision; the pre-grader gate
+    // merged these as "live/piloting work"). Genuine piloting PRs don't land
+    // here: the claim convention titles them with their task id and the
+    // sweep only feeds factory-branded branches — a taskId-less PR in this
+    // gate is a factory session that dropped its id, exactly the actor the
+    // grader exists to check. Dedupe rides a state marker, not a task flip
+    // (there is no task): the notice posts once per PR, later sweeps and
+    // windows stay silent; a retitle with the task id re-enters grading.
+    if (!taskId) {
+      log(`merge-gate: ${pr} carries no task id — ungradeable, waiting for the owner (not auto-merging)`);
+      journal("gate:ungradeable", "done", pr);
+      try {
+        const s = readState();
+        if (!s.ungradeablePrs?.[pr]) {
+          forge.prComment(pr,
+            `Checks are green, but this PR carries no backlog task id, so the acceptance grader has ` +
+            `nothing to grade it against — the factory will not auto-merge it. If this is your own ` +
+            `work, merge it yourself; if it is factory work, retitle it with its task id ` +
+            `(e.g. \`T-012: …\`) and the next window will grade and merge it.`);
+          s.ungradeablePrs = { ...(s.ungradeablePrs ?? {}), [pr]: new Date().toISOString() };
+          writeState(s);
+          await notify(`🛑 ungradeable factory PR (no task id): ${pr} — review and merge it yourself`);
+        }
+      } catch (e) {
+        log(`merge-gate: ungradeable-PR notice failed (${firstLine(e)}) — ${pr} stays open`);
       }
       return null;
     }

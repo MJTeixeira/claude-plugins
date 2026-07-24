@@ -177,7 +177,9 @@ test("a PR with no task id touching a high-risk path is refused, not merged", (t
     },
   });
   // A factory-branch PR whose title carries no task id — only the sweep
-  // sees it. There is no task to park, but it still must not merge.
+  // sees it. There is no task to park, but it still must not merge: the
+  // ungradeable gate refuses it before the risk check even looks (and asks
+  // the owner once — that comment is the ungradeable notice, not risk spam).
   gitIn(world.project, "checkout", "-b", "factory/hotfix");
   fs.mkdirSync(path.join(world.project, "src", "auth"), { recursive: true });
   fs.writeFileSync(path.join(world.project, "src", "auth", "keys.mjs"), "export const k = 1;\n");
@@ -200,10 +202,11 @@ test("a PR with no task id touching a high-risk path is refused, not merged", (t
   const r = runDriver(world, "dev");
 
   assert.equal(r.code, 0, `driver exited ${r.code}\nstdout:\n${r.stdout}\nstderr:\n${r.stderr}`);
-  assert.match(r.stdout, /high-risk/);
+  assert.match(r.stdout, /no task id/);
   assert.doesNotMatch(gitIn(world.origin, "log", "main", "--oneline"), /Merge PR #9/);
   const calls = fs.readFileSync(path.join(world.root, "stub-gh", "calls.log"), "utf8");
-  assert.doesNotMatch(calls, /^pr comment/m, "no task to park — refuse quietly, don't spam the PR");
+  const comments = calls.split("\n").filter((l) => l.startsWith("pr comment"));
+  assert.equal(comments.length, 1, `one ungradeable notice, no risk spam on top, got:\n${calls}`);
 });
 
 test("a blocked task's risky PR is refused without overwriting its status", (t) => {
