@@ -20,17 +20,25 @@
 //                           read (never the flaky check-rollup query)
 //   prMerge(pr)             merge an open PR (throws on refusal)
 //   prComment(pr, body)
-//   prComments(pr)          [{author, body, createdAt}] — conversation
-//                           comments (how humans answer factory PRs)
+//   prComments(pr)          [{author, authorId, body, createdAt}] —
+//                           conversation comments (how humans answer factory
+//                           PRs); authorId is the forge's STABLE id (gh
+//                           login, Bitbucket uuid) — display names are
+//                           user-settable and spoofable, never compare them
 //   prCreate({title, body, head, base}) -> new PR url (trimmed)
 //   prListMerged()          [{number, url, title, headRefName}] — the
 //                           triage safety net's merged-but-status-lags check
-//   issueListOpen()         [{number, title, url}]
-//   issueListClosed()       [{number, title, url}] — recent first; where
-//                           answered needs-human questions live
+//   whoami()                {id, name} — the authenticated account (= the
+//                           owner: the driver runs on the owner's creds);
+//                           id in the same namespace as authorId
+//   repoIsPublic()          true when anyone can write to the repo's native
+//                           tracker (doctor's injection-surface row)
+//   issueListOpen()         [{number, title, url, author, authorId}]
+//   issueListClosed()       [{number, title, url, author, authorId}] —
+//                           recent first; where answered questions live
 //   issueCreate({title, body}) -> issue url (trimmed)
 //   issueComment(number, body)
-//   issueComments(number)   [{author, body, createdAt}]
+//   issueComments(number)   [{author, authorId, body, createdAt}]
 //   authCheck({wantBoard})  doctor rows [{level: ok|fail|skip, name, detail}]
 //                           (tracker reachability is NOT part of authCheck —
 //                            nativeTrackerCheck below probes it separately)
@@ -79,18 +87,25 @@ const githubForge = ({ project, env = {} }) => {
     prMerge: (pr) => { out(["pr", "merge", pr, "--merge"]); },
     prComment: (pr, body) => { out(["pr", "comment", pr, "--body", body]); },
     prComments: (pr) => (jsonOut(["pr", "view", pr, "--json", "comments"]).comments ?? [])
-      .map((c) => ({ author: c.author?.login ?? null, body: c.body ?? "", createdAt: c.createdAt ?? null })),
+      .map((c) => ({ author: c.author?.login ?? null, authorId: c.author?.login ?? null, body: c.body ?? "", createdAt: c.createdAt ?? null })),
     prCreate: ({ title, body, head, base }) => out(["pr", "create", "--head", head, "--base", base, "--title", title, "--body", body]).trim(),
     prListMerged: () => jsonOut(["pr", "list", "--state", "merged", "--json", "number,url,title,headRefName", "--limit", "30"]),
 
-    issueListOpen: () => jsonOut(["issue", "list", "--state", "open", "--limit", "100", "--json", "number,title,url"]),
+    // GitHub logins are unique and stable enough to BE the authorId (renames
+    // are rare and owner-initiated); numeric ids would buy nothing here.
+    whoami: () => { const u = jsonOut(["api", "user"]); return { id: u.login ?? null, name: u.login ?? null }; },
+    repoIsPublic: () => String(jsonOut(["repo", "view", "--json", "visibility"]).visibility ?? "").toLowerCase() === "public",
+
+    issueListOpen: () => jsonOut(["issue", "list", "--state", "open", "--limit", "100", "--json", "number,title,url,author"])
+      .map((i) => ({ number: i.number, title: i.title, url: i.url, author: i.author?.login ?? null, authorId: i.author?.login ?? null })),
     // sort:updated-desc, not gh's created-desc default: an old question
     // closed-with-answer today must surface in the 20-item window.
-    issueListClosed: () => jsonOut(["issue", "list", "--state", "closed", "--search", "sort:updated-desc", "--limit", "20", "--json", "number,title,url"]),
+    issueListClosed: () => jsonOut(["issue", "list", "--state", "closed", "--search", "sort:updated-desc", "--limit", "20", "--json", "number,title,url,author"])
+      .map((i) => ({ number: i.number, title: i.title, url: i.url, author: i.author?.login ?? null, authorId: i.author?.login ?? null })),
     issueCreate: ({ title, body }) => out(["issue", "create", "--title", title, "--body", body]).trim(),
     issueComment: (number, body) => { out(["issue", "comment", String(number), "--body", body]); },
     issueComments: (number) => (jsonOut(["issue", "view", String(number), "--json", "comments"]).comments ?? [])
-      .map((c) => ({ author: c.author?.login ?? null, body: c.body ?? "", createdAt: c.createdAt ?? null })),
+      .map((c) => ({ author: c.author?.login ?? null, authorId: c.author?.login ?? null, body: c.body ?? "", createdAt: c.createdAt ?? null })),
 
     // Doctor rows. Runs OUTSIDE the project cwd and without the .factory
     // .env merge, like every other doctor probe — auth is host-level state.

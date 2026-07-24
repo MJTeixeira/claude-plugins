@@ -134,23 +134,30 @@ export const bitbucketForge = ({ project, env = {} }) => {
     },
     prComment: (pr, body) => { req(`${base()}/pullrequests/${prId(pr)}/comments`, { method: "POST", body: { content: { raw: body } } }); },
     prComments: (pr) => (json(`${base()}/pullrequests/${prId(pr)}/comments?pagelen=100`).values ?? [])
-      .map((c) => ({ author: c.user?.display_name ?? null, body: c.content?.raw ?? "", createdAt: c.created_on ?? null })),
+      .map((c) => ({ author: c.user?.display_name ?? null, authorId: c.user?.uuid ?? null, body: c.content?.raw ?? "", createdAt: c.created_on ?? null })),
     prListMerged: () => (json(`${base()}/pullrequests?state=MERGED&pagelen=30`).values ?? []).map((p) => ({
       number: p.id, url: p.links?.html?.href ?? null, title: p.title, headRefName: p.source?.branch?.name ?? null,
     })),
 
+    // The trust split (injection posture): uuids are stable; display names
+    // are user-settable and spoofable — authorId must never be a name.
+    whoami: () => { const u = json(`${API}/user`); return { id: u.uuid ?? null, name: u.display_name ?? u.username ?? null }; },
+    // Explicit false only: an unreadable/missing visibility must never
+    // read as "publicly writable".
+    repoIsPublic: () => json(base()).is_private === false,
+
     issueListOpen: () => (json(`${base()}/issues?pagelen=100&q=${OPEN_ISSUE_Q}`).values ?? [])
       .filter((i) => OPEN_ISSUE_STATES.has(i.state)) // belt over the q= braces
-      .map((i) => ({ number: i.id, title: i.title, url: i.links?.html?.href ?? null })),
+      .map((i) => ({ number: i.id, title: i.title, url: i.links?.html?.href ?? null, author: i.reporter?.display_name ?? null, authorId: i.reporter?.uuid ?? null })),
     issueListClosed: () => (json(`${base()}/issues?pagelen=20&q=${CLOSED_ISSUE_Q}&sort=-updated_on`).values ?? [])
-      .map((i) => ({ number: i.id, title: i.title, url: i.links?.html?.href ?? null })),
+      .map((i) => ({ number: i.id, title: i.title, url: i.links?.html?.href ?? null, author: i.reporter?.display_name ?? null, authorId: i.reporter?.uuid ?? null })),
     issueCreate: ({ title, body }) => {
       const r = json(`${base()}/issues`, { method: "POST", body: { title, content: { raw: body } } });
       return r.links?.html?.href ?? `https://bitbucket.org/${repo()}/issues/${r.id}`;
     },
     issueComment: (number, body) => { req(`${base()}/issues/${number}/comments`, { method: "POST", body: { content: { raw: body } } }); },
     issueComments: (number) => (json(`${base()}/issues/${number}/comments?pagelen=100`).values ?? [])
-      .map((c) => ({ author: c.user?.display_name ?? null, body: c.content?.raw ?? "", createdAt: c.created_on ?? null })),
+      .map((c) => ({ author: c.user?.display_name ?? null, authorId: c.user?.uuid ?? null, body: c.content?.raw ?? "", createdAt: c.created_on ?? null })),
 
     authCheck: ({ wantBoard = false } = {}) => {
       const rows = [];

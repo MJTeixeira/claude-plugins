@@ -72,9 +72,14 @@ export const jiraTracker = ({ cfg = {}, env = {} }) => {
   const parentField = () => (cfg.jiraEpic ? { parent: { key: cfg.jiraEpic } } : {});
   const searchUrl = () => {
     const jql = `${scope()} AND statusCategory != Done ORDER BY created DESC`;
-    return `${api()}/search/jql?jql=${encodeURIComponent(jql)}&fields=summary&maxResults=100`;
+    return `${api()}/search/jql?jql=${encodeURIComponent(jql)}&fields=summary,reporter&maxResults=100`;
   };
-  const mapIssue = (i) => ({ number: i.key, title: i.fields?.summary ?? "", url: browse(i.key) });
+  // reporter = the trust-split author (injection posture); accountId is the
+  // stable id — display names are user-settable and spoofable.
+  const mapIssue = (i) => ({
+    number: i.key, title: i.fields?.summary ?? "", url: browse(i.key),
+    author: i.fields?.reporter?.displayName ?? null, authorId: i.fields?.reporter?.accountId ?? null,
+  });
   // Paginated sync search (nextPageToken; the v3 endpoint returns nothing
   // without an explicit fields list). Capped, not unbounded — a runaway
   // shared project must not stall a window.
@@ -123,8 +128,10 @@ export const jiraTracker = ({ cfg = {}, env = {} }) => {
     issueListOpen: () => (json(searchUrl()).issues ?? []).map(mapIssue),
     issueListClosed: () => {
       const jql = `${scope()} AND statusCategory = Done ORDER BY updated DESC`;
-      return (json(`${api()}/search/jql?jql=${encodeURIComponent(jql)}&fields=summary&maxResults=20`).issues ?? []).map(mapIssue);
+      return (json(`${api()}/search/jql?jql=${encodeURIComponent(jql)}&fields=summary,reporter&maxResults=20`).issues ?? []).map(mapIssue);
     },
+
+    whoami: () => { const u = json(`${api()}/myself`); return { id: u.accountId ?? null, name: u.displayName ?? null }; },
     issueCreate: ({ title, body }) => {
       const r = json(`${api()}/issue`, { method: "POST", body: { fields: {
         project: { key: project() }, issuetype: { name: "Task" },
@@ -134,7 +141,7 @@ export const jiraTracker = ({ cfg = {}, env = {} }) => {
     },
     issueComment: (issueKey, body) => { req(`${api()}/issue/${issueKey}/comment`, { method: "POST", body: { body: adf(body) } }); },
     issueComments: (issueKey) => (json(`${api()}/issue/${issueKey}/comment`).comments ?? [])
-      .map((c) => ({ author: c.author?.displayName ?? null, body: adfText(c.body), createdAt: c.created ?? null })),
+      .map((c) => ({ author: c.author?.displayName ?? null, authorId: c.author?.accountId ?? null, body: adfText(c.body), createdAt: c.created ?? null })),
 
     // Board primitives (jira-board.mjs): the two-way board view over the
     // same scope. Cards are plain Tasks; status is the project's real
