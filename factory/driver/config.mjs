@@ -44,6 +44,12 @@ export const buildConfig = (a) => ({
   maxTurnsPerSession: 80,
   sessionTimeoutMin: 45,
   maxSessionsPerWindow: 12,
+  // The gate floor: command the merge gate runs on the MERGED tree before
+  // pushing under auto-merge (e.g. "npm ci --silent && npm test"). null =
+  // rely on CI checks; with NEITHER, the gate refuses to auto-merge and
+  // doctor goes red.
+  gateCommand: null,
+  gateSuiteTimeoutMin: 15,
   permissionMode: "dontAsk",
   claudeCmd: "claude",
 });

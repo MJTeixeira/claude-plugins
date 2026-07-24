@@ -153,6 +153,16 @@ on fresh evidence produced in THIS session, and scratch probes never in the
 repo root (`.factory/tmp/` in factory checkouts, a gitignored scratch dir
 in live sessions).
 
+**The gate floor (autonomy epic, 1.9.0):** under auto-merge, "no
+verification at all" never reads as green. The merge gate merges only when
+CI checks pass, and — when `config.json → gateCommand` is set — the repo's
+own suite additionally passes ON THE MERGED TREE (run in the meta worktree
+between `git merge --no-commit` and the push; red aborts the merge and
+leaves a fix note). A repo with NEITHER CI checks nor a `gateCommand`: the
+gate refuses to auto-merge and doctor fails (`CI under auto-merge`). The
+session's branch-side tests never stand in for either — they proved the
+branch, not the combination with base.
+
 ## Machine setup (once per machine)
 
 1. **The runtime** — every scheduler execs it, every worktree gets its
@@ -421,6 +431,17 @@ merge commit; a CONFLICTING PR is left with an exact rebase instruction for
 the next session, and at window end a sweep gives every still-open green
 factory PR one more gate pass. Poll budget:
 `config.json → mergeGateMinutes` (default 10).
+
+The gate floor rides the same local merge: set `config.json → gateCommand`
+(e.g. `"npm ci --silent && npm test"`) and the driver runs it on the merged
+tree before pushing — red aborts the merge, captures the output to
+`<state>/log/gate-suite-*.log`, and leaves the fix note (with the output
+tail) for the next session. `gateSuiteTimeoutMin` (default 15) bounds it; a
+timeout is a failure. On a repo with no CI the gateCommand IS the check —
+with neither, the gate refuses to auto-merge and doctor goes red, so a
+factory can never silently merge on nothing (fleet lesson, 2026-07-23).
+The command runs in the meta worktree: it must be self-contained
+(install deps itself or tolerate a warm worktree).
 
 PRs merged OUTSIDE the gate (the owner, any human) close their tasks
 mechanically: every dev window start — under every autonomy level, since
