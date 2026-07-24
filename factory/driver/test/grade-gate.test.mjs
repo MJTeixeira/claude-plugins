@@ -180,7 +180,7 @@ test("a grader that records no verdict fails closed — no merge on ungraded wor
   assert.equal(readGrades(world)[headSha]?.pass, false, "a verdict-less grade must be recorded as a fail");
 });
 
-test("a PR with no task id (live/piloting work) merges ungraded — no grader session is spent on the owner's own work", (t) => {
+test("a factory PR with no task id parks for the owner instead of merging ungraded", (t) => {
   const world = makeFactory(t, {
     config: { autonomy: "auto-merge-dev", mergeGateMinutes: 0.1, maxSessionsPerWindow: 1, gateCommand: "true" },
   });
@@ -190,8 +190,34 @@ test("a PR with no task id (live/piloting work) merges ungraded — no grader se
   const r = runDriver(world, "dev");
 
   assert.equal(r.code, 0, `driver exited ${r.code}\nstdout:\n${r.stdout}\nstderr:\n${r.stderr}`);
-  assert.match(gitIn(world.origin, "log", "main", "--oneline"), /Merge PR #5/);
+  assert.match(r.stdout, /no task id/);
+  assert.doesNotMatch(gitIn(world.origin, "log", "main", "--oneline"), /Merge PR #5/,
+    "an ungradeable PR must never auto-merge");
   assert.equal(invocation(world, 2), null, "no grader session for a task-less PR");
+  const calls = fs.readFileSync(path.join(world.root, "stub-gh", "calls.log"), "utf8");
+  const comments = calls.split("\n").filter((l) => l.startsWith("pr comment"));
+  assert.equal(comments.length, 1, `the owner must be asked exactly once, got:\n${calls}`);
+});
+
+test("an already-noticed ungradeable PR stays parked silently on later sweeps", (t) => {
+  const world = makeFactory(t, {
+    config: { autonomy: "auto-merge-dev", mergeGateMinutes: 0.1, maxSessionsPerWindow: 1, gateCommand: "true" },
+  });
+  setupGreenPr(world, { title: "[factory] hotfix: fix the typo", branch: "factory/hotfix" });
+  // A previous window already posted the owner notice for this PR.
+  const logDir = path.join(world.stateDir, "log");
+  fs.mkdirSync(logDir, { recursive: true });
+  fs.writeFileSync(path.join(logDir, "state.json"), JSON.stringify({
+    ungradeablePrs: { "https://github.com/o/r/pull/5": "2026-07-10T00:00:00Z" },
+  }));
+  queueSessions(world, [noTasksSession]);
+
+  const r = runDriver(world, "dev");
+
+  assert.equal(r.code, 0, `driver exited ${r.code}\nstdout:\n${r.stdout}\nstderr:\n${r.stderr}`);
+  assert.doesNotMatch(gitIn(world.origin, "log", "main", "--oneline"), /Merge PR #5/);
+  const calls = fs.readFileSync(path.join(world.root, "stub-gh", "calls.log"), "utf8");
+  assert.doesNotMatch(calls, /^pr comment/m, "a repeat sweep must not re-ask the owner");
 });
 
 test("prep never spawns a grader — an ungraded green PR waits for the next dev window", (t) => {
