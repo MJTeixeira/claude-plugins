@@ -97,7 +97,7 @@ test("hung dev window: tree killed, prep run, hung-window-killed escalated", (t)
   fs.writeFileSync(w.lockPath, JSON.stringify({
     pid, mode: "dev",
     startedAt: new Date(Date.now() - 6 * 3600 * 1000).toISOString(),
-    windowEndsAt: new Date(Date.now() - 2 * 3600 * 1000).toISOString(),
+    windowEndsAt: new Date(Date.now() - 4 * 3600 * 1000).toISOString(),// past even the grader-widened budget
     currentSession: 3,
   }));
 
@@ -139,7 +139,7 @@ test("stale lock (dead pid) is left for the next driver run — no kill, no prep
   fs.writeFileSync(w.lockPath, JSON.stringify({
     pid, mode: "dev",
     startedAt: new Date(Date.now() - 6 * 3600 * 1000).toISOString(),
-    windowEndsAt: new Date(Date.now() - 2 * 3600 * 1000).toISOString(),
+    windowEndsAt: new Date(Date.now() - 4 * 3600 * 1000).toISOString(),// past even the grader-widened budget
   }));
 
   const r = runOnce(w);
@@ -149,12 +149,14 @@ test("stale lock (dead pid) is left for the next driver run — no kill, no prep
 });
 
 test("a dev window inside its config-derived overrun budget is not killed", (t) => {
-  const w = setup(t); // defaults: 45min timeout + 2×10min gate + 30min slack = 95min budget
+  const w = setup(t); // defaults: 45min last session + 45min window-end grader + 2×10min gate + 30min slack = 140min budget
   const pid = spawnHung(t, w);
   fs.writeFileSync(w.lockPath, JSON.stringify({
     pid, mode: "dev",
     startedAt: new Date(Date.now() - 5 * 3600 * 1000).toISOString(),
-    windowEndsAt: new Date(Date.now() - 70 * 60 * 1000).toISOString(), // a legit long finalization
+    // 120min past windowEndsAt: a last session at its timeout plus the
+    // window-end sweep grading a PR — legit finalization, not a hang.
+    windowEndsAt: new Date(Date.now() - 120 * 60 * 1000).toISOString(),
   }));
 
   const r = runOnce(w);
@@ -188,7 +190,7 @@ setInterval(() => {}, 1000);
   fs.writeFileSync(w.lockPath, JSON.stringify({
     pid: parent.pid, mode: "dev",
     startedAt: new Date(Date.now() - 6 * 3600 * 1000).toISOString(),
-    windowEndsAt: new Date(Date.now() - 3 * 3600 * 1000).toISOString(),
+    windowEndsAt: new Date(Date.now() - 4 * 3600 * 1000).toISOString(),// past even the grader-widened budget
   }));
 
   const r = runOnce(w);
@@ -227,7 +229,7 @@ test("a lock pid that is not a factory driver is never killed (pid recycling)", 
   fs.writeFileSync(w.lockPath, JSON.stringify({
     pid: child.pid, mode: "dev",
     startedAt: new Date(Date.now() - 6 * 3600 * 1000).toISOString(),
-    windowEndsAt: new Date(Date.now() - 2 * 3600 * 1000).toISOString(),
+    windowEndsAt: new Date(Date.now() - 4 * 3600 * 1000).toISOString(),// past even the grader-widened budget
   }));
 
   const r = runOnce(w);
@@ -571,7 +573,7 @@ test("no Telegram creds anywhere: the outbox is still written and the pass exits
   fs.writeFileSync(w.lockPath, JSON.stringify({
     pid, mode: "dev",
     startedAt: new Date(Date.now() - 6 * 3600 * 1000).toISOString(),
-    windowEndsAt: new Date(Date.now() - 2 * 3600 * 1000).toISOString(),
+    windowEndsAt: new Date(Date.now() - 4 * 3600 * 1000).toISOString(),// past even the grader-widened budget
   }));
   const r = runOnce(w);
   assert.equal(r.status, 0, `${r.stdout}\n${r.stderr}`);

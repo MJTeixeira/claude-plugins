@@ -54,6 +54,11 @@ export const buildConfig = (a) => ({
   // exactly like `Gate: human` (literal prefix match — end directories
   // with "/"). Empty = every path merges on the gate's other checks.
   riskTiers: { high: [] },
+  // The acceptance grader's session model — deliberately NOT the factory's
+  // own `model`: the grader breaks the implementer-grades-own-homework
+  // correlation, so it stays on a strong tier regardless of how cheap the
+  // implementing sessions run.
+  graderModel: "opus",
   permissionMode: "dontAsk",
   claudeCmd: "claude",
 });

@@ -238,15 +238,22 @@ const runPrep = (project) => {
 
 // A live lock past its wall-clock bound is a hung run. dev locks carry
 // windowEndsAt; single-mode locks (triage/report/prep) bound from startedAt
-// + the factory's own session timeout. The dev grace is config-derived: a
-// last session may start just before windowEndsAt and run its full timeout,
-// then the merge gate and the window-end sweep each spend their budget.
+// + the factory's own session timeout. The dev grace is config-derived and
+// sized for the realistic tail past windowEnd: a last session may start just
+// before it and run its full timeout, its own PR then draws an acceptance-
+// grader session (a second timeout), and the window-end sweep may grade one
+// more (a third) — plus the merge gate's poll budget around each. Three
+// timeouts covers the common case; a factory that ends a window with a large
+// backlog of green-but-ungraded PRs can still have the boundary sweep grade
+// several back-to-back and overrun this — a false hang-kill there is
+// safe-direction (the killed grader cached nothing, the next window re-grades
+// and re-merges), never a bad merge. See .docs/known-issues.md.
 const hangBound = (lock, cfg) => {
   const timeoutMin = Number(cfg?.sessionTimeoutMin) || 45;
   const windowEnd = Date.parse(lock.windowEndsAt ?? "");
   if (!Number.isNaN(windowEnd)) {
     const gateMin = Number(cfg?.mergeGateMinutes) || 10;
-    return windowEnd + (timeoutMin + 2 * gateMin + 30) * 60 * 1000;
+    return windowEnd + (3 * timeoutMin + 2 * gateMin + 30) * 60 * 1000;
   }
   const started = Date.parse(lock.startedAt ?? "");
   if (!Number.isNaN(started)) return started + timeoutMin * 60 * 1000 + SINGLE_GRACE_MS;

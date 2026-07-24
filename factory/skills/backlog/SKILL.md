@@ -67,6 +67,12 @@ Assign by difficulty, honestly:
   netcode task, first combat pipeline, first replication, first rig work)
   — these set the pattern every follow-up copies; the followers drop back
   to sonnet/high. Note the reason in the task's Notes.
+- fable/* (the tier above opus) — BEHAVIOR-DEFINING reasoning artifacts
+  where subtly-wrong logic is invisible even to careful review: rubrics,
+  judgment prompts, playbooks, spec red-teams, architecture-locking spikes
+  the whole project inherits. Not for routine implementation at ANY
+  difficulty — a hard parser is still opus at most. Note the reason in
+  the task's Notes.
 
 Tie-breaker: time is the scarce resource, not tokens. When torn between
 two tiers, take the higher one — a session that flails against a task too
@@ -140,7 +146,13 @@ What to report when:
 ## Rules
 
 - Acceptance criteria are the contract — the task is done when they pass,
-  not when the code looks done. Run the task's `Verify` commands.
+  not when the code looks done. Run the task's `Verify` commands. Under
+  auto-merge they are also EXECUTED: the driver briefs an independent
+  grader session from the `Acceptance:`/`Verify:` lines verbatim and the
+  PR merges only on its per-criterion pass — so triage writes each
+  criterion observable and checkable by a stranger in a fresh checkout
+  (a task without any becomes one synthesized criterion from its title,
+  which grades much more loosely than the spec deserves).
 - Scope creep goes to the backlog via your report, not the diff: mention
   discovered work in your summary and triage turns it into a task.
 - Backlog edits (triage only) are facts, not prose — keep the format

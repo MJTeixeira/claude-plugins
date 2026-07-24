@@ -7,7 +7,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { makeFactory, queueSessions, runDriver, gitIn } from "./helpers.mjs";
+import { makeFactory, queueSessions, runDriver, gitIn, insertGraderPass } from "./helpers.mjs";
 
 const RESULT = {
   type: "result", subtype: "success", result: "done",
@@ -103,6 +103,7 @@ test("a green gate suite runs on the MERGED tree and the merge lands", (t) => {
   gitIn(world.project, "push", "origin", "main");
   const sentinel = path.join(world.root, "suite-ran");
   patchConfig(world, { gateCommand: `test -f extra.txt -a -f base.txt && touch ${sentinel}` });
+  insertGraderPass(world); // the gate grades after the suite — the merge under test needs the pass
 
   const r = runDriver(world, "dev");
 
@@ -137,6 +138,7 @@ test("no checks but a green gateCommand merges — the suite IS the verification
     config: { autonomy: "auto-merge-dev", mergeGateMinutes: 0.1, maxSessionsPerWindow: 1, gateCommand: "true" },
   });
   setupGreenPr(world);
+  insertGraderPass(world);
   const ghDir = path.join(world.root, "stub-gh");
   const view = JSON.parse(fs.readFileSync(path.join(ghDir, "pr-view.json"), "utf8"));
   view.statusCheckRollup = [];
@@ -192,6 +194,7 @@ test("a green suite with multi-megabyte output still merges (spawn buffer must n
   });
   setupGreenPr(world);
   patchConfig(world, { gateCommand: `node -e "process.stdout.write('x'.repeat(3 * 1024 * 1024))"` });
+  insertGraderPass(world);
 
   const r = runDriver(world, "dev");
 

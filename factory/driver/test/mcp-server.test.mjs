@@ -36,7 +36,7 @@ const readEvents = (world) => {
 const init = { jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "test", version: "0" } } };
 const call = (id, name, args) => ({ jsonrpc: "2.0", id, method: "tools/call", params: { name, arguments: args } });
 
-test("mcp-server initializes and lists the five session tools", async (t) => {
+test("mcp-server initializes and lists the six session tools", async (t) => {
   const world = makeFactory(t);
   const rs = await runMcp(world, [init, { jsonrpc: "2.0", id: 2, method: "tools/list" }]);
   const initR = rs.find((r) => r.id === 1);
@@ -45,9 +45,54 @@ test("mcp-server initializes and lists the five session tools", async (t) => {
   const list = rs.find((r) => r.id === 2);
   assert.deepEqual(
     list.result.tools.map((tl) => tl.name).sort(),
-    ["create_pr", "log_progress", "open_question", "post_daily_log", "report_status"]
+    ["create_pr", "grade_verdict", "log_progress", "open_question", "post_daily_log", "report_status"]
   );
   for (const tl of list.result.tools) assert.equal(tl.inputSchema.type, "object");
+});
+
+// ---------- grade_verdict (the acceptance grader's verdict channel) ----------
+
+test("grade_verdict records per-criterion verdicts for the driver", async (t) => {
+  const world = makeFactory(t);
+  const rs = await runMcp(world, [init, call(2, "grade_verdict", {
+    criteria: [
+      { criterion: "login button redirects to the provider", pass: true, evidence: "npm test -- oauth: 4 passing" },
+      { criterion: "denied consent shows the error page", pass: false, evidence: "GET /callback?error=denied returns 500, not the error page" },
+    ],
+    summary: "1 of 2 criteria failed",
+  })]);
+  const r = rs.find((x) => x.id === 2);
+  assert.ok(!r.result.isError, `unexpected tool error: ${JSON.stringify(r.result)}`);
+  const events = readEvents(world);
+  assert.equal(events.length, 1);
+  assert.equal(events[0].event, "grade_verdict");
+  assert.equal(events[0].criteria.length, 2);
+  assert.equal(events[0].criteria[0].pass, true);
+  assert.equal(events[0].criteria[1].pass, false);
+  assert.match(events[0].criteria[1].evidence, /returns 500/);
+});
+
+test("grade_verdict with no criteria is a validation error and writes no event", async (t) => {
+  const world = makeFactory(t);
+  const rs = await runMcp(world, [init, call(2, "grade_verdict", { criteria: [], summary: "empty" })]);
+  const r = rs.find((x) => x.id === 2);
+  assert.equal(r.result.isError, true);
+  assert.match(r.result.content[0].text, /criteria/);
+  assert.equal(readEvents(world).length, 0);
+});
+
+test("grade_verdict rejects a criterion without evidence or a non-boolean pass", async (t) => {
+  const world = makeFactory(t);
+  const rs = await runMcp(world, [
+    init,
+    call(2, "grade_verdict", { criteria: [{ criterion: "it works", pass: true }] }),
+    call(3, "grade_verdict", { criteria: [{ criterion: "it works", pass: "yes", evidence: "ran it" }] }),
+  ]);
+  assert.equal(rs.find((x) => x.id === 2).result.isError, true);
+  assert.match(rs.find((x) => x.id === 2).result.content[0].text, /evidence/);
+  assert.equal(rs.find((x) => x.id === 3).result.isError, true);
+  assert.match(rs.find((x) => x.id === 3).result.content[0].text, /pass/);
+  assert.equal(readEvents(world).length, 0);
 });
 
 test("post_daily_log records the body for the driver to post at session end", async (t) => {

@@ -128,8 +128,13 @@ they mean:
 
 **Autonomy levels:** `pr-only` = every task becomes a PR, you merge (start
 here). `auto-merge-dev` = the DRIVER merges factory PRs into the base
-branch once CI is green (graduate to this when you trust it — CI becomes
-the only gate; the agent sessions themselves never merge). `milestone-gates`
+branch (graduate to this when you trust it; the agent sessions themselves
+never merge). Before it merges, three mechanical gates must all clear: CI
+green — or, on a repo without CI, the repo's own suite via config
+`gateCommand`, run on the merged tree; an independent acceptance-grader
+session (config `graderModel`, default opus) confirming the task's
+acceptance criteria; and no file under a `riskTiers.high` path — those
+park for your review, like tasks marked `Gate: human`. `milestone-gates`
 = auto-merge inside a milestone, stops at milestone boundaries until you
 close the gate issue.
 
@@ -220,6 +225,10 @@ this file to tune behavior — nothing here is required reading on day one.
 | `maxTurnsPerSession` | `80` | hard cap on agent turns per session |
 | `sessionTimeoutMin` | `45` | wall-clock kill for a hung session |
 | `mergeGateMinutes` | `10` | how long the driver polls CI before handing a PR to the next session (only used under `auto-merge-dev`) |
+| `gateCommand` | `null` | repo suite the gate runs on the MERGED tree before pushing an auto-merge (e.g. `"npm ci --silent && npm test"`); `null` = rely on CI checks — with NEITHER, the gate refuses to auto-merge |
+| `gateSuiteTimeoutMin` | `15` | wall-clock bound on `gateCommand`; a timeout counts as a failed suite |
+| `riskTiers` | `{"high": []}` | path prefixes (end dirs with `/`) whose PRs always park for your review instead of auto-merging — auth, payments, migrations… |
+| `graderModel` | `"opus"` | model for the independent acceptance-grader session the gate runs before an auto-merge — deliberately separate from `model` |
 | `permissionMode` | `"dontAsk"` | keep it; `"bypassPermissions"` only inside a container/VM you could afford to lose |
 | `claudeCmd` | `"claude"` | binary to launch; change only for a custom install |
 | `model` | `"sonnet"` | default model for sessions (also seeds `triageModel`) — individual backlog tasks can override via `Model:`/`Effort:`/`Turns:` hints |

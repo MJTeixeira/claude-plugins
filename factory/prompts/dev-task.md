@@ -109,9 +109,12 @@ summary.
 ## Review (mandatory — after verify, before the PR)
 
 Every code diff gets one review pass. Under auto-merge there is no human
-downstream of you — this is the only model review the PR gets, and it must
+downstream of you — this is the only CODE review the PR gets, and it must
 finish BEFORE you open the PR (the driver merges on green; a review racing
-the merge gate arrives too late).
+the merge gate arrives too late). Downstream, the driver also has an
+independent grader session re-judge the task's acceptance criteria before
+merging: it never reads your PR body or summary as evidence, so nothing you
+write can talk it past a criterion — make the criteria actually pass.
 
 - Spawn the `code-reviewer` agent exactly once, with: the purpose of the
   change (2-3 sentences), the diff base (`<base>...HEAD`), and the relevant
