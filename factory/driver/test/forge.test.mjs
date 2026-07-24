@@ -113,10 +113,13 @@ test("prListText returns the human-readable list untouched (repo snapshot)", () 
   assert.equal(forge.prListText(), "5\t[factory] T-001\tfactory/T-001\n");
 });
 
-test("issueListOpen returns the parsed open issues (needs-human dedupe)", () => {
-  const rows = [{ number: 3, title: "[factory] question: pick a color", url: "u3" }];
-  set("issue-list.json", JSON.stringify(rows));
-  assert.deepEqual(forge.issueListOpen(), rows);
+test("issueListOpen returns the parsed open issues with their author (needs-human dedupe + trust split)", () => {
+  set("issue-list.json", JSON.stringify([
+    { number: 3, title: "[factory] question: pick a color", url: "u3", author: { login: "owner1" } },
+  ]));
+  assert.deepEqual(forge.issueListOpen(), [
+    { number: 3, title: "[factory] question: pick a color", url: "u3", author: "owner1", authorId: "owner1" },
+  ]);
 });
 
 test("issueCreate returns the new issue's trimmed url", () => {
@@ -135,29 +138,32 @@ test("prCreate opens a PR with head, base, title and body, returning the trimmed
   }
 });
 
-test("prComments maps gh's conversation comments to {author, body, createdAt}", () => {
+test("prComments maps gh's conversation comments to {author, authorId, body, createdAt}", () => {
   set("pr-comments.json", JSON.stringify({ comments: [
     { author: { login: "owner1" }, body: "use develop", createdAt: "2026-07-20T10:00:00Z" },
   ] }));
   assert.deepEqual(forge.prComments("https://github.com/o/r/pull/7"), [
-    { author: "owner1", body: "use develop", createdAt: "2026-07-20T10:00:00Z" },
+    { author: "owner1", authorId: "owner1", body: "use develop", createdAt: "2026-07-20T10:00:00Z" },
   ]);
 });
 
-test("issueComments maps gh's issue comments to {author, body, createdAt}", () => {
+test("issueComments maps gh's issue comments to {author, authorId, body, createdAt}", () => {
   set("issue-comments.json", JSON.stringify({ comments: [
     { author: { login: "owner1" }, body: "answer: option 2", createdAt: "2026-07-20T11:00:00Z" },
   ] }));
   assert.deepEqual(forge.issueComments(3), [
-    { author: "owner1", body: "answer: option 2", createdAt: "2026-07-20T11:00:00Z" },
+    { author: "owner1", authorId: "owner1", body: "answer: option 2", createdAt: "2026-07-20T11:00:00Z" },
   ]);
 });
 
 test("issueListClosed lists recently closed issues (where answered questions live)", () => {
   clearCalls();
-  const rows = [{ number: 4, title: "[factory] question: which db", url: "u4" }];
-  set("issue-closed.json", JSON.stringify(rows));
-  assert.deepEqual(forge.issueListClosed(), rows);
+  set("issue-closed.json", JSON.stringify([
+    { number: 4, title: "[factory] question: which db", url: "u4", author: { login: "owner1" } },
+  ]));
+  assert.deepEqual(forge.issueListClosed(), [
+    { number: 4, title: "[factory] question: which db", url: "u4", author: "owner1", authorId: "owner1" },
+  ]);
   const line = calls().find((l) => l.startsWith("issue list") && /--state closed/.test(l));
   assert.ok(line, "must list closed issues");
   assert.match(line, /sort:updated-desc/, "answer recency, not creation order — an old question answered today must surface");

@@ -96,17 +96,17 @@ test("credentials ride stdin, never argv", () => {
 test("issueListOpen queries open issues of the configured project and maps keys to contract rows", () => {
   clearCalls();
   set("search.json", JSON.stringify({ issues: [
-    { key: "FACT-3", fields: { summary: "[factory] question: pick a color" } },
+    { key: "FACT-3", fields: { summary: "[factory] question: pick a color", reporter: { displayName: "Owner One", accountId: "acc-1" } } },
     { key: "FACT-1", fields: { summary: "[factory] daily log" } },
   ] }));
   assert.deepEqual(tracker.issueListOpen(), [
-    { number: "FACT-3", title: "[factory] question: pick a color", url: "https://acme.atlassian.net/browse/FACT-3" },
-    { number: "FACT-1", title: "[factory] daily log", url: "https://acme.atlassian.net/browse/FACT-1" },
+    { number: "FACT-3", title: "[factory] question: pick a color", url: "https://acme.atlassian.net/browse/FACT-3", author: "Owner One", authorId: "acc-1" },
+    { number: "FACT-1", title: "[factory] daily log", url: "https://acme.atlassian.net/browse/FACT-1", author: null, authorId: null },
   ]);
   const line = calls().find((l) => /search\/jql/.test(l));
   assert.match(line, /project%20%3D%20%22FACT%22/, "JQL must scope to the configured project");
   assert.match(line, /statusCategory%20!%3D%20Done/, "JQL must filter to open issues server-side");
-  assert.match(line, /fields=summary/, "v3 search returns no fields unless asked");
+  assert.match(line, /fields=summary%2Creporter|fields=summary,reporter/, "the reporter is the trust-split author — v3 returns no fields unless asked");
 });
 
 test("issueCreate posts summary + ADF description to the project and returns the browse url", () => {
@@ -127,9 +127,9 @@ test("issueCreate posts summary + ADF description to the project and returns the
 
 test("issueListClosed searches Done issues in scope (answered questions live there)", () => {
   clearCalls();
-  set("search.json", JSON.stringify({ issues: [{ key: "FACT-4", fields: { summary: "[factory] question: which db" } }] }));
+  set("search.json", JSON.stringify({ issues: [{ key: "FACT-4", fields: { summary: "[factory] question: which db", reporter: { displayName: "Owner One", accountId: "acc-1" } } }] }));
   assert.deepEqual(tracker.issueListClosed(), [
-    { number: "FACT-4", title: "[factory] question: which db", url: "https://acme.atlassian.net/browse/FACT-4" },
+    { number: "FACT-4", title: "[factory] question: which db", url: "https://acme.atlassian.net/browse/FACT-4", author: "Owner One", authorId: "acc-1" },
   ]);
   const line = calls().find((l) => /search\/jql/.test(l) && /Done/.test(decodeURIComponent(l)));
   assert.ok(line, "must query statusCategory = Done");
@@ -138,7 +138,7 @@ test("issueListClosed searches Done issues in scope (answered questions live the
 test("issueComments flattens ADF comment bodies to plain text {author, body, createdAt}", () => {
   clearCalls();
   set("comments.json", JSON.stringify({ comments: [{
-    author: { displayName: "Owner One" },
+    author: { displayName: "Owner One", accountId: "acc-1" },
     created: "2026-07-20T11:00:00Z",
     body: { type: "doc", version: 1, content: [
       { type: "paragraph", content: [{ type: "text", text: "answer: " }, { type: "text", text: "option 2" }] },
@@ -152,9 +152,15 @@ test("issueComments flattens ADF comment bodies to plain text {author, body, cre
     ] },
   }] }));
   assert.deepEqual(tracker.issueComments("FACT-3"), [
-    { author: "Owner One", body: "answer: option 2\nsecond line\nuse postgres skip redis", createdAt: "2026-07-20T11:00:00Z" },
+    { author: "Owner One", authorId: "acc-1", body: "answer: option 2\nsecond line\nuse postgres skip redis", createdAt: "2026-07-20T11:00:00Z" },
   ]);
   assert.ok(calls().find((l) => /issue\/FACT-3\/comment/.test(l)), "must hit the comment endpoint");
+});
+
+test("whoami is the authenticated account's stable accountId, not its display name", () => {
+  set("myself.json", JSON.stringify({ accountId: "acc-1", displayName: "Owner One", emailAddress: "m@example.com" }));
+  set("auth-fail", "");
+  assert.deepEqual(tracker.whoami(), { id: "acc-1", name: "Owner One" });
 });
 
 test("issueComment posts an ADF body to the issue's comment endpoint by key", () => {
@@ -213,7 +219,7 @@ test("async.issueList maps issues with empty labels for the dashboard's title-co
   const r = await tracker.async.issueList();
   assert.deepEqual(r.data, [{
     number: "FACT-3", title: "[factory] question: pick a color",
-    url: "https://acme.atlassian.net/browse/FACT-3", labels: [],
+    url: "https://acme.atlassian.net/browse/FACT-3", author: null, authorId: null, labels: [],
   }]);
 });
 

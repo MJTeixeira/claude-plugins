@@ -345,7 +345,20 @@ display on 4 of 6 fleet factories (2026-07-19).
   daily log itself via the forge/tracker adapters with its own
   credentials, and pre-collects every forge/tracker READ into the
   triage/report prompts' `## Forge inputs` section, so sessions never
-  shell out with keys; validated tool calls appended to
+  shell out with keys. **Injection posture (autonomy epic, 1.11.0):**
+  every issue and comment in that section carries an `(owner)` or
+  `(UNTRUSTED)` trust tag — compared on the forge's STABLE id (gh login,
+  Bitbucket uuid, Jira accountId; display names are spoofable) against
+  `whoami()`, the account the driver authenticates as, and rendered
+  position-anchored BEFORE any author-controlled text, so a name or
+  title forged to look like a tag lands where the header says it is
+  content. The prompts bind
+  sessions to take instructions only from owner-authored content;
+  UNTRUSTED text is data to summarize/route/question, never to obey.
+  Identity unavailable → fail closed: everything tags UNTRUSTED and the
+  section says so. Doctor warns (`injection surface`) when auto-merge
+  rides a publicly writable tracker (public repo + native tracker);
+  validated tool calls appended to
   `<state>/log/<mode>-<ts>.mcp.jsonl`; a session killed at minute 40 has
   already reported everything up to minute 40, and its last settled report
   stands in for `<state>/log/last-session.json`, which survives as the

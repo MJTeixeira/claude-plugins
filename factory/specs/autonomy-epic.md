@@ -40,10 +40,12 @@ proven").
    deployed-tooling refusal already in `landMerge`; the owner's merge
    closes the parked task mechanically; doctor fails on a malformed
    `riskTiers` instead of letting a typo turn the floor off.
-3. **Injection posture.** `## Forge inputs` marks non-owner-authored
-   comments as untrusted data; triage takes instructions only from
-   owner-authored content; doctor warns on auto-merge + publicly writable
-   tracker.
+3. **Injection posture — SHIPPED (1.11.0).** `## Forge inputs` tags every
+   issue and comment `(owner)` or `(UNTRUSTED)` — compared on stable ids
+   (gh login, Bitbucket uuid, Jira accountId) against the authenticated
+   account, fail-closed when identity is unavailable; triage/report
+   prompts take instructions only from owner-authored content; doctor
+   warns (`injection surface`) on auto-merge + publicly writable tracker.
 4. **Acceptance grader.** Driver-spawned independent session (config
    `graderModel`, default opus) in its own throwaway worktree, briefed by
    the DRIVER from the task's `Acceptance:`/`Verify:` lines — never by the

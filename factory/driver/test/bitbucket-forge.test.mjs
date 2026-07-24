@@ -46,6 +46,7 @@ case "$url" in
     elif [ -s "$ROOT/issues-fail" ]; then cat "$ROOT/issues-fail" >&2; exit 22
     else cat "$ROOT/issue-list.json"; fi ;;
   */refs/branches/*) cat "$ROOT/branch.json" ;;
+  *"/2.0/repositories/"*) cat "$ROOT/repo.json" ;;
   *) echo '{}' ;;
 esac
 exit 0
@@ -174,36 +175,51 @@ test("prCreate posts source/destination branches and returns the new PR url — 
   assert.match(lastStdin(), /user = "m@example\.com:sekret-tok"/);
 });
 
-test("prComments maps PR comments to {author, body, createdAt}", () => {
+test("prComments maps PR comments to {author, authorId, body, createdAt} — authorId is the uuid, display names are spoofable", () => {
   clearCalls();
   set("pr-comments.json", JSON.stringify({ values: [
-    { user: { display_name: "Owner One" }, content: { raw: "use develop" }, created_on: "2026-07-20T10:00:00Z" },
+    { user: { display_name: "Owner One", uuid: "{u-1}" }, content: { raw: "use develop" }, created_on: "2026-07-20T10:00:00Z" },
   ] }));
   assert.deepEqual(forge.prComments(PR_URL), [
-    { author: "Owner One", body: "use develop", createdAt: "2026-07-20T10:00:00Z" },
+    { author: "Owner One", authorId: "{u-1}", body: "use develop", createdAt: "2026-07-20T10:00:00Z" },
   ]);
   assert.match(calls().join("\n"), /pullrequests\/7\/comments/);
 });
 
-test("issueComments maps issue comments to {author, body, createdAt}", () => {
+test("issueComments maps issue comments to {author, authorId, body, createdAt}", () => {
   clearCalls();
   set("issue-comments.json", JSON.stringify({ values: [
-    { user: { display_name: "Owner One" }, content: { raw: "answer: option 2" }, created_on: "2026-07-20T11:00:00Z" },
+    { user: { display_name: "Owner One", uuid: "{u-1}" }, content: { raw: "answer: option 2" }, created_on: "2026-07-20T11:00:00Z" },
   ] }));
   assert.deepEqual(forge.issueComments(3), [
-    { author: "Owner One", body: "answer: option 2", createdAt: "2026-07-20T11:00:00Z" },
+    { author: "Owner One", authorId: "{u-1}", body: "answer: option 2", createdAt: "2026-07-20T11:00:00Z" },
   ]);
   assert.match(calls().join("\n"), /issues\/3\/comments/);
 });
 
-test("issueListClosed queries the closed states and maps to issue rows", () => {
+test("issueListClosed queries the closed states and maps to issue rows with the reporter", () => {
   clearCalls();
   set("issue-closed.json", JSON.stringify({ values: [
-    { id: 4, state: "resolved", title: "[factory] question: which db", links: { html: { href: "u4" } } },
+    { id: 4, state: "resolved", title: "[factory] question: which db", links: { html: { href: "u4" } }, reporter: { display_name: "Owner One", uuid: "{u-1}" } },
   ] }));
-  assert.deepEqual(forge.issueListClosed(), [{ number: 4, title: "[factory] question: which db", url: "u4" }]);
+  assert.deepEqual(forge.issueListClosed(), [{ number: 4, title: "[factory] question: which db", url: "u4", author: "Owner One", authorId: "{u-1}" }]);
   const line = calls().find((l) => /\/issues\?/.test(l) && /resolved/.test(l));
   assert.ok(line, "must query closed-ish states server-side");
+});
+
+test("whoami is the authenticated account's stable uuid, not its display name", () => {
+  set("user.json", JSON.stringify({ uuid: "{u-1}", display_name: "Owner One", username: "owner1" }));
+  set("auth-fail", "");
+  assert.deepEqual(forge.whoami(), { id: "{u-1}", name: "Owner One" });
+});
+
+test("repoIsPublic is true only when the repo says is_private: false — missing field reads private", () => {
+  set("repo.json", JSON.stringify({ is_private: false }));
+  assert.equal(forge.repoIsPublic(), true);
+  set("repo.json", JSON.stringify({ is_private: true }));
+  assert.equal(forge.repoIsPublic(), false);
+  set("repo.json", "{}");
+  assert.equal(forge.repoIsPublic(), false, "an unreadable visibility must never read as public");
 });
 
 test("prListMerged hits state=MERGED and maps to the open-list row shape", () => {
