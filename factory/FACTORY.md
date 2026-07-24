@@ -142,7 +142,8 @@ session context — never merge them, never cross-load them:
 - **Factory windows** verify via `code4food-factory:verify` (headless
   recipes, factory escalation vocabulary: `open_question`, `Gate: human`)
   and then run ONE mandatory `code-reviewer` agent pass before opening the
-  PR — the only model review a factory PR gets before auto-merge. Factory
+  PR — the only code review a factory PR gets before auto-merge (the
+  acceptance grader below judges criteria, not code quality). Factory
   sessions never load the skillset's `finishing`.
 - **Live sessions** verify via `code4food-skillset:verify` (attended:
   watched browser, simulator screenshots, `screencapture`), loaded by
@@ -173,6 +174,30 @@ parked, and a blocked task's risky PR is refused with no status change —
 a merge doesn't answer a question). Prefixes are literal path matches
 (end directories with `/`); a malformed `riskTiers` — wrong shape or a
 misspelled key — fails doctor rather than silently disabling the floor.
+
+**The acceptance grader (autonomy epic, 1.12.0):** before the gate may
+merge a task PR, an INDEPENDENT grader session must record a passing
+verdict for the PR's exact head SHA. The driver spawns it (config
+`graderModel`, default `opus` — deliberately not the factory's own
+`model`) in a throwaway worktree checked out at the PR head, and briefs it
+itself from the task's `Acceptance:`/`Verify:` lines — never from the
+implementer's PR body or commits; a task with no `Acceptance:` lines is
+graded against one criterion synthesized from its title. The grader reads
+and runs but never edits; its verdict rides the `grade_verdict` MCP tool,
+per criterion with evidence, and is cached in state.json by head SHA (a
+push re-triggers grading; retries and sweeps never pay twice). Coverage is
+mechanical, not trusted to the grader: the driver briefed N numbered
+criteria and requires a verdict entry for each — a short or empty list
+(a grader low on turns, or a forged events-file write) fails closed,
+never a pass on the criteria it never examined. Fail —
+or no recorded verdict at all — means no merge, with the failed criteria
+and the grader's evidence left as the next session's fix note; the
+server-side merge fallback is equally refused for any task PR whose
+current head no grader passed. Live/piloting PRs (no task id in the
+title) merge ungraded — they are the owner's own work. Only dev windows
+spawn graders; a prep sweep leaves ungraded PRs for the next window
+(prep spawns no sessions, by contract). Human-gated and risk-parked PRs
+are unchanged: the owner IS their acceptance check.
 
 ## Machine setup (once per machine)
 
@@ -473,6 +498,16 @@ prefix parks the task at `needs-human` for owner review (one PR comment,
 no suite run, no merge) — see §Verification & review contract for the
 full contract. A high-risk PR with no task id is refused silently: there
 is nothing to park, and the PR waits for the owner either way.
+
+The acceptance grader is the landing's last leg: after checks and the
+suite, the driver spawns an independent grader session (`config.json →
+graderModel`, default `opus`; usage rows log as mode `grade`) against the
+task's `Acceptance:`/`Verify:` lines and merges only on a recorded
+per-criterion pass — fail or no verdict leaves the failed criteria and
+evidence as the next session's fix note. Verdicts cache by head SHA in
+`<state>/log/state.json`, so only a new push costs another grader
+session; grader session output lands in `<state>/log/grade-*.out`. See
+§Verification & review contract for the full contract.
 
 PRs merged OUTSIDE the gate (the owner, any human) close their tasks
 mechanically: every dev window start — under every autonomy level, since

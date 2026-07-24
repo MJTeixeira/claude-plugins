@@ -51,14 +51,31 @@ if (["Edit", "MultiEdit", "Write", "NotebookEdit"].includes(tool)) {
     if (TOOLING.has(child)) {
       deny(`${p} is deployed factory tooling (read-only for sessions) — propose the change via the open_question tool instead`);
     }
-    if (child === "backlog" && mode === "dev") {
-      deny(`${p}: dev sessions never edit the backlog — report via the report_status MCP tool (last-session.json only if the tools are missing); the driver owns every Status edit`);
+    // Machine-side state (~/.factory/projects/<key>/: config, .env, and the
+    // log/ that holds state.json's acceptance-grade cache) is driver-owned.
+    // A session that could write it could pre-seed a passing grade for its
+    // own PR — the exact implementer-grades-own-homework loop the grader
+    // exists to break. Sessions work in worktrees (.factory/worktrees/…);
+    // they never have business under projects/.
+    if (child === "projects") {
+      deny(`${p} is machine-side factory state (~/.factory/projects) — driver-owned; sessions never write it. Report through the MCP tools`);
+    }
+    if (child === "backlog" && (mode === "dev" || mode === "grade")) {
+      deny(`${p}: ${mode} sessions never edit the backlog — ${mode === "grade" ? "graders only read and run; verdicts go through the grade_verdict MCP tool" : "report via the report_status MCP tool (last-session.json only if the tools are missing)"}; the driver owns every Status edit`);
     }
   }
 }
 
 if (tool === "Bash") {
   const cmd = String(input.command ?? "");
+  // Machine-side state (~/.factory/projects) is off-limits to sessions by
+  // any tool — the belt to the Write/Edit denial above, since Bash can write
+  // files the path-based check never sees (printf >>, node -e fs.writeFile…).
+  // A session has no reason to read or write there; the grade cache lives
+  // in its log/.
+  if (/\.factory[\\/]projects\b/.test(cmd)) {
+    deny("machine-side factory state (~/.factory/projects) is driver-owned — sessions never read or write it");
+  }
   if (/\bgh\s+pr\s+merge\b/.test(cmd)) {
     deny("sessions never merge PRs — the driver's merge gate merges when checks are green");
   }

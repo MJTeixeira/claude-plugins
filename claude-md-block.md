@@ -58,8 +58,9 @@ If unsure between two sizes, pick the smaller; escalate if it grows.
   external tenant) or per disjoint `.docs` area whose surface is EACH too
   large to read yourself (cap ~4); layers inside one codebase never get
   their own agents — and the `code-reviewer` agent at most once by default
-  during `finishing` (that skill allows an opt-in second security-lens
-  pass). No researcher, documenter, or per-phase subagents.
+  during `finishing` (that skill adds a second security-lens pass whenever
+  the diff has a security surface). No researcher, documenter, or per-phase
+  subagents.
 
 ## Conduct and code
 

@@ -143,6 +143,25 @@ export const queueSessions = (world, scenarios) => {
   }
 };
 
+// The acceptance grader's stub scenario (grade-gate.test.mjs has the full
+// contract): a passing verdict for the fixture task's one criterion. Slot it
+// wherever the merge gate will spawn a grader before landing a task PR.
+export const GRADER_PASS_SESSION = {
+  script: `printf '%s\\n' '{"ts":"t","event":"grade_verdict","criteria":[{"criterion":"it works","pass":true,"evidence":"ran the Verify command — exit 0"}],"summary":"pass"}' >> "$FACTORY_MCP_EVENTS"`,
+  stdout: { type: "result", subtype: "success", result: "graded", total_cost_usd: 0.05, num_turns: 3, usage: { input_tokens: 1, output_tokens: 2 } },
+  exit: 0,
+};
+
+// Splice the grader in as the stub's Nth spawn, shifting every scenario at or
+// after `slot` down by one (top-down, so a deeper queue isn't clobbered).
+export const insertGraderPass = (world, slot = 2) => {
+  const p = (n) => path.join(world.stubDir, `session-${n}.json`);
+  let last = slot;
+  while (fs.existsSync(p(last))) last += 1;
+  for (let n = last; n > slot; n--) fs.renameSync(p(n - 1), p(n));
+  fs.writeFileSync(p(slot), JSON.stringify(GRADER_PASS_SESSION));
+};
+
 export const runDriver = (world, mode, extraArgs = [], { timeoutMs = 120_000, input, nodeArgs = [] } = {}) => {
   const r = spawnSync(
     process.execPath,

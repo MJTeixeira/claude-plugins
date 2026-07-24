@@ -52,9 +52,10 @@ Triage its findings with rigor, not deference:
   wrong — don't implement bad suggestions to look cooperative.
 
 Skip the reviewer only for small-sized changes where the diff is a handful of
-lines; feature-sized work always gets the pass. For a large or security-
-sensitive feature diff you MAY spawn a second reviewer with a security lens
-(opt-in — it roughly doubles review cost; don't default to it).
+lines; feature-sized work always gets the pass. If the diff touches auth,
+user input handling, network boundaries, secrets, or data storage, spawn a
+second reviewer with a security lens; skip that one only when the diff
+plainly has no security surface (docs, pure refactors, test-only changes).
 
 ## 4. Docs
 

@@ -8,7 +8,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { makeFactory, queueSessions, runDriver, gitIn } from "./helpers.mjs";
+import { makeFactory, queueSessions, runDriver, gitIn, insertGraderPass } from "./helpers.mjs";
 
 const RESULT = {
   type: "result", subtype: "success", result: "done",
@@ -146,6 +146,7 @@ test("a green factory PR from an earlier window merges at the session boundary, 
       stdout: RESULT, exit: 0,
     },
   ]);
+  insertGraderPass(world); // the boundary sweep grades T-777 before landing it
 
   const r = runDriver(world, "dev");
 

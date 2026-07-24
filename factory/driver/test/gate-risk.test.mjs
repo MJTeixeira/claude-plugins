@@ -7,7 +7,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { makeFactory, queueSessions, runDriver, gitIn } from "./helpers.mjs";
+import { makeFactory, queueSessions, runDriver, gitIn, insertGraderPass } from "./helpers.mjs";
 
 const RESULT = {
   type: "result", subtype: "success", result: "done",
@@ -97,6 +97,7 @@ test("a green PR clear of high-risk paths merges normally with riskTiers configu
     },
   });
   setupGreenPr(world, { "src/ui/button.mjs": "export const b = 1;\n" });
+  insertGraderPass(world); // clear of risk paths → the gate proceeds to grading, then merges
 
   const r = runDriver(world, "dev");
 

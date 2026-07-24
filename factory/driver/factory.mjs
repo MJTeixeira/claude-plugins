@@ -549,12 +549,14 @@ const trustWorkspace = (p) => {
   if (changed) writeJsonAtomic(cj, j);
 };
 
-const addWorktree = (name) => {
+// ref: sessions cut from origin base tip (the default); the acceptance
+// grader cuts at the PR head SHA it is grading.
+const addWorktree = (name, ref = null) => {
   fs.mkdirSync(worktreesRoot(), { recursive: true });
   const p = path.join(worktreesRoot(), name);
   if (hasOrigin() && !gitOk(["fetch", "origin", "--prune"])) log("worktree add: fetch failed — using local refs");
   gitOk(["worktree", "prune"]); // stale registrations from force-removed dirs
-  git(["worktree", "add", "--detach", p, startRef()]);
+  git(["worktree", "add", "--detach", p, ref ?? startRef()]);
   // Throws on failure, ending the window: a session without its injected
   // allowlist runs dontAsk with every mutating tool denied and thrashes on
   // the denials (NOTES item 42) — better no session than that.
@@ -1407,6 +1409,45 @@ if (mode === "mcp-server") {
         return { text: "recorded — the driver posts it to the daily-log issue at session end" };
       },
     },
+    grade_verdict: {
+      description:
+        "Record your acceptance verdict (grader sessions only). One entry per numbered criterion from " +
+        "your brief: pass/fail plus concrete evidence — command output or file:line produced THIS " +
+        "session, never the implementer's claims. Call it exactly once, as your final act; the driver " +
+        "derives the overall verdict (every criterion must pass) and the merge gate acts on it.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          criteria: {
+            type: "array",
+            items: {
+              type: "object",
+              properties: {
+                criterion: { type: "string", description: "the criterion text from your brief" },
+                pass: { type: "boolean" },
+                evidence: { type: "string", description: "what you ran/saw that proves the verdict" },
+              },
+              required: ["criterion", "pass", "evidence"],
+            },
+          },
+          summary: { type: "string", description: "one or two sentences on the overall picture" },
+        },
+        required: ["criteria"],
+      },
+      call: (a) => {
+        if (!Array.isArray(a.criteria) || !a.criteria.length) return { error: "criteria (non-empty array) is required" };
+        const criteria = [];
+        for (const [i, c] of a.criteria.entries()) {
+          if (typeof c?.pass !== "boolean") return { error: `criteria[${i}].pass must be a boolean` };
+          const evidence = str(c.evidence, 2000);
+          if (!evidence) return { error: `criteria[${i}].evidence (non-empty string) is required` };
+          criteria.push({ criterion: str(c.criterion, 500) ?? "(unnamed criterion)", pass: c.pass, evidence });
+        }
+        record("grade_verdict", { criteria, summary: str(a.summary, 2000) });
+        const failed = criteria.filter((c) => !c.pass).length;
+        return { text: `verdict recorded: ${criteria.length - failed}/${criteria.length} criteria passed` };
+      },
+    },
   };
   const respond = (id, body, isErr = false) =>
     process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id, ...(isErr ? { error: body } : { result: body }) }) + "\n");
@@ -1962,7 +2003,7 @@ if (mode === "doctor") {
 // into a handoff with facts. Questions are filed by the driver at session
 // end (Decision 1); progress lines are already in the file for post-mortems.
 const readMcpEvents = (eventsPath) => {
-  const out = { report: null, inProgress: null, questions: [], progress: [], dailyLogs: [] };
+  const out = { report: null, inProgress: null, questions: [], progress: [], dailyLogs: [], verdict: null };
   if (!eventsPath) return out;
   let text;
   try { text = fs.readFileSync(eventsPath, "utf8"); } catch { return out; }
@@ -1981,6 +2022,10 @@ const readMcpEvents = (eventsPath) => {
       out.progress.push(e.message);
     } else if (e.event === "daily_log") {
       out.dailyLogs.push({ body: e.body ?? "" });
+    } else if (e.event === "grade_verdict") {
+      // Last one wins — the tool asks for exactly one call, but a retried
+      // final act must supersede, not duplicate.
+      out.verdict = { criteria: Array.isArray(e.criteria) ? e.criteria : [], summary: e.summary ?? null };
     }
   }
   return out;
@@ -3044,6 +3089,101 @@ const suiteNote = ({ pr, taskId, head, suite }) =>
   `The driver merges once checks and the suite are green — do NOT merge yourself.` +
   (suite.tail ? `\nSuite output tail:\n${suite.tail}` : "");
 
+// The acceptance grader (autonomy epic chunk 4): before the gate may merge a
+// task PR, an INDEPENDENT session — spawned here, briefed by the DRIVER from
+// the task's own Acceptance:/Verify: lines, never by the implementer — must
+// record a passing grade_verdict for the PR's exact head SHA. The session
+// that wrote the code briefing its own reviewer was the correlation this
+// breaks. Verdicts are cached in state.json by SHA (a push re-triggers, a
+// retry or later sweep never pays twice) and fail closed: a grader that dies
+// or never calls the tool records a failing verdict. taskId-less PRs
+// (live/piloting) are the owner's own work and merge ungraded. Only the dev
+// window may spawn graders — prep stays session-free by contract, so its
+// sweep defers ungraded PRs to the next window.
+const recordGrade = (sha, verdict) => {
+  const s = readState();
+  s.grades = { ...(s.grades ?? {}), [sha]: verdict };
+  // Verdicts die with their SHAs — cap the map so state.json never grows
+  // unbounded across months of PRs.
+  const keys = Object.keys(s.grades);
+  if (keys.length > 20) {
+    for (const k of keys.sort((a, b) => Date.parse(s.grades[a].ts ?? 0) - Date.parse(s.grades[b].ts ?? 0)).slice(0, keys.length - 20)) {
+      delete s.grades[k];
+    }
+  }
+  writeState(s);
+  return verdict;
+};
+
+const runGrader = async ({ pr, taskId, head, sha }) => {
+  const task = parseBacklogTasks(runtimeFactoryDir()).find((tk) => tk.id === taskId);
+  // No Acceptance: lines (older/lean tasks) — grade against the task's own
+  // claim instead of skipping: one synthesized criterion, same fail-closed path.
+  const criteria = task?.acceptance?.length
+    ? task.acceptance
+    : [`The change does what the task says it does: ${taskId}${task?.title ? ` — ${task.title}` : ""}`];
+  const model = cfg.graderModel ?? "opus";
+  log(`grader: grading ${pr} (${taskId}) at ${sha.slice(0, 10)} — ${criteria.length} criteria [${model}]`);
+  const stamp = nowStamp();
+  let wt;
+  try {
+    wt = addWorktree(`grade-${stamp}`, sha);
+  } catch (e) {
+    log(`grader: worktree create failed (${firstLine(e)}) — treating as no verdict`);
+    return { pass: false, noVerdict: true };
+  }
+  const sessionLog = path.join(logDir, `grade-${stamp}.out`);
+  const promptText = promptFor("grade") +
+    `\n\n## Grading brief (driver-generated from the task's backlog entry)\n\n` +
+    `- Task: ${taskId}${task?.title ? ` — ${task.title}` : ""}\n` +
+    `- Under grade: PR ${pr}, branch ${head} at commit ${sha} — checked out here\n` +
+    `- Base branch: ${cfg.baseBranch} (diff against origin/${cfg.baseBranch} to see the change)\n` +
+    (task?.verify ? `- Task Verify command(s): ${task.verify}\n` : "") +
+    `\nAcceptance criteria — grade EACH, by number:\n\n` +
+    criteria.map((c, i) => `${i + 1}. ${c}`).join("\n") + "\n";
+  const { mcpEventsPath } = await runSession({
+    project: wt, cfg, env, promptText, sessionLogPath: sessionLog, log,
+    mode: "grade", overrides: { model },
+  });
+  const verdict = readMcpEvents(mcpEventsPath).verdict;
+  removeWorktree(wt, "grader end");
+  const recorded = verdict?.criteria ?? [];
+  const failed = recorded.filter((c) => !c.pass);
+  // Coverage is mechanical, not trusted to the grader: the driver briefed
+  // N numbered criteria and requires a verdict entry for each. A short list
+  // — a grader that ran low on turns and recorded only the criteria it got
+  // to, or an empty list (the shape readMcpEvents normalizes a malformed
+  // `criteria` field to, and the one the MCP tool refuses but a direct
+  // events-file write does not) — is a truncated grade, NEVER a pass on the
+  // criteria it never examined.
+  const short = verdict && recorded.length < criteria.length;
+  const status = !verdict ? "no-verdict" : short ? "short" : failed.length ? "fail" : "pass";
+  recordUsage({ factoryDir: stateD, sessionLogPath: sessionLog, mode: "grade", taskId, status, model, log });
+  if (!verdict) {
+    log(`grader: session recorded no verdict for ${pr} — failing closed`);
+    return { pass: false, noVerdict: true };
+  }
+  if (short) {
+    log(`grader: verdict covered only ${recorded.length}/${criteria.length} criteria for ${pr} — failing closed`);
+    return { pass: false, criteria: recorded, summary: verdict.summary, shortfall: { covered: recorded.length, total: criteria.length } };
+  }
+  return { pass: !failed.length, criteria: recorded, summary: verdict.summary };
+};
+
+const gradeNote = ({ pr, taskId, head, grade }) =>
+  `PR ${pr}${taskId ? ` (task ${taskId})` : ""} has green checks but the independent acceptance grader ` +
+  (grade.noVerdict
+    ? `could not record a verdict for it (the grader session died or never called grade_verdict), and the gate will not merge ungraded work. `
+    : grade.shortfall
+      ? `graded only ${grade.shortfall.covered} of ${grade.shortfall.total} of the task's acceptance criteria — a partial grade is not a pass on the criteria it never examined. `
+      : `FAILED it against the task's acceptance criteria. `) +
+  `Your first job: checkout ${head}, make the acceptance criteria genuinely pass, and push — the new commit re-triggers grading. ` +
+  `The driver merges once checks and the grade are green — do NOT merge yourself.` +
+  ((grade.criteria ?? []).some((c) => !c.pass)
+    ? `\nFailed criteria (grader's evidence inline):\n` +
+      grade.criteria.filter((c) => !c.pass).map((c) => `- ${c.criterion}\n  evidence: ${c.evidence}`).join("\n")
+    : "");
+
 // The actual landing: local merge with the status flip folded into the
 // merge commit. Retries on push races; falls back to `gh pr merge` (flip
 // goes to pendingFlips) if local landing keeps failing.
@@ -3056,9 +3196,11 @@ const landMerge = async ({ pr, view, taskId }) => {
   if (blocked) log(`merge-gate: ${taskId} is parked (blocked/needs-human) — landing ${pr} without a status flip`);
   const flips = taskId && !blocked ? [{ taskId, status: "done" }] : [];
   let suitePassed = false; // per-attempt: the fallback below may only merge what a suite blessed
+  let gradePassed = false; // per-attempt too: the fallback may only merge a head SHA a grader passed
   for (let attempt = 1; attempt <= 3; attempt++) {
     try {
       suitePassed = false;
+      gradePassed = false;
       // All gate git work happens in the driver's meta worktree (detached at
       // origin/<base>; the merge commit reaches origin via push HEAD:<base>).
       // The owner's checkout is never touched.
@@ -3146,6 +3288,36 @@ const landMerge = async ({ pr, view, taskId }) => {
         log(`merge-gate: gate suite passed for ${pr}`);
         journal("gate:suite", "done", pr);
       }
+      // Acceptance grading: an independent grader must have passed this
+      // exact head SHA (see runGrader). Runs with the merge held open — the
+      // grader works in its own worktree, the meta worktree is driver-
+      // exclusive, and refreshMeta recovers a crash mid-grade. taskId-less
+      // PRs (live/piloting) are the owner's own work and merge ungraded.
+      if (taskId) {
+        const sha = git(["rev-parse", `origin/${head}`], metaPath());
+        let grade = readState().grades?.[sha] ?? null;
+        if (!grade && mode === "dev") {
+          grade = recordGrade(sha, {
+            ...(await runGrader({ pr, taskId, head, sha })),
+            pr, taskId, ts: new Date().toISOString(), model: cfg.graderModel ?? "opus",
+          });
+        }
+        if (!grade) {
+          try { git(["merge", "--abort"], metaPath()); } catch { /* nothing staged */ }
+          log(`merge-gate: ${pr} awaits acceptance grading — ${mode} runs never spawn sessions; the next dev window grades it`);
+          journal("gate:grade", "defer", pr);
+          return null;
+        }
+        if (!grade.pass) {
+          try { git(["merge", "--abort"], metaPath()); } catch { /* nothing staged */ }
+          log(`merge-gate: acceptance grader FAILED ${pr} (${taskId})${grade.noVerdict ? " — no verdict was recorded" : ""} — leaving the fix for the next session`);
+          journal("gate:grade", "fail", `${pr} (${taskId})${grade.noVerdict ? " (no verdict)" : ""}`);
+          return gradeNote({ pr, taskId, head, grade });
+        }
+        gradePassed = true;
+        log(`merge-gate: acceptance grade passed for ${pr}`);
+        journal("gate:grade", "done", `${pr} (${taskId})`);
+      }
       const applied = applyFlips(flips);
       // A live/piloting PR carries its own Status flips (piloting contract);
       // true up the index counters from the merged files so they ride this
@@ -3183,6 +3355,15 @@ const landMerge = async ({ pr, view, taskId }) => {
     return `PR ${pr}${taskId ? ` (task ${taskId})` : ""} could not be landed locally and the gate suite never passed ` +
       `on the merged result — the driver will not merge it server-side (gateCommand is the merge floor). ` +
       `Diagnose why the local landing fails (branch fetch, merge, or suite) and land it first.`;
+  }
+  // Same floor for grading: a task PR whose current head no grader passed
+  // must never reach the server-side merge — an early failure (fetch,
+  // refreshMeta) would otherwise ship a merge no grader ever saw.
+  if (taskId && !gradePassed) {
+    log(`merge-gate: local landing failed and no acceptance grade passed the current head — not falling back to a server-side merge`);
+    return `PR ${pr} (task ${taskId}) could not be landed locally and the acceptance grader never passed its ` +
+      `current head — the driver will not merge it server-side. Diagnose why the local landing fails ` +
+      `(branch fetch, merge, suite, or grading) and land it first.`;
   }
   try {
     forge.prMerge(pr);
@@ -3513,10 +3694,10 @@ const windowMs = cfg.windowHours * 60 * 60 * 1000;
 const windowEnd = Date.now() + windowMs;
 const promptText = promptFor("dev-task") + configPromptNote();
 rmScratch("window start"); // leftovers from a killed window
-// A killed driver strands its session worktree — sweep old ones before
-// starting new (disk hygiene; git registrations are pruned on next add).
+// A killed driver strands its session (or grader) worktree — sweep old ones
+// before starting new (disk hygiene; git registrations are pruned on next add).
 if (isGitRepo() && fs.existsSync(worktreesRoot())) {
-  for (const d of fs.readdirSync(worktreesRoot()).filter((d) => /^s\d+-/.test(d))) {
+  for (const d of fs.readdirSync(worktreesRoot()).filter((d) => /^(s\d+|grade)-/.test(d))) {
     removeWorktree(path.join(worktreesRoot(), d), "window start sweep");
   }
 }
@@ -3822,7 +4003,14 @@ while (true) {
       break;
     }
     if (result.pr && ["review", "completed"].includes(result.status) && cfg.autonomy === "auto-merge-dev") {
-      nextSessionNote = await mergeGate({ pr: result.pr, taskId: result.taskId });
+      // Prefer the session's own report, but fall back to the driver's
+      // assignment when it reported none: a taskId-less PR takes the
+      // ungraded live/piloting path, so an assigned session must not be able
+      // to skip acceptance grading just by reporting `taskId: null`. The
+      // session's explicit id still wins (a HANDOFF override legitimately
+      // works a different task than assigned).
+      const gateTaskId = result.taskId ?? entry?.taskId ?? null;
+      nextSessionNote = await mergeGate({ pr: result.pr, taskId: gateTaskId });
     }
   } else {
     // No last-session.json. A turn-capped session usually finished real work

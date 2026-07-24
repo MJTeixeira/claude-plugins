@@ -4,7 +4,7 @@ import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { makeFactory, queueSessions, runDriver, gitIn } from "./helpers.mjs";
+import { makeFactory, queueSessions, runDriver, gitIn, GRADER_PASS_SESSION } from "./helpers.mjs";
 import { factoryKey } from "../paths.mjs";
 
 // The persistent meta worktree, located the way the driver locates it.
@@ -205,6 +205,7 @@ echo '{"taskId":"T-001","status":"review","summary":"built","pr":"https://github
       stdout: JSON.stringify({ type: "result", subtype: "success", result: "review", total_cost_usd: 0.5, num_turns: 20, usage: { input_tokens: 5, output_tokens: 50 } }) + "\n",
       exit: 0,
     },
+    GRADER_PASS_SESSION, // the acceptance grader the gate spawns before landing — passes T-001
     NO_TASKS_SESSION,
   ]);
 

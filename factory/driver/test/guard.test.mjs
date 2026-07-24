@@ -64,6 +64,29 @@ test("dev session is denied editing the backlog; triage session is allowed", (t)
   assert.equal(triage.decision, "allow");
 });
 
+test("grader session is denied editing the backlog — graders read and run, never write", (t) => {
+  const cwd = makeRepo(t);
+  const r = runGuard({ tool: "Write", input: { file_path: ".factory/backlog/e1.md", content: "x" }, cwd, env: { FACTORY_MODE: "grade", FACTORY_BASE_BRANCH: "main" } });
+  assert.equal(r.decision, "deny");
+  assert.match(r.reason, /grade_verdict/);
+});
+
+test("a session cannot write machine-side factory state — the grades cache is not forgeable", (t) => {
+  const cwd = makeRepo(t);
+  // The merge gate reads its acceptance verdict from state.json under
+  // ~/.factory/projects/<key>/log/; a session that could write there could
+  // pre-seed a passing grade for its own PR. Both tool paths are denied.
+  const state = `${process.env.HOME}/.factory/projects/proj-abc123/log/state.json`;
+  const w = runGuard({ tool: "Write", input: { file_path: state, content: '{"grades":{}}' }, cwd, env: DEV });
+  assert.equal(w.decision, "deny", "Write to machine state must be denied");
+  assert.match(w.reason, /machine|projects|driver-owned/i);
+  const b = runGuard({ tool: "Bash", input: { command: `printf '{}' >> ${state}` }, cwd, env: DEV });
+  assert.equal(b.decision, "deny", "Bash write to machine state must be denied");
+  // A grader session is under the same rule.
+  const g = runGuard({ tool: "Write", input: { file_path: state, content: "x" }, cwd, env: { FACTORY_MODE: "grade", FACTORY_BASE_BRANCH: "main" } });
+  assert.equal(g.decision, "deny");
+});
+
 test("ordinary project files stay editable in every mode", (t) => {
   const cwd = makeRepo(t);
   for (const env of [DEV, TRIAGE]) {

@@ -194,6 +194,10 @@ test("a full task block yields every field either consumer reads", () => {
 ## T-021: Add OAuth login
 - Status: in-progress
 - Gate: human (owner reviews the consent screen)
+- Acceptance:
+  - login button redirects to the provider
+  - a denied consent shows the error page
+- Verify: npm test -- oauth
 - Model: opus
 - Effort: high
 - Question: https://github.com/o/r/issues/7
@@ -208,6 +212,8 @@ test("a full task block yields every field either consumer reads", () => {
   assert.equal(t.title, "Add OAuth login");
   assert.equal(t.status, "in-progress");
   assert.equal(t.gate, "human");
+  assert.deepEqual(t.acceptance, ["login button redirects to the provider", "a denied consent shows the error page"]);
+  assert.equal(t.verify, "npm test -- oauth");
   assert.equal(t.model, "opus");
   assert.equal(t.effort, "high");
   assert.equal(t.epic, "e2-oauth");
@@ -215,8 +221,54 @@ test("a full task block yields every field either consumer reads", () => {
   assert.deepEqual(t.links, ["https://github.com/o/r/issues/7", "https://github.com/o/r/pull/12"]);
   assert.deepEqual(tasks[1], {
     id: "T-022", title: "Refresh tokens", status: "todo", gate: null,
+    acceptance: [], verify: null,
     model: null, effort: null, epic: "e2-oauth", question: null, links: [],
   });
+});
+
+test("inline one-liner Acceptance (the fixture dialect) yields a single criterion", () => {
+  const tasks = parseTaskFile("## T-010: Sample\n- Status: todo\n- Acceptance: it works\n- Verify: true\n", "e1");
+  assert.deepEqual(tasks[0].acceptance, ["it works"]);
+  assert.equal(tasks[0].verify, "true");
+});
+
+test("acceptance bullets stop at the next field line, not at the block end", () => {
+  const tasks = parseTaskFile(`## T-011: Sample
+- Acceptance:
+  - first criterion
+  - second criterion
+- Notes: unrelated note
+- Verify: make check
+`, "e1");
+  assert.deepEqual(tasks[0].acceptance, ["first criterion", "second criterion"]);
+  assert.equal(tasks[0].verify, "make check");
+});
+
+test("a hard-wrapped criterion keeps its tail and the criteria after it (no silent truncation)", () => {
+  const tasks = parseTaskFile(`## T-012: Sample
+- Acceptance:
+  - the login button redirects to the provider and
+    returns the user to the app afterward
+  - a denied consent shows the error page
+- Verify: make check
+`, "e1");
+  assert.deepEqual(tasks[0].acceptance, [
+    "the login button redirects to the provider and returns the user to the app afterward",
+    "a denied consent shows the error page",
+  ]);
+});
+
+test("a blank line between acceptance bullets does not truncate the list", () => {
+  const tasks = parseTaskFile(`## T-013: Sample
+- Acceptance:
+
+  - first criterion
+
+  - second criterion
+
+- Verify: make check
+`, "e1");
+  assert.deepEqual(tasks[0].acceptance, ["first criterion", "second criterion"]);
 });
 
 test("a task with no Status line defaults to todo", () => {

@@ -147,6 +147,9 @@ export const unparsedMilestoneHeadings = (text) => {
 //   ## T-021: Add OAuth login
 //   - Status: in-progress
 //   - Gate: human (owner reviews the consent screen)
+//   - Acceptance:
+//     - <observable criterion> (older tasks: inline `- Acceptance: <criterion>`)
+//   - Verify: <command(s) that prove it>
 //   - Model: opus
 //   - Effort: high
 //   - Question: https://github.com/o/r/issues/7
@@ -157,8 +160,39 @@ export const unparsedMilestoneHeadings = (text) => {
 // disagreed on epic naming (`.md$` anchored vs first-occurrence replace)
 // and each read a field the other ignored (Gate: vs Question:).
 
+// Acceptance criteria: the nested-bullet form from the skill, plus the
+// inline one-liner older tasks carry (`- Acceptance: it works`). The list is
+// what the driver briefs the grader from, so dropping a criterion is a
+// fail-open silent-truncation bug — the loop must survive the two shapes
+// triage writes routinely: a criterion hard-wrapped across lines (an indented
+// non-bullet continuation folds into the criterion above it) and blank lines
+// between bullets (skipped, not treated as the end). Only a top-level `-`
+// (the next `- Field:`) or unindented prose closes the list.
+const parseAcceptance = (block) => {
+  const lines = block.split("\n");
+  const at = lines.findIndex((l) => /^-[ \t]+Acceptance:/.test(l));
+  if (at === -1) return [];
+  const acceptance = [];
+  const inline = lines[at].replace(/^-[ \t]+Acceptance:/, "").trim();
+  if (inline) acceptance.push(inline);
+  for (let i = at + 1; i < lines.length; i++) {
+    const line = lines[i];
+    if (/^\s*$/.test(line)) continue; // a gap between bullets, not the end
+    const bullet = line.match(/^[ \t]+-[ \t]+(.*\S)/);
+    if (bullet) { acceptance.push(bullet[1].trim()); continue; }
+    // Indented non-bullet text is the wrapped tail of the criterion above it.
+    if (/^[ \t]+\S/.test(line) && acceptance.length) {
+      acceptance[acceptance.length - 1] += ` ${line.trim()}`;
+      continue;
+    }
+    break; // a top-level `- Field:` line or unindented prose ends the list
+  }
+  return acceptance;
+};
+
 // One epic file's text → its tasks. Every field either consumer reads:
-// the driver acts on status/gate/model/effort, the dashboard renders
+// the driver acts on status/gate/model/effort and briefs the acceptance
+// grader from acceptance/verify, the dashboard renders
 // status/links/model/effort/question.
 export const parseTaskFile = (text, epic) => {
   const tasks = [];
@@ -169,6 +203,8 @@ export const parseTaskFile = (text, epic) => {
       id: head[1],
       title: head[2].trim(),
       status: block.match(/- Status:\s*(\S+)/)?.[1] ?? "todo",
+      acceptance: parseAcceptance(block),
+      verify: block.match(/^-[ \t]+Verify:[ \t]*(\S.*)/m)?.[1]?.trim() ?? null,
       // `- Gate: human (<reason>)` marks a task whose acceptance needs owner
       // judgment — the merge-gate never auto-merges it on green.
       gate: block.match(/- Gate:\s*human\b/) ? "human" : null,
