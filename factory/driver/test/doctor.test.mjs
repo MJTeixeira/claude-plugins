@@ -531,3 +531,32 @@ test("a healthy native tracker is one green doctor row", (t) => {
   assert.equal(r.code, 0, `stdout:\n${r.stdout}`);
   assert.match(r.stdout, /✓ github issue tracker/);
 });
+
+// ---------- zion client (ask_peer, spec M4) ----------
+
+test("no zion config is a doctor skip, not a failure", (t) => {
+  const world = makeFactory(t);
+  const r = runDriver(world, "doctor");
+  assert.equal(r.code, 0, `stdout:\n${r.stdout}`);
+  assert.match(r.stdout, /– zion client — not configured/);
+});
+
+test("zion enabled with a dead bin path fails doctor with the fix named", (t) => {
+  const world = makeFactory(t, { config: { zion: { enabled: true, bin: "/nowhere/zion.mjs" } } });
+  const r = runDriver(world, "doctor");
+  assert.equal(r.code, 1, "a dead zion.bin must fail doctor");
+  assert.match(r.stdout, /✗ zion client.*does not exist/);
+});
+
+test("zion enabled with a real bin is one green doctor row", (t) => {
+  const world = makeFactory(t);
+  const bin = path.join(world.root, "zion.mjs");
+  fs.writeFileSync(bin, "// stub\n");
+  const cfgPath = path.join(world.stateDir, "config.json");
+  const cfg = JSON.parse(fs.readFileSync(cfgPath, "utf8"));
+  cfg.zion = { enabled: true, bin };
+  fs.writeFileSync(cfgPath, JSON.stringify(cfg, null, 2));
+  const r = runDriver(world, "doctor");
+  assert.equal(r.code, 0, `stdout:\n${r.stdout}`);
+  assert.match(r.stdout, /✓ zion client — ask_peer on/);
+});

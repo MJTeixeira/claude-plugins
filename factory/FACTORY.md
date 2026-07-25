@@ -527,6 +527,55 @@ the skip check and before the plan assigns work, so a settled backlog skips
 its window and a stale plan entry is skipped instead of burning a session
 re-verifying a merge (fleet incident 2026-07-23).
 
+## Peer questions (`config.json → zion`)
+
+When the machine config wires a zion client, dev sessions get an
+`ask_peer` MCP tool: ask a peer agent a blocking question mid-window and
+wait (minutes) for the answer, instead of stalling the task to
+needs-human until a human reads it. Same driver-mediated boundary as
+`create_pr` — the SESSION never touches the channel; the driver shells
+the zion `ask` verb (contract: `.docs/factory-client.md` in the zion
+repo) with its own identity and maps the exit code:
+
+- `0` — the answer text returns to the session, labeled as agent-authored
+  ADVICE (it never overrides the task, spec, or acceptance criteria).
+- anything else — a tool error whose text names the session's fall-back
+  (open_question / report_status blocked): expired budget, escalated to
+  the owner, frozen channel (kill switch), roster/config gaps, core
+  unreachable. Sessions on the old path lose nothing — the tool failing
+  IS the pre-zion behavior.
+
+Machine config (absent = tool not registered; sessions never see it):
+
+```jsonc
+"zion": {
+  "enabled": true,
+  "bin": "/srv/apps/zion/dev/bin/zion.mjs",  // required: the zion CLI
+  "url": "http://127.0.0.1:3071",            // default shown
+  "machine": "vps",                          // default: os.hostname()
+  "agent": "factory-zion",                   // default: factory-<project> from the state-dir name
+  "role": "peer-question",                   // default addressee role
+  "defaultBudget": "5m",                     // <n>[s|m|h]
+  "maxBudget": "10m",                        // hard clamp on session-supplied budgets
+  "maxAsksPerSession": 3                     // runaway cap, driver-side (in-memory, forge-proof)
+}
+```
+
+Keep `maxBudget` comfortably under `sessionTimeoutMin`: the tool BLOCKS
+the session while it waits, so a budget that outlives the session
+timeout means the driver kills the session mid-wait and the answer is
+lost. Session-supplied budgets above the max are clamped (the ask still
+happens), never rejected. The driver strips `ZION_OWNER_KEY` from the
+child environment — a factory never speaks with the owner's trust label
+(REQ-12) — and the peer's answer text always FOLLOWS the driver's
+advice framing, with nothing after it a forged "driver note" could
+impersonate.
+
+The driver's channel identity must be on the zion roster
+(`machine` + `factory-<project>`, zion contract §Roster naming) — a
+missing entry is exit 9 and the tool error says so. Doctor gets one row:
+skip when unconfigured, fail on a dead `bin` path, green otherwise.
+
 ## Scheduling (`factory.mjs schedule`)
 
 The schedule is a DECLARATION in machine config (`config.json → schedule`:

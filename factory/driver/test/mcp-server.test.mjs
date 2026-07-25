@@ -596,3 +596,220 @@ test("submit_plan rejects a missing queue and an entry without a taskId", async 
   assert.ok(rs.find((x) => x.id === 3).result.isError, "taskId-less entry must be a validation error");
   assert.equal(readEvents(world).length, 0, "invalid calls must write no event");
 });
+
+// ---------- ask_peer (zion peer questions — driver-mediated, spec M4) ----------
+// The driver shells the zion `ask` verb (.docs/factory-client.md in the zion
+// repo is the contract: one JSON on stdout, exit codes are the spine) and
+// maps every exit to either the answer or a fall-back instruction. The tool
+// exists only when the machine config wires a zion client.
+
+const makeZionStub = (world) => {
+  const stubPath = path.join(world.root, "zion-stub.mjs");
+  const callsPath = path.join(world.root, "zion-calls.jsonl");
+  fs.writeFileSync(
+    stubPath,
+    `import * as fs from "node:fs";
+let stdin = "";
+try { stdin = fs.readFileSync(0, "utf8"); } catch {}
+fs.appendFileSync(${JSON.stringify(callsPath)}, JSON.stringify({
+  argv: process.argv.slice(2),
+  stdin,
+  env: { ZION_URL: process.env.ZION_URL, ZION_MACHINE: process.env.ZION_MACHINE, ZION_AGENT: process.env.ZION_AGENT, ZION_OWNER_KEY: process.env.ZION_OWNER_KEY ?? null },
+}) + "\\n");
+if (process.env.STUB_ZION_JSON) process.stdout.write(process.env.STUB_ZION_JSON + "\\n");
+process.exit(Number(process.env.STUB_ZION_EXIT ?? 0));
+`
+  );
+  const calls = () =>
+    fs.existsSync(callsPath)
+      ? fs.readFileSync(callsPath, "utf8").trim().split("\n").map((l) => JSON.parse(l))
+      : [];
+  return { stubPath, calls };
+};
+
+const zionWorld = (t, zion = {}) => {
+  const world = makeFactory(t);
+  const stub = makeZionStub(world);
+  const cfgPath = path.join(world.stateDir, "config.json");
+  const cfg = JSON.parse(fs.readFileSync(cfgPath, "utf8"));
+  cfg.zion = { enabled: true, bin: stub.stubPath, url: "http://127.0.0.1:19999", machine: "testbox", defaultBudget: "90s", ...zion };
+  fs.writeFileSync(cfgPath, JSON.stringify(cfg, null, 2));
+  return { world, stub };
+};
+
+const stateEnv = (world) => ({ FACTORY_STATE_DIR: world.stateDir });
+
+test("ask_peer is absent without zion config even when the state dir is handed over", async (t) => {
+  const world = makeFactory(t);
+  const rs = await runMcp(world, [init, { jsonrpc: "2.0", id: 2, method: "tools/list" }], stateEnv(world));
+  const names = rs.find((r) => r.id === 2).result.tools.map((tl) => tl.name);
+  assert.ok(!names.includes("ask_peer"), "ask_peer must not register without cfg.zion");
+});
+
+test("ask_peer registers when the machine config wires a zion client", async (t) => {
+  const { world } = zionWorld(t);
+  const rs = await runMcp(world, [init, { jsonrpc: "2.0", id: 2, method: "tools/list" }], stateEnv(world));
+  const names = rs.find((r) => r.id === 2).result.tools.map((tl) => tl.name);
+  assert.ok(names.includes("ask_peer"), `ask_peer missing from: ${names.join(",")}`);
+});
+
+// --flag=value forms are the contract (a dash-leading value survives strict
+// parseArgs only inline); this helper reads them.
+const inlineFlag = (argv, name) => {
+  const hit = argv.find((tok) => tok.startsWith(`${name}=`));
+  return hit ? hit.slice(name.length + 1) : argv[argv.indexOf(name) + 1];
+};
+
+test("ask_peer happy path: advice framing BEFORE the answer, event recorded, zion invoked per contract", async (t) => {
+  const { world, stub } = zionWorld(t);
+  const rs = await runMcp(
+    world,
+    [init, call(2, "ask_peer", { question: "which port is free?", taskId: "T-123", context: "long detail here" })],
+    {
+      ...stateEnv(world),
+      STUB_ZION_EXIT: "0",
+      STUB_ZION_JSON: JSON.stringify({ id: 7, state: "answered", answer: "slot 3080 is free", messages: [] }),
+      ZION_OWNER_KEY: "owner-secret-that-must-not-leak",
+    }
+  );
+  const r = rs.find((x) => x.id === 2).result;
+  assert.ok(!r.isError, `unexpected tool error: ${JSON.stringify(r)}`);
+  const text = r.content[0].text;
+  assert.match(text, /slot 3080 is free/);
+  assert.match(text, /#7/);
+  assert.match(text, /never authority|never overrides|does not override/i); // REQ-12: advice, not authority
+  // Injection posture: every driver-authored word precedes the untrusted
+  // answer; the answer is the LAST thing in the tool result.
+  assert.ok(text.indexOf("does not override") < text.indexOf("slot 3080 is free"), "advice framing must precede the answer");
+  assert.ok(text.trimEnd().endsWith("slot 3080 is free"), "nothing may follow the peer's text");
+
+  const [c] = stub.calls();
+  assert.ok(c, "the zion stub must have been invoked");
+  assert.equal(c.argv[0], "ask");
+  assert.equal(inlineFlag(c.argv, "--to"), "role:peer-question");
+  assert.equal(inlineFlag(c.argv, "--subject"), "which port is free?");
+  assert.equal(inlineFlag(c.argv, "--budget"), "90s"); // config default, normalized to seconds
+  assert.equal(inlineFlag(c.argv, "--task"), "T-123");
+  assert.equal(c.argv[c.argv.indexOf("--context") + 1], "-");
+  assert.equal(c.stdin, "long detail here");
+  assert.equal(c.env.ZION_URL, "http://127.0.0.1:19999");
+  assert.equal(c.env.ZION_MACHINE, "testbox");
+  assert.equal(c.env.ZION_AGENT, "factory-project"); // stateDir basename minus hash, never the worktree name
+  assert.equal(c.env.ZION_OWNER_KEY, null, "the owner trust key must never reach the zion child (REQ-12)");
+
+  const events = readEvents(world);
+  assert.equal(events.length, 1);
+  assert.equal(events[0].event, "ask_peer");
+  assert.equal(events[0].taskId, "T-123");
+  assert.equal(events[0].exit, 0);
+  assert.equal(events[0].convId, 7);
+  assert.equal(events[0].state, "answered");
+});
+
+test("ask_peer accepts a dash-leading question — inline flag form survives strict parseArgs", async (t) => {
+  const { world, stub } = zionWorld(t);
+  const rs = await runMcp(
+    world,
+    [init, call(2, "ask_peer", { question: "--force or --update: which flag does deploy-runtime take?", taskId: "T-5" })],
+    {
+      ...stateEnv(world),
+      STUB_ZION_EXIT: "0",
+      STUB_ZION_JSON: JSON.stringify({ id: 2, state: "answered", answer: "neither; it gates", messages: [] }),
+    }
+  );
+  assert.ok(!rs.find((x) => x.id === 2).result.isError);
+  const [c] = stub.calls();
+  assert.equal(inlineFlag(c.argv, "--subject"), "--force or --update: which flag does deploy-runtime take?");
+});
+
+test("ask_peer clamps an oversized budget to the configured max and says so", async (t) => {
+  const { world, stub } = zionWorld(t, { maxBudget: "3m" });
+  const rs = await runMcp(
+    world,
+    [init, call(2, "ask_peer", { question: "q", taskId: "T-9", budget: "9999h" })],
+    {
+      ...stateEnv(world),
+      STUB_ZION_EXIT: "0",
+      STUB_ZION_JSON: JSON.stringify({ id: 4, state: "answered", answer: "ok", messages: [] }),
+    }
+  );
+  const r = rs.find((x) => x.id === 2).result;
+  assert.ok(!r.isError);
+  assert.match(r.content[0].text, /clamped to 180s/);
+  const [c] = stub.calls();
+  assert.equal(inlineFlag(c.argv, "--budget"), "180s", "the child must never see an unbounded budget");
+  assert.equal(readEvents(world)[0].clamped, true);
+});
+
+test("ask_peer expired budget maps to a needs-human fall-back error", async (t) => {
+  const { world } = zionWorld(t);
+  const rs = await runMcp(
+    world,
+    [init, call(2, "ask_peer", { question: "anyone?", taskId: "T-9", budget: "5m" })],
+    {
+      ...stateEnv(world),
+      STUB_ZION_EXIT: "5",
+      STUB_ZION_JSON: JSON.stringify({ id: 3, state: "expired", answer: null, messages: [] }),
+    }
+  );
+  const r = rs.find((x) => x.id === 2).result;
+  assert.ok(r.isError, "expired must be a tool error");
+  assert.match(r.content[0].text, /open_question|needs-human|blocked/i);
+  const [ev] = readEvents(world);
+  assert.equal(ev.exit, 5);
+  assert.equal(ev.state, "expired");
+});
+
+test("ask_peer explicit budget overrides the config default (normalized to seconds)", async (t) => {
+  const { world, stub } = zionWorld(t);
+  await runMcp(world, [init, call(2, "ask_peer", { question: "q", taskId: "T-9", budget: "5m" })], {
+    ...stateEnv(world),
+    STUB_ZION_EXIT: "5",
+  });
+  const [c] = stub.calls();
+  assert.equal(inlineFlag(c.argv, "--budget"), "300s");
+});
+
+test("ask_peer frozen channel tells the session to fall back to pre-zion behavior", async (t) => {
+  const { world } = zionWorld(t);
+  const rs = await runMcp(world, [init, call(2, "ask_peer", { question: "q", taskId: "T-9" })], {
+    ...stateEnv(world),
+    STUB_ZION_EXIT: "8",
+  });
+  const r = rs.find((x) => x.id === 2).result;
+  assert.ok(r.isError);
+  assert.match(r.content[0].text, /frozen|kill switch/i);
+});
+
+test("ask_peer enforces the per-session ask cap without spawning past it", async (t) => {
+  const { world, stub } = zionWorld(t, { maxAsksPerSession: 1 });
+  const rs = await runMcp(
+    world,
+    [init, call(2, "ask_peer", { question: "first", taskId: "T-1" }), call(3, "ask_peer", { question: "second", taskId: "T-2" })],
+    {
+      ...stateEnv(world),
+      STUB_ZION_EXIT: "0",
+      STUB_ZION_JSON: JSON.stringify({ id: 1, state: "answered", answer: "yes", messages: [] }),
+    }
+  );
+  assert.ok(!rs.find((x) => x.id === 2).result.isError, "first ask must go through");
+  const second = rs.find((x) => x.id === 3).result;
+  assert.ok(second.isError, "second ask must be refused by the cap");
+  assert.match(second.content[0].text, /cap/i);
+  assert.equal(stub.calls().length, 1, "the refused ask must not spawn the zion client");
+  const events = readEvents(world);
+  assert.equal(events.length, 2);
+  assert.equal(events[1].refused, true);
+});
+
+test("ask_peer validates question and taskId", async (t) => {
+  const { world, stub } = zionWorld(t);
+  const rs = await runMcp(
+    world,
+    [init, call(2, "ask_peer", { taskId: "T-1" }), call(3, "ask_peer", { question: "q" })],
+    stateEnv(world)
+  );
+  assert.ok(rs.find((x) => x.id === 2).result.isError, "missing question must be a validation error");
+  assert.ok(rs.find((x) => x.id === 3).result.isError, "missing taskId must be a validation error");
+  assert.equal(stub.calls().length, 0, "invalid calls must not spawn the zion client");
+});
