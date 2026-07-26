@@ -9,7 +9,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { makeFactory, queueSessions, runDriver, readUsageRows, gitIn } from "./helpers.mjs";
+import { makeFactory, queueSessions, runDriver, readUsageRows, readMetricsRows, gitIn } from "./helpers.mjs";
 
 const RESULT = {
   type: "result", subtype: "success", result: "done",
@@ -105,6 +105,7 @@ test("a passing grade merges the PR — graded by an independent session at the 
   // The verdict is recorded per head SHA, and the spend is visible as its own mode.
   assert.equal(readGrades(world)[headSha]?.pass, true);
   assert.ok(readUsageRows(world).some((row) => row.mode === "grade"), "grader session missing from usage.jsonl");
+  assert.ok(readMetricsRows(world).some((row) => row.mode === "grade"), "grader session missing from metrics.jsonl");
 });
 
 test("a failed criterion blocks the merge, leaves the evidence for the next session, and is not re-graded on the same SHA", (t) => {

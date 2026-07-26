@@ -66,6 +66,7 @@ const parseArgs = (argv) => {
   let maxSessions = null;
   let init = false;
   let scheduled = false;
+  let untilDone = false;
   let milestone = null; // promote's positional argument
   // schedule-mode flags: one action + the --declare inputs. Times/days
   // flags double as "non-interactive" markers for --declare.
@@ -79,6 +80,7 @@ const parseArgs = (argv) => {
     else if (rest[i] === "--max-sessions") maxSessions = Number(rest[++i]);
     else if (rest[i] === "--init") init = true;
     else if (rest[i] === "--scheduled") scheduled = true;
+    else if (rest[i] === "--until-done") untilDone = true;
     else if (["--status", "--declare", "--adopt", "--install", "--uninstall"].includes(rest[i])) schedAction(rest[i].slice(2));
     else if (rest[i] === "--yes") sched.yes = true;
     else if (rest[i] === "--kind") { sched.kind = rest[++i]; sched.gaveFlags = true; }
@@ -93,7 +95,7 @@ const parseArgs = (argv) => {
   if (maxSessions !== null && (!Number.isInteger(maxSessions) || maxSessions < 1)) {
     fail("--max-sessions must be a positive integer");
   }
-  return { mode, project: path.resolve(project), maxSessions, init, scheduled, sched, milestone };
+  return { mode, project: path.resolve(project), maxSessions, init, scheduled, untilDone, sched, milestone };
 };
 
 const loadConfig = (stateRoot) => {
@@ -266,6 +268,8 @@ const readSessionResult = (factoryDir) => {
 // .out format (pre-stream files, older CLIs).
 const parseSessionStream = (sessionLogPath) => {
   const sum = { input: 0, output: 0, cacheRead: 0, cacheCreate: 0, messages: 0 };
+  const trajectory = []; // per assistant message: output tokens + context size at that turn
+  const tools = {}; // tool_use histogram by tool name
   let result = null;
   let lastAssistantText = "";
   try {
@@ -283,7 +287,14 @@ const parseSessionStream = (sessionLogPath) => {
         sum.output += u.output_tokens ?? 0;
         sum.cacheRead += u.cache_read_input_tokens ?? 0;
         sum.cacheCreate += u.cache_creation_input_tokens ?? 0;
+        trajectory.push({
+          output: u.output_tokens ?? 0,
+          context: (u.input_tokens ?? 0) + (u.cache_read_input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0),
+        });
         if (Array.isArray(e.message.content)) {
+          for (const p of e.message.content) {
+            if (p.type === "tool_use" && p.name) tools[p.name] = (tools[p.name] ?? 0) + 1;
+          }
           const text = e.message.content.filter((p) => p.type === "text").map((p) => p.text).join("\n");
           if (text) lastAssistantText = text;
         }
@@ -291,7 +302,7 @@ const parseSessionStream = (sessionLogPath) => {
     }
   } catch { /* unreadable/absent .out — caller sees no result, no messages */ }
   const finalText = typeof result?.result === "string" && result.result ? result.result : lastAssistantText;
-  return { result, sum, finalText };
+  return { result, sum, finalText, trajectory, tools };
 };
 
 // A session that ends without last-session.json is not necessarily dead:
@@ -369,6 +380,35 @@ const recordUsage = ({ factoryDir, sessionLogPath, mode, taskId, status, model, 
   if (row.costUsd != null) log(`session usage: $${row.costUsd.toFixed(2)}, ${row.turns} turns${row.model ? ` [${row.model}]` : ""}`);
   else if (row.partial) log(`session usage (killed mid-run, lower bound): ${row.outputTokens} output tokens over ${sum.messages} message(s)${row.model ? ` [${row.model}]` : ""}`);
   else log(`session usage unknown (no parseable output at all)${model ? ` [${model}]` : ""}`);
+  recordMetrics({ factoryDir, sessionLogPath, mode, taskId, status, model });
+  return row;
+};
+
+// Per-session metrics row (autonomy epic chunk 5), from the same stream the
+// usage row comes from: end reason, peak context, per-turn token trajectory,
+// permission-denial count, tool histogram. usage.jsonl stays the spend
+// ledger; metrics.jsonl feeds plan correction and the no-progress breaker
+// (chunk 6). Called from recordUsage so every session that exists in the
+// spend ledger has a metrics row — a new mode can't add one and miss the other.
+const recordMetrics = ({ factoryDir, sessionLogPath, mode, taskId, status, model }) => {
+  const { result, trajectory, tools } = parseSessionStream(sessionLogPath);
+  // A result event names its own end; without one, surviving assistant
+  // events mean the session was killed mid-run, none at all means it never
+  // produced parseable output.
+  const endReason = result
+    ? (result.is_error && result.terminal_reason ? result.terminal_reason : result.subtype ?? "success")
+    : trajectory.length ? "killed" : "no-output";
+  const row = {
+    ts: new Date().toISOString(),
+    mode, taskId: taskId ?? null, status: status ?? null, model: model ?? null,
+    endReason,
+    turns: result?.num_turns ?? null,
+    peakContext: trajectory.length ? Math.max(...trajectory.map((t) => t.context)) : null,
+    trajectory,
+    denials: Array.isArray(result?.permission_denials) ? result.permission_denials.length : null,
+    tools,
+  };
+  fs.appendFileSync(path.join(factoryDir, "log", "metrics.jsonl"), JSON.stringify(row) + "\n");
   return row;
 };
 
@@ -1017,7 +1057,7 @@ const clearLock = (factoryDir) => fs.rmSync(lockPath(factoryDir), { force: true 
 
 // ---------- main ----------
 
-const { mode, project, maxSessions, init, scheduled, sched: schedOpts, milestone } = parseArgs(process.argv.slice(2));
+const { mode, project, maxSessions, init, scheduled, untilDone, sched: schedOpts, milestone } = parseArgs(process.argv.slice(2));
 // Two roots, deliberately separate (the machine-product premise):
 // dataDir  — work data in the REPO (.factory/spec|backlog|inbox), the only
 //            thing the factory keeps in a project.
@@ -2173,7 +2213,30 @@ const runDoctor = () => {
           : "no high-risk prefixes declared");
   }
 
-  // 17. injection surface — under auto-merge, a publicly writable tracker
+  // 17. toolchain manifest — `toolchain: [{name, check}]` declares the tools
+  //     this project's sessions depend on; each check runs here and a red row
+  //     means the tool is missing. Scheduled runs abort on doctor fails, so
+  //     this row IS the preflight that stops a window before it burns
+  //     sessions against a missing tool. Malformed = fail, like riskTiers: a
+  //     typo must never silently turn the preflight off.
+  if (cfg.toolchain !== undefined) {
+    const tc = cfg.toolchain;
+    const wellFormed = Array.isArray(tc) && tc.every((t) => t !== null && typeof t === "object" && !Array.isArray(t) &&
+      typeof t.name === "string" && t.name && typeof t.check === "string" && t.check);
+    if (!wellFormed) {
+      check("fail", "toolchain", `toolchain is malformed — expected [{name, check}, …] with non-empty strings; until fixed the preflight is OFF`);
+    } else {
+      for (const t of tc) {
+        const r = spawnSync(t.check, { shell: true, cwd: project, timeout: 30_000, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+        const ok = r.status === 0;
+        const failLine = ok ? null : firstLine(r.error ?? { stderr: r.stderr, stdout: r.stdout, message: `exit ${r.status}` });
+        check(ok ? "ok" : "fail", `toolchain: ${t.name}`,
+          ok ? t.check : `\`${t.check}\` failed — ${failLine}; sessions depending on ${t.name} would burn for nothing`);
+      }
+    }
+  }
+
+  // 18. injection surface — under auto-merge, a publicly writable tracker
   //     feeds anyone's text into triage prompts. The posture (forge-inputs
   //     trust labels) marks it UNTRUSTED, but a private tracker removes the
   //     surface entirely; the owner should know it exists. Warn, not fail.
@@ -3961,7 +4024,11 @@ if (mode === "prep") {
   }
 }
 
-// dev: the window loop
+// dev: the window loop. One call = one window; --until-done loops it (the
+// outer loop is at the bottom of the file). Returns {kind}: how the window
+// ended — "skipped" | "stop" | "time" | "cap" | "no-tasks" | "deaths" |
+// "breaker" | "fatal" — so the until-done loop can decide without parsing logs.
+const runDevWindow = async () => {
 await replayUnfinishedFinalization(); // a crashed window's tail lands before a new one starts
 const windowMs = cfg.windowHours * 60 * 60 * 1000;
 const windowEnd = Date.now() + windowMs;
@@ -4041,7 +4108,7 @@ try {
     log(`window skipped: ${derived.detail}`);
     journal("window-skipped", "done", derived.detail);
     await finalizeWindow("window skipped", new Set(), `∅ dev window skipped — ${derived.detail}`);
-    process.exit(0);
+    return { kind: "skipped" };
   }
 }
 
@@ -4072,22 +4139,27 @@ log(
 await notify(`▶ dev window starting (${cfg.windowHours}h, ≤${cfg.maxSessionsPerWindow} sessions${plan ? `, plan: ${plan.map((e) => e.taskId).join(" ")}` : ""})`);
 syncBoard("window start");
 
+let endReason = "time";
 while (true) {
   if (fs.existsSync(stopFile)) {
     log("STOP file present — ending window");
+    endReason = "stop";
     break;
   }
   if (Date.now() >= windowEnd) {
     log("window time elapsed — ending window");
+    endReason = "time";
     break;
   }
   if (sessions >= cfg.maxSessionsPerWindow) {
     log("session cap reached — ending window");
+    endReason = "cap";
     break;
   }
   // Don't start a session the window can't reasonably hold (min 5 minutes).
   if (Date.now() + 5 * 60 * 1000 > windowEnd) {
     log("not enough window time left for another session — ending window");
+    endReason = "time";
     break;
   }
 
@@ -4103,6 +4175,7 @@ while (true) {
     } catch (e) {
       log(`session ${sessions}: worktree create failed (${firstLine(e)}) — ending window`);
       await notify(`✗ window ended — cannot create session worktree: ${firstLine(e)}`);
+      endReason = "fatal";
       break;
     }
   }
@@ -4238,6 +4311,7 @@ while (true) {
   } catch (e) {
     log(`session ${sessions} end: repo not recoverable (${firstLine(e)}) — ending window`);
     await notify(`✗ window ended — repo not recoverable after session ${sessions}: ${firstLine(e)}`);
+    endReason = "fatal";
     break;
   }
   if (result?.taskId && result.status) noteRuntimeStatus(result.taskId, result.status, result.pr ?? null);
@@ -4273,6 +4347,7 @@ while (true) {
     if (result.status === "no-tasks") {
       syncBoard(`session ${sessions}`);
       log("backlog has no eligible tasks — ending window");
+      endReason = "no-tasks";
       break;
     }
     if (result.pr && ["review", "completed"].includes(result.status) && cfg.autonomy === "auto-merge-dev") {
@@ -4318,6 +4393,7 @@ while (true) {
         log("two consecutive sessions died without reporting — ending window");
         await notify("⚠ two consecutive sessions died — window ended early");
         fs.rmSync(prev, { force: true });
+        endReason = "deaths";
         break;
       }
       fs.writeFileSync(prev, "");
@@ -4335,6 +4411,56 @@ while (true) {
   }
   syncBoard(`session ${sessions}`);
   fs.rmSync(path.join(logDir, `.silent-death`), { force: true });
+  // No-progress breaker (until-done only): a task still unsettled after this
+  // boundary — merges and flips above have all had their chance — counts one
+  // more burned session; at noProgressSessions (default 3) it parks
+  // needs-human with a filed question instead of eating the loop. Counters
+  // live in state.json so they survive across cycles and driver restarts.
+  if (untilDone) {
+    const bTask = result?.taskId ?? entry?.taskId ?? null;
+    const st = bTask ? (effectiveTasks().find((x) => x.id === bTask)?.status ?? null) : null;
+    if (bTask) {
+      const s = readState();
+      const counts = s.noProgress ?? {};
+      // review IS settled here: the session delivered a PR — under pr-only
+      // (or auto-merge with checks still pending) only the owner/CI can move
+      // it further, and the breaker must never park delivered work.
+      if (st === null || ["done", "blocked", "needs-human", "review"].includes(st)) delete counts[bTask];
+      else counts[bTask] = (counts[bTask] ?? 0) + 1;
+      s.noProgress = counts;
+      writeState(s);
+      const cap = Number.isInteger(cfg.noProgressSessions) && cfg.noProgressSessions > 0 ? cfg.noProgressSessions : 3;
+      if ((counts[bTask] ?? 0) >= cap) {
+        log(`no-progress breaker: ${bTask} burned ${counts[bTask]} session(s) without settling — parking needs-human`);
+        const filed = await processQuestions([{
+          taskId: bTask,
+          title: `no-progress breaker parked ${bTask} after ${counts[bTask]} sessions`,
+          body:
+            `The until-done loop parked ${bTask}: ${counts[bTask]} consecutive session(s) worked it without reaching a settled ` +
+            `status (last: ${st}). This usually means the task is underspecified, too big for one session, or fighting its ` +
+            `environment — split it, sharpen its acceptance criteria, or clear the obstacle, then flip it back to todo.`,
+        }], "dev");
+        // Park even when the tracker rejected the question (it stays queued):
+        // a dead tracker must not disable the breaker.
+        const applied = applyFlips([{ taskId: bTask, status: "needs-human" }]);
+        noteRuntimeStatus(bTask, "needs-human");
+        let linked = false;
+        for (const q of filed) if (q.taskId === bTask && q.url && addTaskLinkInFiles(bTask, q.url)) linked = true;
+        if (applied.length || linked) commitMetadata(`${bTask} needs-human: no-progress breaker (${counts[bTask]} sessions)`);
+        {
+          const s2 = readState();
+          if (s2.noProgress) { delete s2.noProgress[bTask]; writeState(s2); }
+        }
+        const pool = effectiveTasks();
+        const derived = pool.length ? deriveFactoryStatus(pool) : { status: "normal" };
+        if (derived.status !== "normal") {
+          log(`no-progress breaker: nothing actionable left (${derived.detail}) — ending window`);
+          endReason = "breaker";
+          break;
+        }
+      }
+    }
+  }
 }
 
 // Window-end finalization: sweep (NOTES item 27), repo restore (item 23),
@@ -4342,3 +4468,77 @@ while (true) {
 // crash here is completed by the next run (O4).
 await finalizeWindow("window end", new Set(), `■ dev window finished: ${sessions} session(s)`);
 log(`dev window finished: ${sessions} session(s)`);
+return { kind: endReason };
+};
+
+if (!untilDone) {
+  await runDevWindow();
+} else {
+  // --until-done (autonomy epic chunk 6): chain triage→dev→report cycles —
+  // the same three legs a scheduled day runs — until the backlog is done or
+  // only owner-gated work remains. Triage leads every cycle so inbox notes,
+  // answered questions, and out-of-band merges are folded in before sessions
+  // spend anything; STOP ends the loop at the next boundary; two cycles that
+  // land nothing end it too — a stuck loop must never grind sessions.
+  let cycle = 0;
+  let dryCycles = 0;
+  while (true) {
+    cycle += 1;
+    if (fs.existsSync(stopFile)) {
+      log("STOP file present — until-done ending");
+      break;
+    }
+    const before = new Map(effectiveTasks().map((t) => [t.id, t.status]));
+    try {
+      await runSingle("triage");
+    } catch (e) {
+      log(`until-done: triage errored (${firstLine(e)}) — the window will plan for itself`);
+    }
+    const end = await runDevWindow();
+    if (end.kind !== "skipped" && end.kind !== "stop") {
+      try {
+        await runSingle("report");
+      } catch (e) {
+        log(`until-done: report errored (${firstLine(e)}) — continuing`);
+      }
+    }
+    const after = effectiveTasks();
+    const landed = after.filter((t) => t.status === "done" && before.get(t.id) !== "done").map((t) => t.id);
+    // A PR opened for review is progress too — under pr-only it is the
+    // session's entire deliverable, and only the owner can move it further.
+    const shipped = after.filter((t) => t.status === "review" && before.get(t.id) !== "review").map((t) => t.id);
+    const derived = after.length ? deriveFactoryStatus(after) : { status: "normal", detail: null };
+    const summary = `until-done cycle ${cycle}: ` +
+      (landed.length || shipped.length
+        ? [landed.length ? `landed ${landed.join(", ")}` : null, shipped.length ? `shipped ${shipped.join(", ")} for review` : null].filter(Boolean).join("; ")
+        : "landed nothing") +
+      (derived.detail ? ` — ${derived.detail}` : "");
+    log(summary);
+    await notify(`↻ ${summary}`);
+    if (end.kind === "stop") {
+      log("STOP file present — until-done ending");
+      break;
+    }
+    if (end.kind === "fatal") {
+      log("until-done: window ended on a fatal error — stopping");
+      break;
+    }
+    if (derived.status !== "normal") break; // done / waiting-on-owner / deadlocked — the digest above says which
+    {
+      // Everything open sits in review / needs-human / blocked: nothing a
+      // session could touch — the owner's merges or answers move it next.
+      // The honest exit for a pr-only factory that shipped its whole plan.
+      const open = after.filter((t) => t.status !== "done");
+      if (open.length && open.every((t) => ["review", "needs-human", "blocked"].includes(t.status))) {
+        log(`until-done: every open task waits on the owner (${open.map((t) => t.id).join(", ")}) — ending`);
+        break;
+      }
+    }
+    dryCycles = landed.length || shipped.length ? 0 : dryCycles + 1;
+    if (dryCycles >= 2) {
+      log(`until-done: ${dryCycles} consecutive cycle(s) landed nothing — ending`);
+      await notify(`⛔ until-done ended after ${cycle} cycle(s): the last ${dryCycles} landed nothing — the loop is stuck; read the latest window log`);
+      break;
+    }
+  }
+}

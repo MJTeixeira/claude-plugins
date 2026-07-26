@@ -423,6 +423,17 @@ display on 4 of 6 fleet factories (2026-07-19).
   exactly the missing steps. Killed sessions still land in `usage.jsonl`
   with real token counts summed from their streamed events (`partial: true`
   rows are lower bounds).
+- **Every session leaves a metrics row** (`<state>/log/metrics.jsonl`,
+  autonomy epic chunk 5), extracted from the session's own stream log:
+  `endReason` (the result event's verdict — `success`, `error_max_turns`,
+  `api_error`… — or `killed`/`no-output` when the session died without
+  one), `turns`, `peakContext`, per-turn `trajectory`
+  (`{output, context}` per assistant message), permission-`denials` count
+  (null when no result event recorded it), and a `tools` name→count
+  histogram. Written wherever a usage row is written — one ledger row and
+  one metrics row per session, every mode. usage.jsonl stays the spend
+  ledger; metrics.jsonl feeds plan correction and the no-progress breaker
+  (chunk 6).
 
 ## Per-task model & effort routing
 
@@ -498,6 +509,15 @@ with neither, the gate refuses to auto-merge and doctor goes red, so a
 factory can never silently merge on nothing (fleet lesson, 2026-07-23).
 The command runs in the meta worktree: it must be self-contained
 (install deps itself or tolerate a warm worktree).
+
+The toolchain manifest is the window's other floor: declare
+`config.json → toolchain` as `[{"name": "godot", "check": "godot
+--version"}, …]` and doctor grows one row per tool — the check runs
+(30s timeout) and a non-zero exit is a red row naming the tool. Since
+`--scheduled` runs abort on doctor fails, a missing tool stops the window
+BEFORE it burns sessions against it. A malformed manifest is itself a
+doctor fail (same rule as riskTiers: a typo must never silently turn a
+floor off).
 
 Risk tiers ride the same landing: before the merge is even attempted, the
 gate diffs the PR against base and any file under a `riskTiers.high`
@@ -575,6 +595,39 @@ The driver's channel identity must be on the zion roster
 (`machine` + `factory-<project>`, zion contract §Roster naming) — a
 missing entry is exit 9 and the tool error says so. Doctor gets one row:
 skip when unconfigured, fail on a dead `bin` path, green otherwise.
+
+## Run until done (`dev --until-done`)
+
+Autonomy epic chunk 6 — "tell a fully-specced product to run until it's
+done". One command chains triage→dev→report cycles (the same three legs a
+scheduled day runs; triage leads every cycle so inbox notes, answered
+questions, and out-of-band merges fold in before sessions spend anything)
+and posts a one-line digest per cycle. Best on `schedule: manual`
+factories — a timer-scheduled factory would start competing windows.
+
+The loop ends when:
+
+- the backlog completes, or only owner-gated work remains — tasks in
+  `review` (a delivered PR the owner must merge — the whole deliverable
+  under `pr-only`), `needs-human`, or `blocked` count as owner-gated, on
+  top of the `waiting-on-owner`/`deadlocked` `deriveFactoryStatus`
+  vocabulary the dashboard shows;
+- a `STOP` file appears (checked between sessions and between cycles —
+  same file, same meaning as a plain window);
+- a window dies on a fatal error (unrecoverable repo, worktree failure);
+- **two consecutive cycles land nothing** — a stuck loop must never grind
+  paid sessions.
+
+**No-progress breaker** (until-done only): a task that burns
+`noProgressSessions` (config, default 3) sessions without reaching a
+settled status (`done`, `review` — a delivered PR is settled from the
+session's side — `blocked`, `needs-human`) is parked `needs-human`
+mid-window, with a filed question
+carrying the evidence (a dead tracker queues the question but never
+disables the park). Counters live in `state.json` (`noProgress`), survive
+restarts, and reset the moment the task settles. When the park leaves
+nothing actionable, the window ends immediately instead of burning a
+probe session.
 
 ## Scheduling (`factory.mjs schedule`)
 
