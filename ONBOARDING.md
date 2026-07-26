@@ -27,7 +27,9 @@ Each step ends with a check — run it and confirm before moving on.
    You need a Claude subscription (Pro/Max) or an API key. Factory windows
    cost real money — expect roughly $1–4 per completed task with Sonnet.
    Check: `claude --version` prints a version.
-3. **GitHub CLI, logged in** (the factory opens PRs and issues with it):
+3. **GitHub CLI, logged in** (the factory opens PRs and issues with it on
+   GitHub-forge projects; skip if the machine will only run Bitbucket
+   factories, which use Atlassian API tokens instead):
    ```sh
    gh auth login     # pick GitHub.com → HTTPS → login with browser
    ```
@@ -63,7 +65,9 @@ subagents, no ceremony. Bigger asks automatically get more process.
 
 ## 2. Factory (autonomous development)
 
-Your project must be a git repo with a GitHub remote (private is fine).
+Your project must be a git repo with a GitHub or Bitbucket Cloud remote
+(private is fine; GitHub is the default — Bitbucket needs `forge:
+"bitbucket"` plus its `.env` keys, see the config reference in section 3).
 
 **You can start before any of this machinery exists**: install the factory
 plugin (step 0.4 + `/plugin install code4food-factory@code4food` — works

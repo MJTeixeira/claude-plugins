@@ -3399,9 +3399,12 @@ const suiteNote = ({ pr, taskId, head, suite }) =>
 // the task's own Acceptance:/Verify: lines, never by the implementer — must
 // record a passing grade_verdict for the PR's exact head SHA. The session
 // that wrote the code briefing its own reviewer was the correlation this
-// breaks. Verdicts are cached in state.json by SHA (a push re-triggers, a
-// retry or later sweep never pays twice) and fail closed: a grader that dies
-// or never calls the tool records a failing verdict. taskId-less PRs
+// breaks. Real verdicts are cached in state.json by SHA (a push re-triggers,
+// a retry or later sweep never pays twice) and fail closed: a grader that
+// dies or never calls the tool refuses THIS landing — but that verdict-less
+// outcome is never cached, because a transient death (rate limit, killed
+// session, worktree failure) cached as a fail blocks the SHA until someone
+// pushes a new commit (fleet incident 2026-07-25). taskId-less PRs
 // (live/piloting) are the owner's own work and merge ungraded. Only the dev
 // window may spawn graders — prep stays session-free by contract, so its
 // sweep defers ungraded PRs to the next window.
@@ -3603,10 +3606,14 @@ const landMerge = async ({ pr, view, taskId }) => {
         const sha = git(["rev-parse", `origin/${head}`], metaPath());
         let grade = readState().grades?.[sha] ?? null;
         if (!grade && mode === "dev") {
-          grade = recordGrade(sha, {
+          const outcome = {
             ...(await runGrader({ pr, taskId, head, sha })),
             pr, taskId, ts: new Date().toISOString(), model: cfg.graderModel ?? "opus",
-          });
+          };
+          // Cache only real verdicts (pass, fail, short). A verdict-less
+          // outcome still refuses this landing, but stays out of the cache
+          // so the next sweep or window re-grades the same SHA.
+          grade = outcome.noVerdict ? outcome : recordGrade(sha, outcome);
         }
         if (!grade) {
           try { git(["merge", "--abort"], metaPath()); } catch { /* nothing staged */ }

@@ -2,9 +2,12 @@
 // task PR, an INDEPENDENT grader session — spawned by the driver, briefed
 // from the task's own Acceptance:/Verify: lines, never by the implementer —
 // must record a passing grade_verdict for the PR's exact head SHA. Fail or
-// no verdict = no merge (fail-closed); verdicts are cached by SHA so a sweep
-// never pays for the same grade twice; prep spawns no sessions, so ungraded
-// PRs wait there for the next dev window.
+// no verdict = no merge (fail-closed); real verdicts are cached by SHA so a
+// sweep never pays for the same grade twice, but a verdict-LESS outcome (the
+// grader died, was rate-limited, or its worktree failed) is never cached —
+// caching it turned a transient failure into a permanent block on the SHA
+// (fleet incident 2026-07-25). Prep spawns no sessions, so ungraded PRs wait
+// there for the next dev window.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import * as fs from "node:fs";
@@ -161,24 +164,31 @@ test("a verdict that covers fewer criteria than briefed fails closed — a trunc
   assert.equal(readGrades(world)[headSha]?.pass, false, "a short verdict must record as a fail");
 });
 
-test("a grader that records no verdict fails closed — no merge on ungraded work", (t) => {
+test("a grader that records no verdict fails closed for the landing but is NOT cached — a later sweep re-grades and can merge", (t) => {
   const world = makeFactory(t, {
     config: { autonomy: "auto-merge-dev", mergeGateMinutes: 0.1, maxSessionsPerWindow: 2, gateCommand: "true" },
   });
   setupGreenPr(world);
   queueSessions(world, [
     reviewSession,
-    { stdout: RESULT, exit: 0 }, // grader "succeeds" but never calls grade_verdict
+    { stdout: RESULT, exit: 0 }, // grader "succeeds" but never calls grade_verdict (a rate-limited/killed grader looks like this)
     noTasksSession,
+    graderPass(world), // the window-end sweep re-gates the PR: with no cached verdict it grades again
   ]);
 
   const r = runDriver(world, "dev");
 
   assert.equal(r.code, 0, `driver exited ${r.code}\nstdout:\n${r.stdout}\nstderr:\n${r.stderr}`);
   assert.match(r.stdout, /no verdict/);
-  assert.doesNotMatch(gitIn(world.origin, "log", "main", "--oneline"), /Merge PR #5/);
   const headSha = gitIn(world.origin, "rev-parse", "factory/T-001");
-  assert.equal(readGrades(world)[headSha]?.pass, false, "a verdict-less grade must be recorded as a fail");
+  // The re-grade at the window-end sweep is the point: the transient
+  // no-verdict must not have poisoned the SHA.
+  const regrader = invocation(world, 4);
+  assert.ok(regrader, "the sweep must spawn a fresh grader — a verdict-less outcome is not a cached fail");
+  assert.equal(regrader.factoryMode, "grade");
+  assert.match(gitIn(world.origin, "log", "main", "--oneline"), /Merge PR #5/,
+    "the re-grade passed, so the PR must merge without a new push");
+  assert.equal(readGrades(world)[headSha]?.pass, true);
 });
 
 test("a factory PR with no task id parks for the owner instead of merging ungraded", (t) => {
