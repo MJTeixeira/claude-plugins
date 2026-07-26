@@ -184,6 +184,12 @@ export const readUsageRows = (world) => {
   return fs.readFileSync(p, "utf8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l));
 };
 
+export const readMetricsRows = (world) => {
+  const p = path.join(world.stateDir, "log", "metrics.jsonl");
+  if (!fs.existsSync(p)) return [];
+  return fs.readFileSync(p, "utf8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l));
+};
+
 export const gitIn = (dir, ...args) => git(dir, ...args);
 
 // Telegram test double: a local HTTP server standing in for api.telegram.org
