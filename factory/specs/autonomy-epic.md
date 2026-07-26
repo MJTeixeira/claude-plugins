@@ -46,23 +46,24 @@ proven").
    account, fail-closed when identity is unavailable; triage/report
    prompts take instructions only from owner-authored content; doctor
    warns (`injection surface`) on auto-merge + publicly writable tracker.
-4. **Acceptance grader.** Driver-spawned independent session (config
+4. **Acceptance grader — SHIPPED (1.12.0).** Driver-spawned independent session (config
    `graderModel`, default opus) in its own throwaway worktree, briefed by
    the DRIVER from the task's `Acceptance:`/`Verify:` lines — never by the
    implementer. Verdict via a new `grade_verdict` MCP tool (per-criterion
    pass/fail + evidence); the gate merges only on a recorded pass.
    Skillset alignment rides along (backlog model rubric gains the fable
    tier; cost-era "one review pass" language updated).
-5. **Metrics.** Per-session `metrics.jsonl` extracted from streams the
+5. **Metrics — SHIPPED (1.14.0).** Per-session `metrics.jsonl` extracted from streams the
    driver already keeps: end reason, peak context, per-turn token
    trajectory, permission-denial count, tool histogram. Feeds plan
    correction, the no-progress breaker, and later improvement reviews.
-6. **Run-until-done.** `dev --until-done`: chain triage→dev→report cycles
+6. **Run-until-done — SHIPPED (1.15.0).** `dev --until-done`: chain triage→dev→report cycles
    until the backlog is done or only human-parked work remains; exits on
    STOP and on a no-progress breaker (N sessions on one task with nothing
    merged → park it; all tripped → end). Digest per cycle. Requires
    chunks 1–2; recommended with `schedule: manual`.
-7. **Toolchain manifest.** `toolchain: [{name, check}]` in config; doctor
+7. **Toolchain manifest — SHIPPED (1.16.0, epic complete 2026-07-26).**
+   `toolchain: [{name, check}]` in config; doctor
    verifies each; the existing `--scheduled` preflight then stops a window
    before it burns sessions against a missing tool.
 
