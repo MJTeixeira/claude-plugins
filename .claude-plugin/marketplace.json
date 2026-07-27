@@ -9,7 +9,7 @@
     {
       "name": "code4food-skillset",
       "description": "Attention-lean dev workflow, injected at session start into opted-in projects: task sizing, explore/plan/TDD/verify/finishing discipline, debugging, worktrees, handoff \u2014 plus a code-reviewer agent, /commit, and a protected-branch guard hook.",
-      "version": "1.10.1",
+      "version": "1.10.2",
       "license": "MIT",
       "keywords": [
         "workflow",

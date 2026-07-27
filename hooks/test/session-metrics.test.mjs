@@ -110,6 +110,18 @@ test("split-message transcripts count messages, not lines — and usage-less lin
   assert.deepEqual(row.tools, { Bash: 2, Edit: 1, Grep: 1 }, "tools count across all lines regardless");
 });
 
+test("factory session worktrees are the driver's territory → no row (driver metrics already cover them)", (t) => {
+  const base = makeDir(t);
+  const project = path.join(base, ".factory", "worktrees", "someproj", "task-branch");
+  fs.mkdirSync(project, { recursive: true });
+  optIn(project);
+  const out = makeDir(t);
+  const transcript = writeTranscript(project, [assistant("m1", 1000)]);
+  const r = run(project, out, { cwd: project, transcript_path: transcript });
+  assert.equal(r.status, 0);
+  assert.equal(readRows(out).length, 0);
+});
+
 test("non-opted project → no row, exit 0", (t) => {
   const project = makeDir(t);
   const out = makeDir(t);

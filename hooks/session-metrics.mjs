@@ -29,6 +29,11 @@ try {
   const cwd = typeof input.cwd === "string" && input.cwd ? input.cwd : process.cwd();
   const root = optedInRoot(cwd);
   if (!root) process.exit(0);
+  // Factory session worktrees are the driver's territory: the driver
+  // already writes a metrics row per session to the factory's own
+  // metrics.jsonl — logging them here too would double-record them under
+  // the wrong mode.
+  if (path.resolve(root).includes(`${path.sep}.factory${path.sep}worktrees${path.sep}`)) process.exit(0);
 
   const contexts = [];
   const tools = {};
