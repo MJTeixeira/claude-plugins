@@ -52,6 +52,7 @@
 import { execFile, execFileSync } from "node:child_process";
 import { bitbucketForge } from "./bitbucket.mjs";
 import { jiraTracker } from "./jira.mjs";
+import { discordTracker } from "./discord.mjs";
 
 const githubForge = ({ project, env = {} }) => {
   const out = (args) =>
@@ -169,7 +170,7 @@ export const nativeTrackerCheck = (forge) => {
     const msg = (String(e.stderr ?? "").trim() || e.message || "").split("\n")[0].slice(0, 160);
     const off = /\b410\b/.test(msg) || /issues? (?:are |is )?disabled|disabled.*issues?/i.test(msg);
     return off
-      ? { level: "warn", name, detail: `the repo's issue tracker is OFF — needs-human questions cannot be filed and will queue silently; enable it in the repo settings, or set "tracker": "jira" in config.json (${msg})` }
+      ? { level: "warn", name, detail: `the repo's issue tracker is OFF — needs-human questions cannot be filed and will queue silently; enable it in the repo settings, or set "tracker": "jira" or "discord" in config.json (${msg})` }
       : { level: "warn", name, detail: `could not read the issue tracker: ${msg}` };
   }
 };
@@ -178,11 +179,28 @@ export const nativeTrackerCheck = (forge) => {
 // is the forge's own tracker — the forge already implements the issue
 // surface, and the legacy config value "github" means the same thing.
 // `"jira"` routes issues to a Jira Cloud project instead (jira.mjs), for
-// repos whose native tracker is off. PR capabilities stay on the forge
-// either way.
+// repos whose native tracker is off. `"discord"` routes them to threads in
+// a Discord channel (discord.mjs) — the owner-answers-in-chat shape. PR
+// capabilities stay on the forge either way.
+// Three OPTIONAL tracker capabilities beyond the forge issue surface:
+//   issueClose(number)   ack-and-archive an answered question AFTER a
+//                        successful triage consumed it (discord only —
+//                        native/jira answers are closed by the human)
+//   answerHint           sentence telling the owner how to answer, spliced
+//                        into the question attribution (default wording
+//                        says "close this issue with an answer")
+//   titleKey(title)      the stored form of a question title, for dedupe —
+//                        trackers that truncate on storage (discord's
+//                        100-char thread names) must cap both sides of the
+//                        comparison or re-asked long questions duplicate
+// Contract nuance a non-native tracker may exploit: whoami() is the id the
+// trust split BELIEVES (= the owner). The discord driver authenticates as
+// a bot, so its whoami returns the hand-set cfg.discordOwnerId — never the
+// bot — else every owner answer would tag UNTRUSTED and could not fold.
 export const createTracker = ({ cfg = {}, forge, env = {} }) => {
   const kind = cfg.tracker ?? "native";
   if (kind === "native" || kind === "github") return forge;
   if (kind === "jira") return jiraTracker({ cfg, env });
-  throw new Error(`unknown tracker "${kind}" — supported: native (default), jira`);
+  if (kind === "discord") return discordTracker({ cfg, env });
+  throw new Error(`unknown tracker "${kind}" — supported: native (default), jira, discord`);
 };

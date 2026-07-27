@@ -721,13 +721,45 @@ service, `factory-onfailure@.service`) live in `factory/schedulers/`.
   either way. In a SHARED Jira project, `"jiraEpic": "<KEY>"` anchors
   everything under one epic — tracker issues are created as its children
   and scans never leave it (see the Jira board bullet below).
+- **Discord tracker** (`"tracker": "discord"`, spec
+  `factory/specs/discord-tracker.md`): questions and the daily log land
+  as THREADS in a Discord channel — for owners who answer in chat, not
+  in any issue tracker (born 2026-07-27, when Jira was ruled out for a
+  client's scrum-shared projects). Needs `"discordChannel": "<id>"` +
+  `"discordTag": "<short-name>"` + `"discordOwnerId": "<user id>"` in
+  `config.json` and `DISCORD_BOT_TOKEN` in `<state>/.env` (bot invited
+  with View Channel / Send Messages / Send Messages in Threads / Create
+  Public Threads / Read Message History / Manage Threads; Message
+  Content intent ON in the developer portal). `discordOwnerId` is the
+  OWNER's user id (developer mode → right-click your name → Copy User
+  ID) and is the trust anchor: the driver authenticates as the bot here
+  — unlike every other tracker — so the owner's identity must be
+  declared or every answer would read UNTRUSTED and could never fold.
+  Every thread the factory creates is named `[<discordTag>] …` and reads
+  are scoped to that prefix, so several factories share one channel; the
+  tag is hand-set because it is identity — never derive it from a path.
+  The answer flow has NO owner ceremony: the owner just replies in the
+  question thread. A reply FROM THE OWNER after the bot's last `✔`
+  marker makes the thread ANSWERED (surfaces to triage as a closed
+  tracker issue; teammates' comments are context, never the answer);
+  after that triage succeeds the driver posts `✔ folded into the
+  backlog` and archives the thread — only threads whose owner answer
+  actually rendered in the triage prompt are acked, so a failed comment
+  fetch can never archive an unread answer. Replying to an archived
+  thread reopens it. An unanswered question that hit Discord's
+  auto-archive timer still counts as OPEN.
+  Doctor checks the token, the config keys, and live-probes bot + channel.
+  Human-initiated threads are NOT captured as work input (the channel is
+  shared; inbox/backlog stay the input paths). PRs stay on the forge.
 
 ## Feeding it input (any time)
 
 - **GitHub** (canonical): file issues; comment on `[factory]` PRs; answer
   `needs-human` issues and close them. Next triage folds everything in.
   On a `tracker: "jira"` factory the same loop runs in the Jira project:
-  answer `[factory] question:` issues there and resolve them.
+  answer `[factory] question:` issues there and resolve them. On a
+  `tracker: "discord"` factory, just REPLY in the question thread —
+  no closing, no emoji; the factory marks `✔` once it folded the answer.
 - **Notion / Jira mirrors**: enable in `config.json → mirrors` + tokens in
   `<state>/.env`. Notion needs the official Notion MCP server in the project's
   `.mcp.json` with `NOTION_TOKEN` (internal integration token — OAuth does
