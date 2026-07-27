@@ -34,7 +34,7 @@ export const buildConfig = (a) => ({
   windowHours: Number(a.windowHours),
   autonomy: a.autonomy,
   baseBranch: a.baseBranch,
-  tracker: "github", // = the forge's native tracker; "jira" routes needs-human + daily log to the Jira project in `jiraProject` (hand-set, like board)
+  tracker: "github", // = the forge's native tracker; "jira" routes needs-human + daily log to the Jira project in `jiraProject`, "discord" to threads in the channel `discordChannel` scoped by `discordTag` with `discordOwnerId` as the trust anchor (all hand-set, like board)
   mirrors: a.mirrors ? a.mirrors.split(",").map((s) => s.trim()).filter(Boolean) : [],
   model: a.model,
   triageModel: a.model, // triage-only override; dev sessions keep `model`
