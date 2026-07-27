@@ -1,11 +1,12 @@
 ---
 name: finishing
-description: Implementation done and tests passing — make the branch mergeable: checks, one review pass, docs, PR.
+description: Implementation done and tests passing — make the branch mergeable: checks, review scaled to risk, docs, PR.
 ---
 
 # Finishing a change
 
-One pass, inline. No subagent-per-tool.
+Inline, in order. No subagent-per-tool — a chain of specialist agents
+re-reading the same diff adds context churn, not scrutiny.
 
 ## 1. Checks (direct Bash, fix what they report)
 
@@ -38,24 +39,51 @@ Claim "done" only on fresh evidence: command output produced in this session
 for the thing you changed — not memory of an earlier run, not inference from
 code that looks right.
 
-## 3. One review pass
+If the plan named `Done evidence`, that exact check is the floor: run it
+and show its output — silently substituting a weaker check is not done.
+Genuinely can't run it in this environment (no simulator, missing creds,
+unseeded data)? Follow the `verify` skill's rule: say so explicitly and
+report the strongest check you COULD run — disclosed weaker evidence is
+honest, silent substitution is not. No plan or no named check
+(small/trivial work)? Derive the check now from what changed and say so.
 
-Spawn the `code-reviewer` agent exactly once, with: the purpose of the change
-(2-3 sentences), the diff base (`git diff main...HEAD` or equivalent), and the
-relevant `.docs/<area>.md` paths.
+## 3. Review — scaled to risk
 
-Triage its findings with rigor, not deference:
+Review depth follows the diff's blast radius, not a fixed ritual. The
+implementer is the wrong judge of its own work — the model that wrote the
+code is too nice grading its own homework — so the reviewer always runs
+in fresh context, briefed with facts, never with your conclusions.
+
+Risk always wins over size: check the high-risk list FIRST — a 4-line
+auth fix is high-risk, not small.
+
+- **High-risk diffs** — auth, payments/billing, data storage (schema
+  migrations, what gets persisted or logged), network boundaries (new
+  outbound calls, request handling), CI/CD or permission config, secrets
+  handling, user-input parsing at trust boundaries, or any path the
+  project marks high-tier (a factory project's `riskTiers` config, when
+  present): spawn the `code-reviewer` agent AND a second reviewer with a
+  security lens, whatever the diff's size. Verify-to-refute before
+  acting — for each finding you intend to fix, first try to REFUTE it
+  against the actual code; findings that survive refutation are real,
+  the rest get pushed back with evidence.
+- **Small diffs** (a handful of lines, behavior fully covered by the
+  tests you watched fail, not high-risk): skip the reviewer.
+- **Everything else**: spawn the `code-reviewer` agent once, with: the
+  purpose of the change (2-3 sentences), the diff base
+  (`git diff main...HEAD` or equivalent), and the relevant
+  `.docs/<area>.md` paths.
+
+Triage findings with rigor, not deference:
 
 - Verify each finding against the actual code before acting on it.
 - Fix confirmed real issues; for anything you fix, keep tests green.
 - Push back (to the user, in your summary) on findings you verified to be
   wrong — don't implement bad suggestions to look cooperative.
-
-Skip the reviewer only for small-sized changes where the diff is a handful of
-lines; feature-sized work always gets the pass. If the diff touches auth,
-user input handling, network boundaries, secrets, or data storage, spawn a
-second reviewer with a security lens; skip that one only when the diff
-plainly has no security surface (docs, pure refactors, test-only changes).
+- Chase correctness, not polish: a reviewer prompted to find gaps will
+  report something regardless, and implementing every "consider…" is how
+  over-engineering enters. Correctness and stated-requirement gaps are
+  mandatory; the rest is optional by your judgment.
 
 ## 4. Docs
 

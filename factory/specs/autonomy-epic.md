@@ -84,3 +84,37 @@ proven").
 - Shadow-mode flip protocol (gate grades but the owner merges, N agreeing
   windows before flipping a project to auto-merge) and digest upgrades ride
   chunks 4–6 as their operational halves.
+
+## Sources (discovery session 2026-07-23)
+
+Read during discovery — the material the Why section distills:
+
+- https://x.com/steipete/status/2063697162748260627 — steipete on agent
+  harnesses/loops (the thread that opened the session)
+- https://x.com/akshay_pachaar/status/2041146899319971922 — loop
+  engineering thread
+- https://addyosmani.com/blog/agent-harness-engineering/
+- https://addyosmani.com/blog/loop-engineering/
+- https://leanware.co/insights/ralph-wiggum-ai-coding — the "Ralph
+  Wiggum" outer-loop pattern
+- https://www.firecrawl.dev/blog/loop-engineering
+- https://claude.com/blog/getting-started-with-loops
+- https://claude.com/blog/building-verification-loops-in-claude-code-with-skills
+- https://claude.com/blog/how-anthropic-secures-its-ai-native-software-development-lifecycle
+- https://claude.com/blog/ciso-guide-to-agentic-ai
+- https://claude.com/blog/how-datadog-built-a-universal-machine-tool-for-claude-code
+- https://claude.com/blog/working-at-the-frontier-rakuten
+- https://claude.com/blog/working-at-the-frontier-how-cognition-trusts-claude-fable-5-to-work-through-the-night
+- https://claude.com/blog/working-at-the-frontier-why-base44-trusts-claude-fable-5-with-their-most-challenging-engineering-work
+- https://claude.com/blog/working-with-claude-fable-5-in-claude-cowork
+- https://claude.com/blog/ai-code-migration
+
+Surfaced by the searches but not read (leads for a future pass):
+
+- https://www.langchain.com/blog/the-art-of-loop-engineering
+- https://cuigh.com/posts/stop-prompting-design-loops/
+- https://dev.to/truongpx396/the-agentic-loop-a-practical-field-guide-mnc
+- https://github.com/robinjose911/loop-engineering-handbook/blob/main/SOURCES.md
+- https://unlock-ai.natebjones.com/guides/agents/maintenance
+- https://visualstudiomagazine.com/articles/2026/07/22/microsoft-agent-framework-makeover-claws-loops-and-harnesses.aspx
+- https://medium.com/@shanewang199512/2026-agent-harness-the-game-changer-for-ai-applications-if-youre-not-the-model-you-re-the-e49722a23967

@@ -40,7 +40,8 @@ scope contract.
 
 Write a short plan — it is for you (an agent with the exploration context in
 hand), not for a zero-context engineer. Cover: goal, approach, files to touch,
-the list of tests you'll write, and open questions. Use the template in
+the list of tests you'll write, the done evidence (the end-to-end check that
+will prove it works), and open questions. Use the template in
 `references/plan-format.md`. If the plan creates new structure (a new
 project, a new area, the first instance of a layer), read
 `references/architecture.md` first and apply its defaults.
@@ -68,7 +69,7 @@ approval, and do not stop for permission after it.
 
 ## 5. Finish
 
-Use the `finishing` skill: checks, one review pass, docs update, PR.
+Use the `finishing` skill: checks, review scaled to risk, docs update, PR.
 
 ## Cross-system changes
 

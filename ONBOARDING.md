@@ -3,9 +3,9 @@
 Step-by-step for a fresh person on a fresh machine. No prior knowledge of
 this repo assumed. Two things live here — use either or both:
 
-- **Lean Dev Skillset** — you code interactively with Claude Code; the
-  skillset keeps it cheap by matching the amount of process to the size of
-  each task. See `README.md`.
+- **code4food Dev Skillset** — you code interactively with Claude Code;
+  the skillset matches the amount of process to the size of each task, so
+  ceremony goes where the stakes are. See `README.md`.
 - **Factory** — autonomous development: Claude builds a fully-specced
   product alone, in scheduled daily windows, opening pull requests for you
   to review. A MACHINE product: a factory's config, secrets, schedule, and
@@ -55,9 +55,13 @@ main/master/dev) everywhere it's enabled. Then, per project, run
 /code4food-skillset:setup
 ```
 
-which adds the workflow's managed block to the project's `CLAUDE.md`
-(ask for the statusline in the same breath if you want the cost/token
-status bar).
+which opts the project into the workflow: it creates `.docs/index.md`
+(the opt-in signal — the plugin injects the workflow contract at session
+start wherever it exists) and removes the legacy managed block from
+`CLAUDE.md` if one is there from an older install. Ask for the statusline
+in the same breath if you want the cost/token status bar. Projects set up
+before skillset 1.6.0: update the plugin, then re-run `/setup` once per
+project to migrate.
 
 Check it worked: open `claude` in the project and ask for something tiny
 ("fix this typo in README"). It should just make the edit — no plans, no

@@ -1226,29 +1226,40 @@ if (mode === "migrate") {
           }
         }
       }
-      // The LEAN-WORKFLOW managed block in CLAUDE.md is install.sh-era text
-      // whose bare skill names went stale when skills moved into the plugins
-      // (G3: they are namespaced now) — refresh it from the runtime copy.
-      // The markers license exactly this: only text between them changes,
-      // everything outside is the owner's. No markers → not ours to touch.
+      // The LEAN-WORKFLOW managed block in CLAUDE.md predates plugin-injected
+      // contracts (skillset ≥ 1.6.0: a SessionStart hook injects the workflow
+      // into opted-in projects — .docs/index.md — so a committed copy is
+      // redundant and goes stale). Remove the block, markers included;
+      // everything outside the markers is the owner's. No markers → not ours
+      // to touch. Self-ordering: the runtime that removes blocks is the same
+      // runtime whose plugins inject the contract.
       {
         const cmRel = "CLAUDE.md";
-        const blockSrc = path.join(RUNTIME_ROOT, "claude-md-block.md");
         const cmPath = path.join(project, cmRel);
-        if (tracked(cmRel) && fs.existsSync(cmPath) && fs.existsSync(blockSrc)) {
+        if (tracked(cmRel) && fs.existsSync(cmPath)) {
           const text = fs.readFileSync(cmPath, "utf8");
           const B = "<!-- BEGIN LEAN-WORKFLOW MANAGED BLOCK";
           const E = "<!-- END LEAN-WORKFLOW MANAGED BLOCK -->";
           const b = text.indexOf(B);
           const e = text.indexOf(E);
           if (b !== -1 && e > b) {
-            const block = fs.readFileSync(blockSrc, "utf8").replace(/\n+$/, "");
-            const next = text.slice(0, b) + block + text.slice(e + E.length);
-            if (next !== text) {
+            if (!fs.existsSync(path.join(project, ".docs", "index.md"))) {
+              // No opt-in → the hook would inject nothing; removing the
+              // block would leave the project with no contract at all.
+              say("CLAUDE.md: managed block kept — no .docs/index.md opt-in; run the docs initial pass, then migrate again");
+            } else {
+              // Normalize ONLY the junction the removal creates; the
+              // owner's own blank-line style outside the markers is not
+              // ours to rewrite.
+              const head = text.slice(0, b);
+              const tail = text.slice(e + E.length);
+              const next = !head.trim() ? tail.replace(/^\n+/, "")
+                : !tail.trim() ? head.replace(/\n+$/, "\n")
+                : head.replace(/\n+$/, "\n\n") + tail.replace(/^\n+/, "");
               fs.writeFileSync(cmPath, next);
               g(["add", "--", cmRel]);
               staged.push(cmRel);
-              say("CLAUDE.md: managed workflow block refreshed from the runtime (namespaced skills)");
+              say("CLAUDE.md: managed workflow block removed — the skillset plugin injects the contract at session start (opt-in: .docs/index.md)");
             }
           }
         }

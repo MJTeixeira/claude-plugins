@@ -1,6 +1,6 @@
 {
   "name": "code4food",
-  "description": "code4food studio's Claude Code tooling: the lean dev Skillset and the Factory (autonomous spec-driven development).",
+  "description": "code4food studio's Claude Code tooling: the dev Skillset (attention-lean workflow) and the Factory (autonomous spec-driven development).",
   "owner": {
     "name": "Marcos Teixeira",
     "url": "https://github.com/MJTeixeira"
@@ -8,8 +8,8 @@
   "plugins": [
     {
       "name": "code4food-skillset",
-      "description": "Lean dev workflow: task sizing, explore/plan/TDD/verify/finishing discipline, debugging, worktrees, handoff — plus a code-reviewer agent, /commit, and a protected-branch guard hook.",
-      "version": "1.5.2",
+      "description": "Attention-lean dev workflow, injected at session start into opted-in projects: task sizing, explore/plan/TDD/verify/finishing discipline, debugging, worktrees, handoff — plus a code-reviewer agent, /commit, and a protected-branch guard hook.",
+      "version": "1.10.0",
       "license": "MIT",
       "keywords": [
         "workflow",
@@ -21,7 +21,7 @@
     {
       "name": "code4food-factory",
       "description": "Factory — autonomous spec-driven development. Claude Code develops a fully-specced product alone in daily windows; skills cover speccing (multi-sitting interview + red-team pass, no factory machine required), setup (interview wizard), the backlog vocabulary, and headless verification for unattended sessions.",
-      "version": "1.16.0",
+      "version": "1.17.0",
       "license": "MIT",
       "keywords": [
         "autonomous",

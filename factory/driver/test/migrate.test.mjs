@@ -205,7 +205,7 @@ test("migrate removes the project-side tooling scaffold from the repo (work data
   // The owner's own skill is not the factory's to remove.
   assert.notEqual(git(world.project, "ls-files", "--", ".claude/skills/owners-own"), "");
   // Work data untouched; owner text in CLAUDE.md untouched (the managed
-  // block between markers is refreshed — covered by its own test below).
+  // block between markers is removed — covered by its own test below).
   assert.notEqual(git(world.project, "ls-files", "--", ".factory/backlog/index.md"), "");
   assert.notEqual(git(world.project, "ls-files", "--", ".factory/spec/goal.md"), "");
   assert.match(fs.readFileSync(path.join(world.project, "CLAUDE.md"), "utf8"), /^# Owner notes/,
@@ -236,17 +236,56 @@ test("migrate retires install.sh-era .claude tooling — the plugins ship it now
   assert.equal(git(world.project, "status", "--porcelain"), "");
 });
 
-test("migrate refreshes the LEAN-WORKFLOW managed block from the runtime — owner text untouched", (t) => {
+const optIn = (world) => {
+  fs.mkdirSync(path.join(world.project, ".docs"), { recursive: true });
+  fs.writeFileSync(path.join(world.project, ".docs", "index.md"), "# map\n");
+  git(world.project, "add", ".docs");
+  git(world.project, "commit", "-q", "-m", "docs opt-in");
+  git(world.project, "push", "-q", "origin", "main");
+};
+
+test("migrate removes the LEAN-WORKFLOW managed block from an opted-in project — the plugin injects the contract now", (t) => {
   const world = makeLegacyWorld(t);
+  optIn(world);
 
   const r = runMigrate(world);
 
   assert.equal(r.code, 0, `stdout:\n${r.stdout}\nstderr:\n${r.stderr}`);
   const text = fs.readFileSync(path.join(world.project, "CLAUDE.md"), "utf8");
   assert.match(text, /^# Owner notes/, "owner text before the block must survive");
-  assert.match(text, /code4food-skillset/, "block not refreshed to the namespaced runtime copy");
-  assert.doesNotMatch(text, /^block$/m, "stale block content survived the refresh");
-  assert.equal(git(world.project, "status", "--porcelain", "CLAUDE.md"), "", "the refresh must be committed");
+  assert.doesNotMatch(text, /LEAN-WORKFLOW MANAGED BLOCK/, "markers survived the removal");
+  assert.doesNotMatch(text, /^block$/m, "block content survived the removal");
+  assert.equal(git(world.project, "status", "--porcelain", "CLAUDE.md"), "", "the removal must be committed");
+});
+
+test("without the .docs/index.md opt-in the block is KEPT — removal would leave the project with no contract at all", (t) => {
+  const world = makeLegacyWorld(t);
+  const before = fs.readFileSync(path.join(world.project, "CLAUDE.md"), "utf8");
+
+  const r = runMigrate(world);
+
+  assert.equal(r.code, 0, `stdout:\n${r.stdout}\nstderr:\n${r.stderr}`);
+  assert.equal(fs.readFileSync(path.join(world.project, "CLAUDE.md"), "utf8"), before,
+    "block must survive byte-identical when the project has not opted in");
+  assert.match(r.stdout, /managed block kept/, "migrate must say why it kept the block");
+});
+
+test("block removal never rewrites owner text outside the markers", (t) => {
+  const world = makeLegacyWorld(t);
+  optIn(world);
+  const owner = "# Owner notes\n\n\nSpaced section\n\n\n\nWide gap\n\n";
+  fs.writeFileSync(path.join(world.project, "CLAUDE.md"),
+    owner + "<!-- BEGIN LEAN-WORKFLOW MANAGED BLOCK -->\nblock\n<!-- END LEAN-WORKFLOW MANAGED BLOCK -->\n");
+  git(world.project, "add", "CLAUDE.md");
+  git(world.project, "commit", "-q", "-m", "owner spacing");
+  git(world.project, "push", "-q", "origin", "main");
+
+  const r = runMigrate(world);
+
+  assert.equal(r.code, 0, `stdout:\n${r.stdout}\nstderr:\n${r.stderr}`);
+  assert.equal(fs.readFileSync(path.join(world.project, "CLAUDE.md"), "utf8"),
+    "# Owner notes\n\n\nSpaced section\n\n\n\nWide gap\n",
+    "owner blank-line style must survive; only the junction is normalized");
 });
 
 test("a CLAUDE.md without the managed markers is never touched", (t) => {
