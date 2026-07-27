@@ -1,30 +1,42 @@
 ---
-description: Wire the lean workflow into this project (CLAUDE.md block + optional statusline)
+description: Wire the workflow into this project (opt-in via .docs + optional statusline)
 allowed-tools: Bash(ls:*), Bash(grep:*), Read, Write, Edit
 ---
 
 ## Context
 
 - Project CLAUDE.md: !`ls CLAUDE.md 2>/dev/null || echo "none yet"`
-- Existing managed block: !`grep -c "BEGIN LEAN-WORKFLOW MANAGED BLOCK" CLAUDE.md 2>/dev/null || echo 0`
+- Legacy managed block: !`grep -c "BEGIN LEAN-WORKFLOW MANAGED BLOCK" CLAUDE.md 2>/dev/null || echo 0`
 - Agent docs: !`ls .docs/index.md 2>/dev/null || echo "no .docs yet"`
 
 ## Task
 
-The skills, `/commit` command, code-reviewer agent, and protected-branch guard
-hook already come from this plugin — nothing to copy for those. This command
-wires the pieces a plugin cannot inject. Use the Read/Write/Edit tools for
-all file work (not shell copy/merge commands) so this behaves identically on
-macOS, Linux, and Windows:
+The skills, `/commit` command, code-reviewer agent, and hooks already come
+from this plugin — nothing to copy for those. The workflow contract itself
+is injected automatically at session start into projects that opt in: the
+opt-in signal is `.docs/index.md`. This command creates that opt-in and
+cleans up the legacy per-project copy of the contract. Use the
+Read/Write/Edit tools for all file work (not shell copy/merge commands) so
+this behaves identically on macOS, Linux, and Windows:
 
-1. **CLAUDE.md managed block.** Read `${CLAUDE_PLUGIN_ROOT}/claude-md-block.md`
-   and append its full contents to the project's `CLAUDE.md` (create the file
-   if missing). Idempotent: if the `BEGIN LEAN-WORKFLOW MANAGED BLOCK` marker
-   already exists, replace everything between (and including) the BEGIN and END
-   marker lines with the fresh copy instead of appending. Never touch content
-   outside the markers.
+1. **Opt-in (docs bootstrap).** If `.docs/index.md` is missing, run the
+   `docs` skill's initial pass: create `.docs/index.md` (Commands verified
+   against the repo's real config — package.json, Makefile, CI — plus the
+   Areas map from a structural scan) and `.docs/known-issues.md` with its
+   header. No area files — those grow with the work. Docs left by other
+   tools are neither followed nor migrated; list them in the report as
+   deletion candidates. If `.docs/index.md` already exists, the project is
+   already opted in — say so and change nothing.
 
-2. **Statusline (only if the user asked for it in the command arguments).**
+2. **Migrate the legacy CLAUDE.md block.** If the project's CLAUDE.md
+   contains the `BEGIN LEAN-WORKFLOW MANAGED BLOCK` marker, delete
+   everything between (and including) the BEGIN and END marker lines and
+   collapse the leftover blank lines. Never touch content outside the
+   markers, and never create CLAUDE.md just for this. The plugin's
+   SessionStart hook injects the current contract from now on — a
+   committed copy is redundant and goes stale.
+
+3. **Statusline (only if the user asked for it in the command arguments).**
    Read `${CLAUDE_PLUGIN_ROOT}/statusline/statusline.cjs` and Write it to
    `.claude/statusline.cjs` (no `chmod` needed — it runs via `node`; the .cjs
    extension keeps it CommonJS even in `"type": "module"` projects, and keeps
@@ -39,12 +51,6 @@ macOS, Linux, and Windows:
    (settings.json no longer points at it) — mention it in your report so the
    user can remove it, but don't fail if it's still there.
 
-3. **Docs bootstrap.** If the project already has code but no
-   `.docs/index.md`, run the `docs` skill's initial pass: create
-   `.docs/index.md` (Commands verified against the repo's real config, plus
-   the Areas map) and `.docs/known-issues.md` with its header. No area
-   files — those grow with the work. Docs left by other tools are neither
-   followed nor migrated; list them in the report as deletion candidates.
-
-Then report what was installed, updated, or already current. Do not commit
-anything.
+Then report what was installed, updated, or already current — and remind
+the user that the contract loads at session start: run `/clear` (or start
+a new session) to activate it now. Do not commit anything.
