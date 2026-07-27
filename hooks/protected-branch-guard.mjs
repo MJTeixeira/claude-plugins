@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Lean Dev Skillset PreToolUse guard — mechanical enforcement of the
+// code4food Dev Skillset PreToolUse guard — mechanical enforcement of the
 // branch-first rule: no `git commit`/`git push` on protected branches
 // (main/master/dev). Shipped by the plugin via hooks/hooks.json; claude
 // runs it before Bash calls with the event JSON on stdin. Empty stdout =
