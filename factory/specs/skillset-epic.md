@@ -64,10 +64,10 @@ overlaying only where mode genuinely differs (the verify pair,
 backlog/spec). Any future split follows the verify precedent: per-skill,
 on evidence of real divergence — never a wholesale fork.
 
-## Chunks (one PR each; every chunk needs an explicit owner yes before merge/publish)
+## Chunks (one PR each) — ALL SHIPPED 2026-07-27, overnight build authorized by owner
+(dev PRs #127-#133, mirror PR claude-plugins#43; skillset 1.5.2 → 1.10.0, factory 1.16.0 → 1.17.0)
 
-1. **Global delivery, per-project activation — the contract ships with
-   the plugin, gated by the project's own opt-in footprint.** A
+1. **Global delivery, per-project activation — SHIPPED (1.6.0 + factory 1.17.0, PR #127).** A
    SessionStart hook in the skillset plugin (matcher
    `startup|resume|clear|compact`; plugin hooks.json support and the
    10k-char output cap verified against the hooks docs — the block is
@@ -88,7 +88,7 @@ on evidence of real divergence — never a wholesale fork.
    update the plugin and re-run /setup — until then old block +
    injection coexist with near-identical content (redundant, harmless;
    ONBOARDING asks them to re-run /setup after updating).
-2. **Contract refresh — attention-lean, not token-lean.** After 1, on
+2. **Contract refresh — attention-lean, not token-lean. SHIPPED (1.7.0, PR #128).** After 1, on
    the now plugin-shipped contract: restate every cap and rule with its
    real justification (attention, risk, coordination), drop cost
    language; update plugin.json description; replace "lean" branding in
@@ -98,7 +98,7 @@ on evidence of real divergence — never a wholesale fork.
    exists, so bootstrap lives solely in /setup. Subagent caps stay but
    re-derived as coordination/context limits; chunk-5 data revisits the
    numbers later.
-3. **Risk-scaled review — finishing + code-reviewer.** Replace "exactly
+3. **Risk-scaled review — finishing + code-reviewer. SHIPPED (1.8.0, PR #129).** Replace "exactly
    once" with review scaled to risk: trivial diffs none (as today),
    normal diffs one fresh-eyes pass, diffs touching high-risk paths
    (auth, payments, migrations, CI/config — same tier philosophy as the
@@ -106,19 +106,19 @@ on evidence of real divergence — never a wholesale fork.
    shipped) PLUS adversarial verification of top findings before acting
    (verify-to-refute — the grader lesson pointed inward). The reviewer
    contract keeps the ≥80 confidence floor and correctness-gaps-only rule.
-4. **Done-evidence line — dev-workflow plan template + finishing.** Every
+4. **Done-evidence line — dev-workflow plan template + finishing. SHIPPED (1.9.0, PR #130).** Every
    plan names its end-to-end check up front ("Done evidence: <the check
    and what it must show>"), inheriting grill-me's "Done when" where a
    scope contract exists; finishing refuses "done" until that named check
    ran in-session with its output shown. Turns the verification spine
    from prose into a ratchet.
-5. **Piloted-session metrics.** A SessionEnd-hook writer producing a
+5. **Piloted-session metrics. SHIPPED (1.10.0, PR #131).** Note: ported semantics, not code — piloted transcripts split messages across lines (deduped on message.id); details in hooks/session-metrics.mjs. A SessionEnd-hook writer producing a
    per-session row schema-aligned with the factory's `metrics.jsonl`
    (endReason, turns, peakContext, denials, tool histogram) by parsing
    the session transcript the way the driver's `parseSessionStream`
    already does — port, don't reimplement. Local and owner-readable; no
    external spend. Feeds chunk 6 and future cap revisits.
-6. **Maintenance loop — mostly internal.** A maintenance discipline doc
+6. **Maintenance loop — mostly internal. SHIPPED (PR #132, .docs only; the shipped line rode chunk 2).** A maintenance discipline doc
    in this repo's `.docs/`: evaluation scenarios required for every
    changed skill (exercised in a fresh session before publish), deletion
    before addition, and the repeated-correction rule (same owner
