@@ -41,7 +41,8 @@ and pin it down — don't argue for an agenda.
 
 ## Output — the scope contract
 
-End with a ≤10-line contract and carry it into the plan's Scope section:
+End with a ≤10-line contract; if a plan follows, its `Done evidence` line
+inherits `Done when` (see `dev-workflow/references/plan-format.md`):
 
 ```
 In:        # 2-4 bullets

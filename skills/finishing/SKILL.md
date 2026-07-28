@@ -108,12 +108,14 @@ then open the PR per the forge (`git remote get-url origin`):
 
 - **GitHub**: `gh pr create --title "..." --body "..."`
 - **Bitbucket Cloud**: REST, in TWO steps:
-  1. Write the request body to a scratch file (e.g. `/tmp/pr.json`) with
+  1. Write the request body to a scratch file (gitignored scratch dir —
+     `.factory/tmp/` in factory projects, the session scratchpad
+     otherwise) with
      the Write tool — never a heredoc, never inline JSON in the command:
      `{"title": "...", "description": "...", "source": {"branch": {"name":
      "<branch>"}}, "destination": {"branch": {"name": "<target branch>"}}}`
   2. Then ONE single-line command:
-     `echo "user = \"$BITBUCKET_EMAIL:$BITBUCKET_API_TOKEN\"" | curl -sS -K - -X POST -H "Content-Type: application/json" --data @/tmp/pr.json https://api.bitbucket.org/2.0/repositories/<workspace>/<slug>/pullrequests`
+     `echo "user = \"$BITBUCKET_EMAIL:$BITBUCKET_API_TOKEN\"" | curl -sS -K - -X POST -H "Content-Type: application/json" --data @<scratch>/pr.json https://api.bitbucket.org/2.0/repositories/<workspace>/<slug>/pullrequests`
 
   A multi-line `--data '{...}'` inline in the command is what fails: the
   Bash permission matcher cannot decompose a command carrying newlines, so

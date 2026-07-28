@@ -108,8 +108,10 @@ observed usage (a task that keeps turn-capping gets more turns next time).
 ## Status (factory dev sessions REPORT, the driver EDITS)
 
 Factory dev sessions never edit `Status:` lines, index counts, or anything
-else in `.factory/backlog/` — status is reported once, in
-`.factory/log/last-session.json`, and the driver writes it into the files
+else in `.factory/backlog/` — status is reported once, via the
+`report_status` MCP tool (falling back to `.factory/log/last-session.json`
+only when the factory MCP tools are missing from the session), and the
+driver writes it into the files
 (done rides inside the merge commit; blocked gets its own commit). TRIAGE
 sessions edit backlog content: new tasks, acceptance criteria, Notes,
 hints, unblocking (`blocked → todo`, answered `needs-human → todo`),
@@ -138,8 +140,11 @@ What to report when:
   (a status only the owner clears; `blocked` is machine-clearable and
   triage may re-open it).
 - `completed` — nothing was left to do (task already merged/landed).
+- `incomplete` — you ran out of window/turns mid-task: say exactly where
+  you stopped so the next session lands the leftovers.
 - Milestone finished (all tasks done) under `milestone-gates` autonomy:
-  file the `needs-human` gate issue and report `no-tasks`; triage marks the
+  raise the gate via `open_question` (the driver files the tracker item —
+  never file it yourself) and report `no-tasks`; triage marks the
   milestone `done`/`gated` in the files until a human flips the gate to
   `active`.
 

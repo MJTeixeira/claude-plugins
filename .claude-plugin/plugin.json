@@ -1,7 +1,7 @@
 {
   "name": "code4food-skillset",
   "displayName": "code4food Skillset",
-  "version": "1.10.2",
+  "version": "1.10.3",
   "description": "Attention-lean dev workflow, injected at session start into opted-in projects: task sizing, explore/plan/TDD/verify/finishing discipline, debugging, worktrees, handoff \u2014 plus a code-reviewer agent, /commit, and a protected-branch guard hook.",
   "author": {
     "name": "Marcos Teixeira",
