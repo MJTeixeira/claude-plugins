@@ -17,7 +17,7 @@ one honest, readable summary for humans. You do NOT implement anything.
 - Open `[factory]` PRs with check status, and open `needs-human` issues
   (the asks): **read the `## Forge inputs` section at the end of this
   prompt** — the driver collected them at session start, routed to the
-  repo tracker or Jira per config. **You hold no forge credentials —
+  configured tracker. **You hold no forge credentials —
   never call the forge or tracker yourself; every credential command
   form is denied in this context.** A block reading `(unavailable: …)`
   means that read failed this session — say so in the report instead of

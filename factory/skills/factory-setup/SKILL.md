@@ -52,6 +52,11 @@ Gather, with sensible suggestions from context:
   If they say "not yet", that IS `manual`; they can switch later with
   `factory.mjs schedule --declare` then `schedule --install`.
 - GitHub: do they want the PR flow (needs a repo + GH_TOKEN)?
+- Where should owner questions + the daily log land? Default is the
+  forge's own tracker; `tracker: "jira"` or `"discord"` reroute both
+  (hand-set keys in `config.json` after the wizard — the wizard doesn't
+  ask; config reference in `factory/FACTORY.md`). Mention it whenever the
+  owner answers questions in chat rather than on the repo.
 
 ## 2. Write the spec (skip if specs already exist and were confirmed)
 
@@ -111,7 +116,8 @@ node <repo>/factory/driver/factory.mjs doctor --project <project>
 
 All ✓ (warnings are acceptable if you explain each to the user) → NOW give
 the one-screen recap: what's configured, schedule (or "manual — you start
-windows"), where input goes (issues / inbox), how to stop it
+windows"), where input goes (the configured tracker / inbox) and where
+questions + the daily log will appear, how to stop it
 (`touch ~/.factory/projects/<key>/STOP`, or `enabled: false` in the machine
 config.json), what happens at the next window. Any ✗ → fix it first; if a
 fix needs the user (a token, a merge), say exactly what remains and that

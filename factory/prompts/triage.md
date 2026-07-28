@@ -19,7 +19,7 @@ branches, no checkouts, no commits, no merges.
   driver collected the forge and tracker state for you at session start:
   open PRs with their `[factory]` conversation comments, recently merged
   PRs, and open tracker issues with comments (already routed to the
-  repo tracker or Jira per config, and epic-scoped where that applies).
+  configured tracker, and epic-scoped where that applies).
   **You hold no forge credentials — never call the forge or tracker
   yourself; every credential command form is denied in this context.**
   Work the inputs: new `(owner)`-tagged comments on `[factory]` PRs and
@@ -116,8 +116,8 @@ branches, no checkouts, no commits, no merges.
 
 Post the daily digest **with the `post_daily_log` MCP tool** (one call,
 the full markdown body, date included) — the DRIVER puts it on the
-`[factory] daily log` tracker issue with its own credentials at session
-end, routed to the repo tracker or Jira per config; never post it
+`[factory] daily log` tracker item with its own credentials at session
+end, routed to the configured tracker; never post it
 yourself. Content: what came in, what changed in the backlog, what the
 next window will likely work on (first 2-3 eligible tasks), open
 `needs-human` questions. If any tasks sit at `needs-human`, add explicit

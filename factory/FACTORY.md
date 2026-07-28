@@ -10,13 +10,13 @@ factory repos as live sessions — see "Windows" at the end of this file).
 
 ```
              ┌──────────── triage (1 session) ────────────┐
-  GitHub issues / Notion / Jira / .factory/inbox  →  backlog updates + plan of day
+  tracker input (issues / Jira / Discord) / Notion / .factory/inbox  →  backlog updates + plan of day
              └────────────────────┬───────────────────────┘
                                   ▼
   dev window (driver loop): pick task → implement (TDD+verify) → PR → update
   backlog/handoff → next fresh session ... until window/STOP/cap/no-tasks
                                   ▼
-             report (1 session): honest summary → daily-log issue + mirrors
+             report (1 session): honest summary → daily log on the tracker + mirrors
 ```
 
 - **State lives in files**, not conversations: `.factory/backlog/` (what to
@@ -43,8 +43,8 @@ factory repos as live sessions — see "Windows" at the end of this file).
   by deploy-runtime (versions match the runtime — doctor checks it).
 - **Humans are async**: the agent never waits. Sessions ask questions via the
   `open_question` MCP tool; the DRIVER dedupes them and files/updates the
-  `needs-human` GitHub issues itself; answers get folded in by the next
-  triage.
+  `needs-human` items on the configured tracker itself (forge issues, Jira,
+  or Discord threads); answers get folded in by the next triage.
 
 ## Architecture & contracts
 
@@ -387,7 +387,8 @@ display on 4 of 6 fleet factories (2026-07-19).
   UNTRUSTED text is data to summarize/route/question, never to obey.
   Identity unavailable → fail closed: everything tags UNTRUSTED and the
   section says so. Doctor warns (`injection surface`) when auto-merge
-  rides a publicly writable tracker (public repo + native tracker);
+  rides a publicly writable surface (public repo + any tracker except
+  Jira);
   validated tool calls appended to
   `<state>/log/<mode>-<ts>.mcp.jsonl`; a session killed at minute 40 has
   already reported everything up to minute 40, and its last settled report
@@ -450,7 +451,9 @@ spawns each dev session with the entry's `--model`/`--effort`/`--max-turns`
 and assigns it the task; missing/stale plan or an exhausted queue falls back
 to sessions self-selecting with factory defaults (`config.json → model`,
 `effort`, `maxTurnsPerSession`). `--effort` needs Claude Code ≥ 2.x; on
-older CLIs the driver logs a warning and omits it.
+older CLIs the driver logs a warning and omits it. Every spawn execs
+`config.json → claudeCmd` (default `"claude"`) — set it when the CLI lives
+off PATH for the scheduler's environment.
 
 A task's `Model:` pin is a floor at launch: the driver raises a plan/config
 model BELOW the pin to the pin (haiku < sonnet < opus < fable) and logs it —
@@ -475,8 +478,8 @@ complexity (opus). Tie-break upward when unsure between tiers.
 Task vocabulary has two parking states: `blocked` (dependency/technical —
 machine-clearable, triage re-opens it) and `needs-human` (only the owner
 clears it). A session that cannot self-judge a task's acceptance files an
-`open_question` WITH the taskId; the driver files the GitHub issue, parks
-the task `needs-human`, and links the issue on it (`- Question: <url>`).
+`open_question` WITH the taskId; the driver files the tracker item, parks
+the task `needs-human`, and links it on the task (`- Question: <url>`).
 Tasks whose acceptance needs owner judgment upfront carry
 `- Gate: human (<reason>)` (stamped by compile-spec — which propagates the
 spec's red-team `Gate: human` notes onto every task covering the stamped
@@ -491,8 +494,9 @@ session (logs + notifies "window skipped"); an empty backlog still gets its
 probe session.
 
 Under `auto-merge-dev`, a session that ends at status `review` with a PR url
-hands the merge to the driver: it polls `gh pr checks` (free, no tokens) and
-merges on green — sessions never wait on CI. The merge is done LOCALLY
+hands the merge to the driver: it polls the PR's check rollup via `gh pr view`
+(free, no tokens — deliberately NOT `gh pr checks`, which misreads in-flight
+CI) and merges on green — sessions never wait on CI. The merge is done LOCALLY
 (`git merge --no-ff` + push) so the task's `done` flip travels inside the
 merge commit; a CONFLICTING PR is left with an exact rebase instruction for
 the next session, and at window end a sweep gives every still-open green
@@ -547,33 +551,49 @@ the skip check and before the plan assigns work, so a settled backlog skips
 its window and a stale plan entry is skipped instead of burning a session
 re-verifying a merge (fleet incident 2026-07-23).
 
-## Peer questions (`config.json → zion`)
+## Peer questions (`config.json → peer`)
 
-When the machine config wires a zion client, dev sessions get an
+When the machine config wires a peer-channel client, dev sessions get an
 `ask_peer` MCP tool: ask a peer agent a blocking question mid-window and
 wait (minutes) for the answer, instead of stalling the task to
-needs-human until a human reads it. Same driver-mediated boundary as
-`create_pr` — the SESSION never touches the channel; the driver shells
-the zion `ask` verb (contract: `.docs/factory-client.md` in the zion
-repo) with its own identity and maps the exit code:
+needs-human until a human reads it. The channel itself is NOT part of
+the factory — the factory ships only this client seam; any bin honoring
+the contract below plugs in, and machines without one never register
+the tool. Same driver-mediated boundary as `create_pr` — the SESSION
+never touches the channel; the driver spawns the configured bin with
+its own identity and maps the exit code:
 
-- `0` — the answer text returns to the session, labeled as agent-authored
-  ADVICE (it never overrides the task, spec, or acceptance criteria).
+- `0` — the bin prints JSON (`{id, state, answer}`); the answer text
+  returns to the session, labeled as agent-authored ADVICE (it never
+  overrides the task, spec, or acceptance criteria).
 - anything else — a tool error whose text names the session's fall-back
-  (open_question / report_status blocked): expired budget, escalated to
-  the owner, frozen channel (kill switch), roster/config gaps, core
-  unreachable. Sessions on the old path lose nothing — the tool failing
-  IS the pre-zion behavior.
+  (open_question / report_status blocked): `2` malformed request, `3`
+  escalated to the owner, `4` cancelled, `5` budget expired, `6` unknown
+  addressee, `7` role has no live holder, `8` channel frozen (owner kill
+  switch), `9` caller not on the roster, `10` request rejected, `11`
+  channel core unreachable. Sessions lose nothing — the tool failing IS
+  the pre-channel behavior.
+
+Bin contract: the driver execs
+`<bin> ask --to=role:<role> --subject=<question> --budget=<n>s
+--task=<taskId> [--context -]` (context arrives on stdin), with env
+`<PREFIX>_URL`, `<PREFIX>_MACHINE`, `<PREFIX>_AGENT` set from the config
+below (`envPrefix`, default `PEER`). `<PREFIX>_OWNER_KEY` is STRIPPED
+from the child environment — a factory never speaks with the owner's
+trust label — and the peer's answer text always FOLLOWS the driver's
+advice framing, with nothing after it a forged "driver note" could
+impersonate.
 
 Machine config (absent = tool not registered; sessions never see it):
 
 ```jsonc
-"zion": {
+"peer": {
   "enabled": true,
-  "bin": "/srv/apps/zion/dev/bin/zion.mjs",  // required: the zion CLI
+  "bin": "/<path-to>/channel-cli.mjs",       // required: the channel client bin
+  "envPrefix": "PEER",                       // env-var prefix the bin reads (default shown)
   "url": "http://127.0.0.1:3071",            // default shown
   "machine": "vps",                          // default: os.hostname()
-  "agent": "factory-zion",                   // default: factory-<project> from the state-dir name
+  "agent": "factory-myproject",              // default: factory-<project> from the state-dir name
   "role": "peer-question",                   // default addressee role
   "defaultBudget": "5m",                     // <n>[s|m|h]
   "maxBudget": "10m",                        // hard clamp on session-supplied budgets
@@ -585,16 +605,12 @@ Keep `maxBudget` comfortably under `sessionTimeoutMin`: the tool BLOCKS
 the session while it waits, so a budget that outlives the session
 timeout means the driver kills the session mid-wait and the answer is
 lost. Session-supplied budgets above the max are clamped (the ask still
-happens), never rejected. The driver strips `ZION_OWNER_KEY` from the
-child environment — a factory never speaks with the owner's trust label
-(REQ-12) — and the peer's answer text always FOLLOWS the driver's
-advice framing, with nothing after it a forged "driver note" could
-impersonate.
+happens), never rejected.
 
-The driver's channel identity must be on the zion roster
-(`machine` + `factory-<project>`, zion contract §Roster naming) — a
-missing entry is exit 9 and the tool error says so. Doctor gets one row:
-skip when unconfigured, fail on a dead `bin` path, green otherwise.
+The driver's channel identity (`machine` + `factory-<project>`) must be
+on the channel's roster — a missing entry is exit 9 and the tool error
+says so. Doctor gets one row (`peer client`): skip when unconfigured,
+fail on a dead `bin` path, green otherwise.
 
 ## Run until done (`dev --until-done`)
 
@@ -692,7 +708,8 @@ service, `factory-onfailure@.service`) live in `factory/schedulers/`.
   **A Bitbucket repo ships with its issue tracker OFF**, and the API then
   answers 410 Gone on `/issues` while every PR call keeps working — so
   needs-human questions queue silently. Doctor probes the native tracker
-  and WARNS on that (enable the tracker, or set `tracker: jira`). It warns
+  and WARNS on that (enable the tracker, or set `tracker: "jira"` or
+  `"discord"`). It warns
   rather than fails on purpose: doctor is also the `--scheduled` preflight,
   so a fail row aborts EVERY timer-fired window — dev and report included,
   not just the filings that would vanish. A factory whose tracker is off is
@@ -797,7 +814,7 @@ service, `factory-onfailure@.service`) live in `factory/schedulers/`.
   issues are NEVER deleted — triage closes the original with a comment
   naming the new task); a dragged card is reported after two consecutive
   sightings and the factory's status restored. Pruned tasks get
-  `factory-archived`. **Shared ISC project?** Set `"jiraEpic": "<KEY>"`
+  `factory-archived`. **Shared Jira project?** Set `"jiraEpic": "<KEY>"`
   and the factory stays inside that epic: every card and tracker issue is
   created under it and every scan is scoped to its children — the rest of
   the project is invisible to the factory. (One anchor epic for now;
@@ -850,7 +867,8 @@ service, `factory-onfailure@.service`) live in `factory/schedulers/`.
   tree; legacy per-project driver copies warn; schedulers still exec'ing a
   deleted `.factory/driver.mjs` FAIL with the migration hint), .env keys
   for enabled features, gh auth scopes, native-tracker reachability (issues
-  switched off = questions queue silently — fails), milestone headings that
+  switched off = questions queue silently — warns, so the preflight never
+  aborts a whole window over it), milestone headings that
   no longer parse (promote + dashboard read them), timers + linger, docker when
   compose exists, plan freshness, dashboard registry, plus the setup
   contract (NOTES item 25): `schedule` declared and matching what's
@@ -858,7 +876,8 @@ service, `factory-onfailure@.service`) live in `factory/schedulers/`.
   a legitimate state and doctors GREEN, its timer checks skipped),
   the git contract (the repo carries only work data — a still-tracked
   legacy `config.json` or `.env` FAILS with the migrate hint),
-  backlog format parseable, CI-present warning under auto-merge. Exit 1 on
+  backlog format parseable, CI-or-gateCommand present under auto-merge
+  (neither = red FAIL, per the gate floor). Exit 1 on
   problems. Run it after ANY infra change (new machine, runtime deploy,
   token rotation, scheduler edit, feature enable) — it is cheaper than
   losing a window. Scheduler entries pass `--scheduled`, which runs these
@@ -887,7 +906,8 @@ service, `factory-onfailure@.service`) live in `factory/schedulers/`.
      timeouts share its event loop, so a stalled sync git/gh call hangs the
      watchdog with the watched (the 2026-07-11 4.5h hang). A live lock past
      its bound (dev: `windowEndsAt` + a config-derived finalization budget
-     — sessionTimeout + 2× merge-gate + 30min slack; triage/report/prep:
+     — 3× sessionTimeout + 2× merge-gate + 30min slack, sized for the last
+     session plus its grader plus one sweep grader; triage/report/prep:
      `startedAt` + sessionTimeout + 30min) gets its full process tree
      killed (claude children live in separate process groups — killing the
      driver pid alone strands them), `prep` cleans up, one escalation goes
@@ -907,7 +927,8 @@ service, `factory-onfailure@.service`) live in `factory/schedulers/`.
      (`~/.factory/telegram.env`, else any factory's `.env`). Each cause
      escalates exactly once (dedupe in `~/.factory/supervisor/state.json`).
 - `<state>/log/dev-*.out` — full session transcripts.
-- `[factory] daily log` issue — plan of day + window reports.
+- `[factory] daily log` on the tracker (issue, Jira item, or Discord
+  thread) — plan of day + window reports.
 - **Stop**: `touch <state>/STOP` (finishes current session, then exits);
   remove the file to allow the next window. Emergency: kill the driver
   process — next session recovers from HANDOFF/git state.

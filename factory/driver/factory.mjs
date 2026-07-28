@@ -1363,8 +1363,8 @@ if (mode === "mcp-server") {
     open_question: {
       description:
         "Ask the human owner a question that blocks or shapes work (needs-human). The DRIVER dedupes it " +
-        "against open questions and files/updates the GitHub issue itself at session end — never file " +
-        "needs-human issues with gh yourself.",
+        "against open questions and files/updates the tracker item itself at session end — never file " +
+        "needs-human items on the tracker yourself.",
       inputSchema: {
         type: "object",
         properties: {
@@ -1378,7 +1378,7 @@ if (mode === "mcp-server") {
         const title = str(a.title, 200);
         if (!title) return { error: "title (non-empty string) is required" };
         record("open_question", { title, body: str(a.body, 5000) ?? "", taskId: str(a.taskId, 80) });
-        return { text: "question recorded — the driver will file or update the GitHub issue at session end" };
+        return { text: "question recorded — the driver will file or update the tracker item at session end" };
       },
     },
     submit_plan: {
@@ -1542,18 +1542,20 @@ if (mode === "mcp-server") {
     },
   };
 
-  // ---------- ask_peer (zion peer questions — driver-mediated, spec M4) ----------
-  // Registered ONLY when this factory's machine config wires a zion client:
-  // sessions on non-zion factories never see the tool (config read once at
-  // server start — the config can't change mid-session). The driver shells
-  // the zion `ask` verb and branches on its exit-code contract (the zion
-  // repo's .docs/factory-client.md); the session gets either the answer or
-  // a concrete fall-back instruction — never channel access.
+  // ---------- ask_peer (peer questions — driver-mediated) ----------
+  // Registered ONLY when this factory's machine config wires a peer-channel
+  // client (`config.json → peer`): sessions on factories without one never
+  // see the tool (config read once at server start — the config can't
+  // change mid-session). The driver spawns the configured bin's `ask` verb
+  // and branches on the exit-code contract below (FACTORY.md §Peer
+  // questions); the session gets either the answer or a concrete fall-back
+  // instruction — never channel access. Which channel implementation sits
+  // behind the bin is machine business, not the product's.
   {
     const stateD = process.env.FACTORY_STATE_DIR;
-    const zion = stateD ? (readJson(path.join(stateD, "config.json"))?.zion ?? null) : null;
-    if (zion?.enabled && zion.bin) {
-      // <n>, <n>s, <n>m, <n>h — mirrors the zion CLI's own budget grammar so
+    const peer = stateD ? (readJson(path.join(stateD, "config.json"))?.peer ?? null) : null;
+    if (peer?.enabled && peer.bin) {
+      // <n>, <n>s, <n>m, <n>h — the budget grammar of the bin contract, so
       // a budget the child would reject as usage never spawns it at all.
       const budgetSeconds = (s) => {
         const m = /^(\d+)([smh]?)$/.exec(s ?? "");
@@ -1561,9 +1563,9 @@ if (mode === "mcp-server") {
         return Number(m[1]) * ({ "": 1, s: 1, m: 60, h: 3600 }[m[2]]);
       };
       // The driver's channel identity: the machine plus factory-<project>
-      // (zion contract §Roster naming). Derived from the STATE dir, never
+      // (the channel's roster naming). Derived from the STATE dir, never
       // --project — in mcp-server mode that points at a throwaway worktree.
-      const agent = zion.agent ?? `factory-${path.basename(stateD).replace(/-[0-9a-f]{8}$/, "")}`;
+      const agent = peer.agent ?? `factory-${path.basename(stateD).replace(/-[0-9a-f]{8}$/, "")}`;
       // The ask cap is a driver-side guarantee, so its counter must not live
       // only in the session-writable events file (a forged/truncated file
       // must never widen the cap — same premise as the submit_plan ingestion
@@ -1586,12 +1588,12 @@ if (mode === "mcp-server") {
         3: "the peer ESCALATED this to the owner in-conversation — treat as needs-human: open_question with this taskId, then report_status blocked",
         4: "the conversation was cancelled — fall back: open_question / report_status blocked",
         5: "no answer within the wait budget (expired) — fall back: open_question with this taskId / report_status blocked",
-        6: "zion rejected the addressee (not on the roster) — config gap, nobody will answer; fall back: open_question naming the missing roster entry",
-        7: "the role has no live holder — nobody will answer; fall back: open_question naming the zion responder config",
-        8: "zion is FROZEN (owner kill switch) — fall back to pre-zion behavior: open_question / report_status blocked",
-        9: "this driver's identity is not on the zion roster — config bug; fall back: open_question naming the roster entry",
-        10: "zion rejected the request as malformed — fall back: open_question / report_status blocked",
-        11: "zion core unreachable — fall back: open_question / report_status blocked",
+        6: "the channel rejected the addressee (not on the roster) — config gap, nobody will answer; fall back: open_question naming the missing roster entry",
+        7: "the role has no live holder — nobody will answer; fall back: open_question naming the responder config",
+        8: "the channel is FROZEN (owner kill switch) — fall back to pre-channel behavior: open_question / report_status blocked",
+        9: "this driver's identity is not on the channel roster — config bug; fall back: open_question naming the roster entry",
+        10: "the channel rejected the request as malformed — fall back: open_question / report_status blocked",
+        11: "channel core unreachable — fall back: open_question / report_status blocked",
       };
       TOOLS.ask_peer = {
         description:
@@ -1619,40 +1621,44 @@ if (mode === "mcp-server") {
           if (!taskId) return { error: "taskId (non-empty string) is required — it is the re-ask dedupe key" };
           const context = typeof a.context === "string" && a.context.trim() ? a.context.slice(0, 60000) : null;
           if (context && Buffer.byteLength(context) > 63000) return { error: "context exceeds the channel's 64KB message cap — post a pointer (branch, file, log path), not the artifact" };
-          const budget = str(a.budget, 20) ?? zion.defaultBudget ?? "5m";
+          const budget = str(a.budget, 20) ?? peer.defaultBudget ?? "5m";
           let seconds = budgetSeconds(budget);
           if (seconds == null) return { error: `budget "${budget}" is not <n>[s|m|h]` };
           // Hard ceiling: an unbounded budget blocks this (single-threaded)
           // server until the driver's session-timeout group-kill — the session
           // would die WAITING and lose the answer. Clamp, don't reject: the
           // ask still happens, just within a survivable wait.
-          const maxSeconds = budgetSeconds(zion.maxBudget ?? "10m") ?? 600;
+          const maxSeconds = budgetSeconds(peer.maxBudget ?? "10m") ?? 600;
           const clamped = seconds > maxSeconds;
           if (clamped) seconds = maxSeconds;
-          const cap = zion.maxAsksPerSession ?? 3;
+          const cap = peer.maxAsksPerSession ?? 3;
           if (askedSoFar() >= cap) {
             record("ask_peer", { taskId, subject: question, refused: true, reason: `session ask cap (${cap})` });
             return { text: `ask_peer cap reached (${cap} per session) — fall back: open_question / report_status blocked`, isError: true };
           }
           askedThisServer += 1;
-          // Owner-key hygiene: the zion CLI auto-sends ZION_OWNER_KEY as the
-          // owner trust label whenever it is set. The driver must never speak
-          // with the owner's voice (REQ-12: that label is the one senders
-          // cannot forge), so it is stripped even if the launching
-          // environment carries it.
+          // Env contract: the bin reads <PREFIX>_URL/_MACHINE/_AGENT;
+          // `envPrefix` is machine-config data (default "PEER") so the
+          // driver ships no channel-implementation names.
+          // Owner-key hygiene: a channel client may auto-send
+          // <PREFIX>_OWNER_KEY as the owner trust label whenever it is set.
+          // The driver must never speak with the owner's voice (that label
+          // is the one senders cannot forge), so it is stripped even if the
+          // launching environment carries it.
+          const prefix = peer.envPrefix ?? "PEER";
           const childEnv = {
             ...process.env,
-            ZION_URL: zion.url ?? "http://127.0.0.1:3071",
-            ZION_MACHINE: zion.machine ?? os.hostname(),
-            ZION_AGENT: agent,
+            [`${prefix}_URL`]: peer.url ?? "http://127.0.0.1:3071",
+            [`${prefix}_MACHINE`]: peer.machine ?? os.hostname(),
+            [`${prefix}_AGENT`]: agent,
           };
-          delete childEnv.ZION_OWNER_KEY;
+          delete childEnv[`${prefix}_OWNER_KEY`];
           // --flag=value forms: a question that legitimately starts with "-"
           // ("--force or --update?") must reach the child as a value, and
           // strict parseArgs only guarantees that for the inline form.
           const r = spawnSync(
             process.execPath,
-            [zion.bin, "ask", `--to=role:${zion.role ?? "peer-question"}`, `--subject=${question}`,
+            [peer.bin, "ask", `--to=role:${peer.role ?? "peer-question"}`, `--subject=${question}`,
              `--budget=${seconds}s`, `--task=${taskId}`, ...(context ? ["--context", "-"] : [])],
             {
               input: context ?? undefined,
@@ -1662,7 +1668,7 @@ if (mode === "mcp-server") {
             }
           );
           if (r.error || r.status === null) {
-            const reason = r.error?.code === "ETIMEDOUT" ? "zion client hung past the budget" : firstLine(r.error ?? "killed");
+            const reason = r.error?.code === "ETIMEDOUT" ? "peer bin hung past the budget" : firstLine(r.error ?? "killed");
             record("ask_peer", { taskId, subject: question, budget: `${seconds}s`, exit: null, error: reason });
             return { text: `ask_peer FAILED (${reason}) — fall back: open_question / report_status blocked`, isError: true };
           }
@@ -1687,7 +1693,7 @@ if (mode === "mcp-server") {
                 answer,
             };
           }
-          return { text: `ask_peer: ${FALLBACK[r.status] ?? `unexpected zion exit ${r.status}`}`, isError: true };
+          return { text: `ask_peer: ${FALLBACK[r.status] ?? `unexpected peer-bin exit ${r.status}`}`, isError: true };
         },
       };
     }
@@ -1882,16 +1888,16 @@ const runDoctor = () => {
     }
   } else check("skip", "allowlist", `permissionMode ${cfg.permissionMode}`);
 
-  // 4z. zion client (spec M4) — when wired, sessions get the ask_peer tool
+  // 4z. peer client — when wired, sessions get the ask_peer tool
   //     and a dead bin path would silently degrade every window to the old
   //     needs-human-only path (the tool errors, sessions fall back).
   {
-    const zion = cfg.zion;
-    if (!zion) check("skip", "zion client", "not configured — sessions have no ask_peer tool");
-    else if (!zion.enabled) check("skip", "zion client", "disabled (zion.enabled: false)");
-    else if (!zion.bin) check("fail", "zion client", 'zion.enabled without "bin" — set zion.bin to the zion CLI path (ask_peer will not register)');
-    else if (!fs.existsSync(zion.bin)) check("fail", "zion client", `zion.bin does not exist: ${zion.bin} — ask_peer registers but every ask will fail`);
-    else check("ok", "zion client", `ask_peer on — ${zion.bin}`);
+    const peer = cfg.peer;
+    if (!peer) check("skip", "peer client", "not configured — sessions have no ask_peer tool");
+    else if (!peer.enabled) check("skip", "peer client", "disabled (peer.enabled: false)");
+    else if (!peer.bin) check("fail", "peer client", 'peer.enabled without "bin" — set peer.bin to the channel CLI path (ask_peer will not register)');
+    else if (!fs.existsSync(peer.bin)) check("fail", "peer client", `peer.bin does not exist: ${peer.bin} — ask_peer registers but every ask will fail`);
+    else check("ok", "peer client", `ask_peer on — ${peer.bin}`);
   }
 
   // 5. machine runtime (O6, NOTES item 46) — schedulers, watchdog, and

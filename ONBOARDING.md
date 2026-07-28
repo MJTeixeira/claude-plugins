@@ -48,8 +48,10 @@ Install the plugin once, then wire each project:
 ```
 
 The plugin brings the skills, the `/commit` command, the code-reviewer
-agent, and a branch-guard hook (blocks `git commit`/`git push` on
-main/master/dev) everywhere it's enabled. Then, per project, run
+agent, and three hooks: the branch guard (blocks `git commit`/`git push`
+on main/master/dev), the contract injector (below), and a session-metrics
+hook (one best-effort row per opted-in session to
+`~/.claude/code4food/metrics.jsonl`). Then, per project, run
 
 ```
 /code4food-skillset:setup
@@ -130,7 +132,7 @@ they mean:
 | Window length (hours) | how long the daily dev window runs | `4` |
 | Dev window start | when the daily coding window opens | any time you like |
 | Triage time | daily reading of your notes/issues into the backlog, before dev | ~30 min before dev |
-| Report time | daily summary posted to GitHub | after the window ends |
+| Report time | daily summary posted to the configured tracker | after the window ends |
 | Work days | `Mon-Fri` or `Mon-Sun` | `Mon-Fri` |
 | Mirrors | copy status to Notion/Jira — optional | Enter (none) |
 
@@ -243,8 +245,11 @@ this file to tune behavior — nothing here is required reading on day one.
 | `effort` | *(unset)* | default reasoning effort |
 | `mirrors` | `[]` | `["notion"]` and/or `["jira"]` status mirroring — needs tokens in `.env` |
 | `forge` | `"github"` | where PRs live: `"github"` (gh CLI) or `"bitbucket"` (Bitbucket Cloud REST) — Bitbucket needs `BITBUCKET_EMAIL` + `BITBUCKET_API_TOKEN` in `.env`; Bitbucket has no native factory board, pair it with `board: {"jira": true}` if you want one |
-| `tracker` | `"native"` | the forge's own issue tracker; `"jira"` routes needs-human questions + the daily log to a Jira project instead (repo tracker off) — also set `jiraProject` and the `JIRA_*` keys in `.env` |
+| `tracker` | `"native"` | where needs-human questions + the daily log land: the forge's own issue tracker; `"jira"` routes both to a Jira project (also set `jiraProject` + `JIRA_*` keys in `.env`); `"discord"` routes both to threads in a Discord channel (also set the three `discord*` keys + `DISCORD_BOT_TOKEN` in `.env`) |
 | `jiraProject` | *(unset)* | Jira project key (e.g. `"FACT"`), required by `tracker: "jira"` and `board: {"jira": true}` |
+| `discordChannel` | *(unset)* | channel id for `tracker: "discord"` — the bot must be invited to it with Message Content intent ON |
+| `discordTag` | *(unset)* | short factory name prefixed on every thread (`[<tag>] …`) — one shared channel can serve many factories |
+| `discordOwnerId` | *(unset)* | your Discord user id — the trust anchor: only this user's replies count as owner answers |
 | `jiraEpic` | *(unset)* | anchor epic key in a SHARED Jira project — the factory creates and scans only under this epic |
 | `notify` | *(unset)* | `{"telegram": true}` for phone notifications (section 4) |
 | `board` | *(unset)* | `{"github": true}` for a GitHub Projects board, or `{"jira": true}` for a two-way Jira board (section 4) |
@@ -264,6 +269,7 @@ file is optional):
 | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` | Telegram notifications enabled |
 | `NOTION_TOKEN` | Notion mirror enabled |
 | `JIRA_BASE_URL`, `JIRA_EMAIL`, `JIRA_API_TOKEN` | Jira mirror enabled, `tracker: "jira"`, or `board: {"jira": true}` |
+| `DISCORD_BOT_TOKEN` | `tracker: "discord"` — the bot's token from the Discord developer portal |
 
 ## 4. Optional features (all off by default)
 
@@ -288,16 +294,22 @@ file is optional):
 - **Jira board** — the same two-way view on a Jira project (any forge;
   in a shared project, anchor the factory under one epic with
   `jiraEpic`). Setup: `factory/FACTORY.md` ("Jira board").
+- **Discord tracker** — questions and the daily log as threads in a
+  Discord channel, for owners who answer in chat rather than on the repo;
+  reply in the thread and the next triage folds it in. Setup:
+  `factory/FACTORY.md` ("Discord tracker").
 - **Notion / Jira mirrors** — read-mostly status copies for stakeholders:
   `config.json → mirrors` + tokens in `.env`.
 
 ## 5. Daily operation
 
-- **Feed it**: drop markdown notes in `.factory/inbox/`, or open GitHub
-  issues — the morning triage folds them into the backlog.
-- **It asks you**: `needs-human` issues on GitHub. Answer in a comment and
-  close the issue; the next triage picks it up. The `[factory] daily log`
-  issue is its report.
+- **Feed it**: drop markdown notes in `.factory/inbox/`, or file items on
+  the configured tracker — the morning triage folds them into the backlog.
+- **It asks you**: `needs-human` items on the configured tracker — repo
+  issues by default, Jira items or Discord threads if you rerouted it.
+  Answer there (comment + close the issue, or just reply in the Discord
+  thread); the next triage picks it up. The `[factory] daily log` item is
+  its report.
 - **Review PRs**: under `pr-only` this is your main job — merge what's
   good, comment on what isn't (comments on `[factory]` PRs are read at
   triage).
