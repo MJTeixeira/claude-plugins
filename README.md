@@ -1,141 +1,163 @@
 # code4food plugins for Claude Code
 
-> New here? **[ONBOARDING.md](ONBOARDING.md)** is the step-by-step from a
-> fresh machine to a working skillset and/or factory.
+Two plugins, one marketplace:
 
-Two products, one marketplace:
-
-- **`code4food-skillset`** — a token-efficient development workflow for
-  interactive Claude Code.
+- **`code4food-skillset`** — a development workflow for interactive Claude
+  Code, built on one rule: **process is proportional to task size**. Ceremony
+  goes where the stakes are, so a typo doesn't get a planning phase and a
+  feature doesn't get skipped review.
 - **`code4food-factory`** — autonomous spec-driven development: Claude builds
-  a fully-specced product alone in scheduled daily windows, opening PRs for
-  you to review.
+  a fully-specced product alone in scheduled daily windows and opens pull
+  requests for you to review.
+
+Use either or both. Everything below is the setup path; the factory's full
+manual — configuration, operations, contracts, gotchas — is
+[`factory/FACTORY.md`](factory/FACTORY.md).
 
 ## Install
 
 ```
 /plugin marketplace add MJTeixeira/claude-plugins
-/plugin install code4food-skillset@code4food
-/plugin install code4food-factory@code4food     # only if you want factories
+/plugin install code4food-skillset@code4food     # interactive workflow
+/plugin install code4food-factory@code4food      # autonomous factory
 ```
 
-Then, per project, wire the skillset's workflow rules into the project's
-CLAUDE.md:
+Requirements: **Node.js ≥ 18**, **git**, and the **Claude Code CLI** logged in
+(a Pro/Max subscription or an API key). For factories on a GitHub repo you
+also need the **GitHub CLI** logged in (`gh auth login`); Bitbucket Cloud
+repos use an Atlassian API token instead.
+
+## Using the skillset
+
+Per project, once:
 
 ```
 /code4food-skillset:setup
 ```
 
-Want the status bar too (branch, model + effort, cost, tokens, context
-size, lines changed)? Ask for it in the same command:
+That opts the project in by creating `.docs/index.md` — the signal the plugin
+watches. From then on the workflow contract is injected at session start
+wherever that file exists; nothing is written into your `CLAUDE.md` (a legacy
+managed block from an older install gets removed). Ask for the statusline in
+the same message if you want the cost/token bar.
 
-```
-/code4food-skillset:setup with statusline
-```
+**Check it worked:** open `claude` in the project and ask for something tiny
+("fix this typo in the README"). It should just make the edit — no plan, no
+subagents, no ceremony. Bigger asks pick up more process on their own.
 
-Already ran setup without it? Run it again with the word `statusline` —
-setup is safe to re-run and only adds what's missing.
+What you get: the task-sizing router; skills for the work that benefits from
+discipline (dev-workflow, tdd, debugging, worktrees, finishing, verify, docs,
+handoff, auth, db-migrations, deploy, plus Unity and Godot); a `/commit`
+command; a code-reviewer subagent; a branch guard that blocks commits on
+`main`/`master`/`dev`; and the `.docs/` convention — agent-facing project docs
+loaded a slice at a time.
 
-## Skillset
+## Setting up a factory
 
-Same core flow as heavy skillsets (explore → plan → TDD → review → PR,
-worktree isolation, persistent docs) at a fraction of the cost, because
-**process is proportional to task size**:
+Your project needs to be a git repo with a GitHub or Bitbucket Cloud remote
+(private is fine). Factories run on **macOS or Linux** — Windows machines can
+use the skillset and pilot a factory repo as a live session, but not host one.
 
-| Task size | Process | Approx. tokens |
-|---|---|---|
-| Trivial (typo, config value) | edit + verify | ~2–5k |
-| Small (contained bugfix) | one failing test → fix → run | ~8–20k |
-| Feature (new behavior, cross-layer/system) | explore → plan → approval → TDD → review → PR | ~60–130k |
+**Start with the specs, before any machinery.** With just the factory plugin
+installed — on any OS, no factory host needed — say *"spec this project"* in
+the repo. The `spec` skill runs deep interview sittings and writes
+`.factory/spec/` files, finishing with a red-team pass that resolves or
+owner-gates every judgment call. This is the highest-leverage hour of the whole
+setup: **the factory builds what the specs say, and nothing more.**
 
-For comparison, a pipeline that mandates researchers, plan docs, per-cycle
-review subagents, and a 7-subagent finishing pass costs ~250–600k tokens for
-*any* of these.
-
-What the plugin ships:
-
-- `claude-md-block.md` — a compact router the `setup` command injects into
-  the project's CLAUDE.md. Sizes each task and applies only the needed process.
-- `skills/` — twelve core skills (dev-workflow, grill-me, tdd, debugging,
-  worktrees, finishing, verify, docs, handoff, auth, db-migrations, deploy),
-  each under ~500 words, with details in `references/` files loaded only on
-  demand.
-- `skills/unity`, `skills/godot` — engine skills; their descriptions gate them
-  to engine work (MCP hang playbook, batchmode/CI gates, headless discipline,
-  capture recipes, engine-specific traps).
-- `agents/code-reviewer.md` — the single custom subagent, spawned at most once
-  per feature during finishing. Findings are confidence-scored; only ≥ 80/100
-  survives.
-- `hooks/` — a PreToolUse guard that mechanically blocks `git commit`/`git
-  push` on main/master/dev wherever the plugin is enabled. Enforcement at the
-  tool layer costs zero context tokens.
-- `/commit` — one-shot commit with git context pre-injected and
-  least-privilege `allowed-tools`.
-- `statusline/statusline.cjs` — optional status bar (branch, model + effort,
-  cost, tokens, context size, lines changed); `setup` wires it on request.
-  Runs on `node` (bundled with Claude Code) so it works on macOS, Linux, and
-  Windows with no extra tools.
-- The `.docs/` convention — agent-facing project docs: a small `index.md` map
-  plus one file per logical area, so agents load only the slice their task
-  touches.
-
-## Factory
-
-The factory is a machine-resident product: config, secrets, schedule, and
-logs live under `~/.factory/` on the machine that runs it; the project repo
-carries only work data (`.factory/{spec,backlog,inbox}`). Needs a git repo
-with a GitHub or Bitbucket Cloud remote (issue tracking can also route to
-Jira); **factories run on macOS/Linux machines** (any OS can
-spec and pilot — see below). The plugin ships the `spec` (multi-sitting
-product speccing + red-team pass — needs no factory machine),
-`factory-setup` (interview wizard),
-`backlog` (task vocabulary), and `verify` (headless verification for
-unattended sessions) skills; the driver, prompts, and schedulers live in this
-repo's `factory/` tree and run from a per-machine runtime clone.
-
-**Spec first, install later (any machine, any OS):** you don't need the
-runtime or a factory machine to start. With just the plugin installed, open
-`claude` in a new or existing project folder and say **"spec this
-project"** — deep interview sittings write `.factory/spec/` files; come
-back for more sittings any time ("are the specs ready?" runs the final
-red-team pass). When the specs are ready, move to a macOS/Linux machine
-for the factory setup below — the specs travel with the repo.
-
-Prereqs for the steps below (Node ≥ 18, `gh` and `claude` logged in):
-[ONBOARDING.md](ONBOARDING.md) step 0. **On a machine that will RUN
-factories, skip the `/plugin marketplace add` from the Install section** —
-the runtime bootstrap below registers the plugins itself (from the runtime
-clone, so sessions run exactly the deployed versions); the marketplace-add
-path is for machines that only use the skills.
-
-Once per machine, bootstrap the runtime (or run
-`/code4food-factory:deploy-runtime`):
+### 1. Machine setup (once per machine)
 
 ```sh
 git clone https://github.com/MJTeixeira/claude-plugins ~/.factory/runtime
+node ~/.factory/runtime/factory/driver/deploy-runtime.mjs
 ```
 
-Then per project:
+Factories run from that machine-resident runtime, not from your project. The
+second command also provisions both plugins from the runtime clone — on a
+factory machine, get them this way rather than via `/plugin marketplace add`,
+because the two sources would fight over the `code4food` marketplace name and
+doctor requires the marketplace to point at the runtime. It is also the update
+verb (below).
+
+### 2. Set the project up
+
+Easiest: open `claude` in the project and say **"set up a factory here"**. The
+`factory-setup` skill interviews you, turns your specs into `.factory/spec/`
+files, runs the wizard, compiles the backlog, and offers a supervised first
+window. You only paste tokens.
+
+The manual path is the wizard — one command, 11 questions, everything
+mechanical done for you:
 
 ```sh
-cd /path/to/project && claude
+node ~/.factory/runtime/factory/driver/init.mjs --project /path/to/project
 ```
 
-and say: **"set up a factory here"**. Claude interviews you, writes the
-spec files from what you paste, runs the setup wizard, compiles the task
-backlog, and offers a supervised first run. Install the schedule when it
-hands you the command and it runs daily on its own, opening PRs for you
-to merge. Health check any time:
+Enter accepts every default. The two answers worth thinking about are
+**autonomy** (start at `pr-only` — every task becomes a PR and you merge) and
+**schedule** (`manual` while you're still watching it, which is a valid, declared
+end state — doctor checks that what you declared matches what's installed).
+See FACTORY.md §Setup for what each question means, and §Configuration
+reference for every knob you can tune afterwards.
+
+Then: specs into `.factory/spec/`, compile the backlog
+(`cat ~/.factory/runtime/factory/prompts/compile-spec.md | claude`, run from
+the project), and run **one supervised window** before you schedule anything:
 
 ```sh
-node ~/.factory/runtime/factory/driver/factory.mjs doctor --project .
+node ~/.factory/runtime/factory/driver/factory.mjs dev --project /path/to/project
 ```
 
-More: [ONBOARDING.md](ONBOARDING.md) (step-by-step, config reference,
-no-chat manual path) and [factory/FACTORY.md](factory/FACTORY.md) (full
-runbook — phone dashboard, Telegram notifications, GitHub Projects or Jira
-board, autonomy levels).
+Watch it take the first task all the way to a PR. Cap it first —
+`"maxSessionsPerWindow": 2, "sessionTimeoutMin": 15` — then restore the
+defaults.
 
-## License
+### 3. Confirm it's healthy
 
-MIT
+```sh
+node ~/.factory/runtime/factory/driver/factory.mjs doctor --project /path/to/project
+```
+
+Doctor is a read-only checklist of everything that has actually cost someone a
+lost night: tools on the scheduler's PATH, workspace trust, auth scopes, stale
+runtime, schedule drift, backlog parseability. **Setup is done when doctor is
+green — not before.** Run it after any change to the machine, tokens, or
+schedulers.
+
+## Day to day
+
+- **Feed it**: drop markdown notes in `.factory/inbox/`, or file items on the
+  factory's tracker. The morning triage folds them in.
+- **It asks you**: questions land on the tracker — repo issues by default, or
+  a Jira project or Discord channel if you route them there. Answer in your own
+  time; the next triage picks it up. The `[factory] daily log` item is its report.
+- **Review PRs**: under `pr-only` this is the job. Comments on `[factory]` PRs
+  are read at triage.
+- **Stop it**: `touch <state>/STOP` finishes the current session then halts.
+  Longer pause: `"enabled": false` in the machine config.
+
+Optional extras, all off by default and all documented in FACTORY.md: a live
+web **dashboard** over every factory on the machine, **Telegram**
+notifications, two-way **kanban boards**, alternative **trackers**, and
+read-only status **mirrors** for stakeholders.
+
+## Updating
+
+```sh
+node ~/.factory/runtime/factory/driver/deploy-runtime.mjs
+```
+
+One command per **machine**, not per project: it fetches, gates the candidate
+(syntax check plus every registered factory's doctor, read-only), and
+fast-forwards the runtime only when green — so the whole machine advances at
+once, or not at all. It refuses while a window is running. Interactive
+skillset users update with `/plugin` instead.
+
+## Where things live
+
+A factory is a **machine** product. Your repo carries only work data —
+`.factory/{spec,backlog,inbox}` — while config, secrets, logs and the STOP
+file live outside git at `~/.factory/projects/<key>/`. Git can't clean it,
+clones don't carry it, and machines never share factory config through the
+repo. Full detail, and the contracts that make live sessions and multi-machine
+use safe, are in [`factory/FACTORY.md`](factory/FACTORY.md).

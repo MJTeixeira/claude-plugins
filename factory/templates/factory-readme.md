@@ -41,6 +41,6 @@ it — this file is the whole contract.
 
 The factory's machinery (driver, config, schedule, logs) lives on the
 machine that runs it, not in this repo — deleting this directory does not
-uninstall anything. Docs, setup, and the full runbook:
-https://github.com/MJTeixeira/claude-plugins (`ONBOARDING.md` and
-`factory/FACTORY.md`).
+uninstall anything. Setup and the full runbook:
+https://github.com/MJTeixeira/claude-plugins (its `README.md` for install and
+setup, `factory/FACTORY.md` for the manual).
