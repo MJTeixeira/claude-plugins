@@ -279,8 +279,9 @@ node ~/.factory/runtime/factory/driver/init.mjs --project /path/to/project
 It writes NOTHING to the repo beyond `.factory/{spec,backlog,inbox}` — no
 CLAUDE.md, no `.claude/`, no scaffold commit. Left for you afterwards:
 specs into `.factory/spec/`, `GH_TOKEN` into `<state>/.env`, compile the
-backlog (`cat <repo>/factory/prompts/compile-spec.md | claude` — prompts
-live in the runtime, not the project), one manual test window, and
+backlog (`cat ~/.factory/runtime/factory/prompts/compile-spec.md | claude`,
+run from the project — prompts live in the runtime, not the project), one
+manual test window, and
 `factory.mjs schedule --install` if you declared a schedule (it prints the
 exact command). **Setup is DONE when doctor is green — not before.**
 `schedule: manual` (no independent runs) is a valid, declared end state;
@@ -318,6 +319,68 @@ Reference — what the wizard settles and why it matters:
   call denied.
 - Specs: pattern in `factory/templates/spec-template.md` (runtime) —
   numbered REQ ids make coverage checkable; any spec still compiles.
+
+## Configuration reference (`<state>/config.json`)
+
+The ONE table for every key the driver reads — the sections below explain the
+behaviour, this says what exists and what it defaults to. `init` writes
+sensible values for all of them; `migrate` heals keys added by a later
+runtime (never inventing `enabled`). A doc-coverage ratchet
+(`factory/driver/test/docs-coverage.test.mjs`) fails the build if this table
+and the driver disagree in EITHER direction, so a new key is unmergeable
+without its row.
+
+| Key | Default | What it does |
+|---|---|---|
+| `enabled` | `true` | `false` = factory OFF: dev/triage/report refuse (scheduled fires exit silently); doctor, prep, board sync and runtime updates keep working. The pause switch — never pause by disabling timers, that is undeclared drift and fails doctor |
+| `schedule` | *(from `init`)* | the schedule DECLARATION `{kind, timezone?, modes: {triage/dev/report: {time, days}}}`; `factory.mjs schedule` projects it onto the machine and doctor fails on drift either way. Edit via `schedule --declare`, not by hand |
+| `stack` | *(auto-detected)* | main language; picks the allowlist preset injected into every session worktree |
+| `allow` | *(unset)* | extra allowlist entries appended to the stack preset — widen when logs show legitimate denials |
+| `windowHours` | `4` | length of the daily dev window |
+| `maxSessionsPerWindow` | `12` | hard cap on sessions per window |
+| `maxTurnsPerSession` | `80` | hard cap on agent turns per session |
+| `sessionTimeoutMin` | `45` | wall-clock kill for a hung session |
+| `autonomy` | `"pr-only"` | who merges PRs — `pr-only`, `auto-merge-dev`, `milestone-gates` (§Autonomy levels) |
+| `baseBranch` | `"dev"` | branch the agent's PRs target — never your `main` |
+| `model` | `"sonnet"` | default session model (also seeds `triageModel`); backlog tasks override via `Model:`/`Effort:`/`Turns:` |
+| `effort` | *(unset)* | default reasoning effort; needs Claude Code ≥ 2.x |
+| `triageModel` | *(= `model`)* | triage-only model. Planning gates everything downstream, so cheap dev sessions can pair with strong triage |
+| `graderModel` | `"opus"` | the acceptance grader's model — deliberately NOT `model` (§Verification & review contract) |
+| `mergeGateMinutes` | `10` | how long the gate polls CI before leaving a PR for the sweep (auto-merge only) |
+| `gateCommand` | `null` | repo suite the gate runs on the MERGED tree before pushing (e.g. `"npm ci --silent && npm test"`); `null` = rely on CI. With NEITHER, the gate refuses to auto-merge and doctor goes red |
+| `gateSuiteTimeoutMin` | `15` | wall-clock bound on `gateCommand`; a timeout counts as a failed suite |
+| `riskTiers` | `{"high": []}` | path prefixes (end dirs with `/`) whose PRs always park for owner review. A malformed value FAILS doctor rather than silently disabling the floor |
+| `toolchain` | *(unset)* | external tools the window needs, `[{"name": "godot", "check": "godot --version"}]` — one doctor row each, so a missing tool stops the window before it burns sessions. Malformed = doctor fail |
+| `noProgressSessions` | `3` | `dev --until-done` only: sessions a task may burn without settling before it parks `needs-human` |
+| `permissionMode` | `"dontAsk"` | keep it; `"bypassPermissions"` only inside a container/VM you could afford to lose |
+| `claudeCmd` | `"claude"` | binary to launch; set it when the CLI lives off the scheduler's PATH |
+| `forge` | `"github"` | where PRs live: `"github"` (gh CLI) or `"bitbucket"` (Cloud REST) — see §Scheduling → Forge |
+| `tracker` | *(the forge's own)* | where needs-human questions + the daily log land: the forge's tracker (legacy value `"github"`), `"jira"`, or `"discord"` |
+| `jiraProject` | *(unset)* | Jira project key (e.g. `"FACT"`), required by `tracker: "jira"` and `board: {"jira": true}` |
+| `jiraEpic` | *(unset)* | anchor epic key in a SHARED Jira project — everything is created under it and scans never leave it |
+| `discordChannel` | *(unset)* | channel id for `tracker: "discord"`; the bot must be invited with Message Content intent ON |
+| `discordTag` | *(unset)* | short factory name prefixed on every thread (`[<tag>] …`) so one channel serves many factories. Hand-set — it is identity, never derived from a path |
+| `discordOwnerId` | *(unset)* | the owner's Discord user id — the trust anchor: only this user's replies count as owner answers |
+| `board` | *(unset)* | `{"github": true}` for a GitHub Projects board, or `{"jira": true}` for the two-way Jira board |
+| `mirrors` | `[]` | `["notion"]` and/or `["jira"]` read-mostly status mirroring — needs tokens in `.env` |
+| `notify` | *(unset)* | `{"telegram": true}` for phone notifications (§Monitoring & control) |
+| `peer` | *(unset)* | peer-channel client for the `ask_peer` tool (§Peer questions); absent = the tool is never registered |
+
+There is no per-dollar cap in Claude Code — `windowHours`,
+`maxSessionsPerWindow`, `maxTurnsPerSession` and `sessionTimeoutMin`
+together ARE the budget.
+
+**Secrets — `<state>/.env`** (machine-side, the whole file optional):
+
+| Key | Needed when |
+|---|---|
+| `GH_TOKEN` | the factory should act as a different GitHub identity than your `gh` login (e.g. a machine user) |
+| `BITBUCKET_EMAIL`, `BITBUCKET_API_TOKEN` | `forge: "bitbucket"` — an Atlassian API token scoped to the factory's repo(s), never a personal full-access one. The basic-auth username is the account EMAIL |
+| `ANTHROPIC_API_KEY` | the machine has no logged-in Claude subscription |
+| `JIRA_BASE_URL`, `JIRA_EMAIL`, `JIRA_API_TOKEN` | the Jira mirror, `tracker: "jira"`, or `board: {"jira": true}` |
+| `DISCORD_BOT_TOKEN` | `tracker: "discord"` — the bot token from the Discord developer portal |
+| `NOTION_TOKEN` | the Notion mirror (internal integration token — OAuth does NOT work headless) |
+| `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` | `notify: {"telegram": true}` |
 
 ## Autonomy levels (`config.json → autonomy`)
 
@@ -691,7 +754,12 @@ service, `factory-onfailure@.service`) live in `factory/schedulers/`.
   surface at the gate's local merge (the API has no conflict pre-check),
   needs-human questions file into the repo's NATIVE issue tracker unless
   the Jira tracker below is configured, and dashboard check-chips read
-  "none" until Pipelines statuses are wired. Sessions and the `finishing`
+  "none" until Pipelines statuses are wired. PR creation always sends
+  `destination` explicitly: omit it and the API opens the PR against the
+  repo's main branch, not the factory's base — worth eyeballing on a new
+  Bitbucket factory's FIRST PR. The dashboard's forge reads cap at 15s and
+  degrade to empty cards rather than failing the page, so a slow Bitbucket
+  shows a thin dashboard, not a broken one. Sessions and the `finishing`
   skill are forge-neutral — a
   Bitbucket factory ran its first live client pilot 2026-07-19: build,
   verify, review, session pushes, the turn-cap resume chain and the merge
