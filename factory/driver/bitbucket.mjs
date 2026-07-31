@@ -145,6 +145,11 @@ export const bitbucketForge = ({ project, env = {} }) => {
     // Explicit false only: an unreadable/missing visibility must never
     // read as "publicly writable".
     repoIsPublic: () => json(base()).is_private === false,
+    // The repo's configured main branch — bb's destination fallback when no
+    // factory config supplies a baseBranch (a PR must always send an
+    // explicit destination; omitted, Bitbucket defaults to this anyway but
+    // silently, and the caller can't log what it targeted).
+    repoMainBranch: () => json(base()).mainbranch?.name ?? "main",
 
     issueListOpen: () => (json(`${base()}/issues?pagelen=100&q=${OPEN_ISSUE_Q}`).values ?? [])
       .filter((i) => OPEN_ISSUE_STATES.has(i.state)) // belt over the q= braces

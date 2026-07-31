@@ -107,7 +107,11 @@ git push -u origin <branch>
 then open the PR per the forge (`git remote get-url origin`):
 
 - **GitHub**: `gh pr create --title "..." --body "..."`
-- **Bitbucket Cloud**: REST, in TWO steps:
+- **Bitbucket Cloud, when `bb` is on PATH** (factory machines install it):
+  `bb pr create --title "..." --body "..."` — it resolves credentials and
+  the destination branch itself (`bb` alone prints usage). Also
+  `bb pr list|view|merge|comment`.
+- **Bitbucket Cloud, no `bb`**: REST, in TWO steps:
   1. Write the request body to a scratch file (gitignored scratch dir —
      `.factory/tmp/` in factory projects, the session scratchpad
      otherwise) with
@@ -135,9 +139,9 @@ isn't visible in the diff.
 PR body: what/why/how-verified in ~20 lines. No boilerplate branding. Land
 before polish — a mergeable PR now beats prose later.
 
-Then check CI ONCE — `gh pr checks <pr>`, or on Bitbucket
-`GET .../pullrequests/<id>/statuses` (empty = the repo has no CI; that's a
-pass, not a pending). If it fails, fix and push. If it's still pending,
+Then check CI ONCE — `gh pr checks <pr>`, or on Bitbucket `bb pr view <pr>`
+(checks line; without `bb`: `GET .../pullrequests/<id>/statuses`; empty =
+the repo has no CI; that's a pass, not a pending). If it fails, fix and push. If it's still pending,
 report the PR URL and stop — do not poll in a loop; the user can ask you to
 check later.
 

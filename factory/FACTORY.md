@@ -104,6 +104,15 @@ built to interleave with them:
   the directory.
 - **End every live session pushed** (merged or as a PR). Unpushed work is
   invisible to the factory and to your other machines.
+- **Bitbucket repos: use `bb`** — the runtime ships a gh-style PR CLI
+  (`factory/driver/bb.mjs`, symlinked onto PATH at machine setup):
+  `bb pr create|list|view|merge|comment`, `bb` alone for usage. It reuses
+  the driver's forge adapter and resolves credentials from the registered
+  factory's state `.env`, so live sessions never touch tokens or curl
+  (session credential forms are proven dead on Bitbucket). `pr create`
+  defaults the destination to the factory's `baseBranch` and always sends
+  it explicitly. Non-factory Bitbucket repos work too, via
+  `BITBUCKET_EMAIL` + `BITBUCKET_API_TOKEN` in the environment.
 - **Update the `Status:` lines of tasks you shipped** as part of what you
   merge — your own tasks only, never index counts or other tasks' lines —
   so triage doesn't re-discover work you already did, and any number of
