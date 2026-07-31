@@ -606,8 +606,40 @@ const addWorktree = (name, ref = null) => {
   return p;
 };
 
+// A worktree's branch is a ref in the SHARED .git — dropping the worktree
+// leaves it behind forever, and nothing else prunes it (161 stale factory/*
+// refs across the nine fleet checkouts by 2026-07-28, burying the owner's
+// own branches in `git branch` output). Prune only refs with no unique
+// work: merged into the base tip, or on origin at the same sha (remote
+// copies are fine to keep — only the local ref has no consumer). Anything
+// else is unmerged local work and must survive.
+const pruneLocalBranch = (name, context) => {
+  if (!name || name === cfg.baseBranch) return;
+  let sha;
+  try { sha = git(["rev-parse", "--verify", "--quiet", `refs/heads/${name}`]); } catch { return; }
+  const merged = gitOk(["merge-base", "--is-ancestor", sha, startRef()]);
+  let onOrigin = false;
+  try { onOrigin = git(["rev-parse", "--verify", "--quiet", `refs/remotes/origin/${name}`]) === sha; } catch { /* no remote copy */ }
+  if (!merged && !onOrigin) {
+    log(`${context}: branch ${name} has unmerged local work — keeping it`);
+    return;
+  }
+  try {
+    git(["branch", "-D", name]);
+    log(`${context}: pruned local branch ${name} (${merged ? "merged into base" : "on origin at the same sha"})`);
+  } catch (e) {
+    // Checked out in another worktree, or a concurrent delete — best effort.
+    log(`${context}: could not prune branch ${name} (${firstLine(e)})`);
+  }
+};
+
 const removeWorktree = (p, context) => {
   if (!p) return;
+  // The branch checked out in there, if any (worktrees are added detached;
+  // sessions create their task branch themselves) — captured before removal,
+  // pruned after: the ref outlives the worktree in the shared .git.
+  let branch = null;
+  try { branch = git(["symbolic-ref", "--short", "-q", "HEAD"], p); } catch { /* detached or gone */ }
   // A dirty throwaway worktree is a capped/killed session's uncommitted
   // work — copy the bytes to log/quarantine-* before --force destroys them
   // (NOTES item 45: fleet task T-034 lost 121 turns this way; the checkout
@@ -627,6 +659,7 @@ const removeWorktree = (p, context) => {
     try { fs.rmSync(p, { recursive: true, force: true }); } catch { /* leave for manual cleanup */ }
     gitOk(["worktree", "prune"]);
   }
+  pruneLocalBranch(branch, context);
 };
 
 // prep-only: a LOCKED registered worktree whose locker died lingers forever —
@@ -3720,6 +3753,7 @@ const landMerge = async ({ pr, view, taskId }) => {
       pushMetaBase();
       log(`merge-gate: checks green — merged ${pr}${applied.length ? ` (${applied.join(", ")})` : ""}`);
       journal("gate:merge", "done", `${pr}${applied.length ? ` (${applied.join(", ")})` : ""}`);
+      pruneLocalBranch(view.headRefName, "merge-gate");
       await notify(`✚ merged ${pr}${taskId ? ` (${taskId})` : ""}`);
       return null; // status handled — nothing for the next session
     } catch (e) {
@@ -3764,6 +3798,7 @@ const landMerge = async ({ pr, view, taskId }) => {
       writeState(s);
     }
     log(`merge-gate: merged ${pr} via gh fallback${flips.length ? ` (${taskId} flip pending)` : ""}`);
+    pruneLocalBranch(view.headRefName, "merge-gate");
     await notify(`✚ merged ${pr}${taskId ? ` (${taskId})` : ""} (gh fallback)`);
     return null;
   } catch (e) {
@@ -3823,6 +3858,7 @@ const mergeGate = async ({ pr, taskId }, budgetMs = cfg.mergeGateMinutes * 60 * 
           log(`merge-gate: flip after external merge failed (${firstLine(e)}) — kept pending`);
         }
       }
+      if (view.state === "MERGED") pruneLocalBranch(view.headRefName, "merge-gate");
       return null;
     }
     if (view.mergeable === "CONFLICTING") {
@@ -3951,6 +3987,10 @@ const closeOwnerMergedGates = () => {
         log(`sweep: ${id} ${rec.status === "review" ? "closed" : "approved"} — owner merged ${rec.pr}`);
         journal(rec.status === "review" ? "gate:external-merge" : rec.parkedBy === "risk" ? "gate:risk-approved" : "gate:human-approved", "done", `${rec.pr} (${id})`);
       }
+      // The merged PR's head branch may still be a local ref in the shared
+      // .git — prune it with the flip. prView only here, on the (rare)
+      // merged case: prState stays the cheap per-sweep pre-check.
+      pruneLocalBranch(forge.prView(rec.pr).headRefName, "sweep");
     } catch (e) {
       log(`sweep: could not check parked PR ${rec.pr} (${firstLine(e)}) — next sweep retries`);
     }
