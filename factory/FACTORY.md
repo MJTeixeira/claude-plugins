@@ -957,8 +957,9 @@ service, `factory-onfailure@.service`) live in `factory/schedulers/`.
   a legitimate state and doctors GREEN, its timer checks skipped),
   the git contract (the repo carries only work data — a still-tracked
   legacy `config.json` or `.env` FAILS with the migrate hint),
-  backlog format parseable, Verify-line tiers (a non-done task whose
-  `Verify:` only re-runs the suite/gateCommand warns — the grader executes
+  backlog format parseable, Verify-line tiers (a non-done task warns when
+  its `Verify:` only re-runs the suite/gateCommand, or skips the
+  engine-tier tests its own acceptance names — the grader executes
   the line verbatim; the same lint feeds the triage prompt),
   CI-or-gateCommand present under auto-merge
   (neither = red FAIL, per the gate floor). Exit 1 on

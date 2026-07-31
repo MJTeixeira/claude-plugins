@@ -292,13 +292,54 @@ export const verifyTier = (verify, gateCommand = null) => {
   return "suite"; // every command a suite/setup/gate run — nothing drove the product
 };
 
+// ---------- Acceptance↔Verify cross-check (the split-tier trap, NOTES item 69) ----------
+// In a split-tier engine project (godot/unity skill: keep the game project
+// out of the root solution so the plain suite stays engine-free), a Verify
+// line can drive the product AND run a suite yet still never execute the
+// tests its own acceptance names — bare `dotnet test` reads as "the tests
+// ran" while silently skipping the engine tier. The solo tier check can't
+// see it: the line looks product-tier. So when an acceptance criterion
+// couples a test reference with an engine marker, the Verify line must
+// couple a test invocation with engine/target scoping somewhere.
+//
+// Same conservatism as verifyTier, applied edge by edge:
+// - acceptance fires only when ONE criterion holds both signals — a test
+//   mention in one bullet and a scene in another prove nothing together;
+// - "engine"/"headless"/"scene" alone are NOT acceptance markers (rules
+//   engines, headless browsers); the `engine test` bigram is;
+// - verify side, a test token next to an engine token OR any path argument
+//   passes — a scoped target (`dotnet test game/X.csproj`, `pytest
+//   tests/engine/`) is the author's deliberate choice the lint can't
+//   second-guess — and a `cd` prelude plus a test token anywhere passes too;
+// - gateCommand segments never rescue: in the proven incident the gate
+//   suite WAS the engine-free tier.
+const ACCEPT_TEST_RE = /\btests?\b/i;
+const ACCEPT_ENGINE_RE = /\b(?:godot|unity|gdunit4?|gut|autoload|prefab)\b|res:\/\/|\.tscn\b|\.tres\b|engine[- ]tests?\b|in-engine\b/i;
+const VERIFY_ENGINE_RE = /\b(?:godot|unity|gdunit4?|gut|engine)\b|res:\/\//i;
+
+const acceptanceNamesEngineTests = (acceptance) =>
+  (acceptance ?? []).some((c) => ACCEPT_TEST_RE.test(c) && ACCEPT_ENGINE_RE.test(c));
+
+const invokesEngineTests = (verify) => {
+  const segs = segments(norm(String(verify ?? ""))).map((s) => s.replace(WRAPPER, ""));
+  const hasTest = (s) => /test/i.test(s);
+  if (segs.some((s) => hasTest(s) && (VERIFY_ENGINE_RE.test(s) || s.includes("/")))) return true;
+  return segs.some((s) => /^cd[ \t]+\S/.test(s)) && segs.some(hasTest);
+};
+
 // The lint doctor and triage consume: non-done tasks whose Verify line the
 // tier check is sure about. Done tasks already shipped — their weak lines
-// are history, not work.
+// are history, not work. Solo tier first; only lines that pass it get the
+// acceptance cross-check (tier "engine") — one report per task, the more
+// fundamental defect wins.
 export const lintVerify = (tasks, gateCommand = null) =>
   tasks
     .filter((t) => t.status !== "done")
-    .map((t) => ({ id: t.id, epic: t.epic, status: t.status, verify: t.verify ?? null, tier: verifyTier(t.verify, gateCommand) }))
+    .map((t) => {
+      let tier = verifyTier(t.verify, gateCommand);
+      if (tier === "product" && acceptanceNamesEngineTests(t.acceptance) && !invokesEngineTests(t.verify)) tier = "engine";
+      return { id: t.id, epic: t.epic, status: t.status, verify: t.verify ?? null, tier };
+    })
     .filter((t) => t.tier !== "product");
 
 // Every task in a backlog directory. index.md holds milestones, never tasks.

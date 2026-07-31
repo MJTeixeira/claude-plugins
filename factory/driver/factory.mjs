@@ -2285,8 +2285,8 @@ const runDoctor = () => {
       const flagged = lintVerify(all, cfg.gateCommand);
       check(flagged.length ? "warn" : "ok", "Verify lines",
         flagged.length
-          ? `${flagged.length} non-done task(s) prove nothing beyond the suite/gate — the grader runs these verbatim; triage should make them drive the product: ${flagged.map((t) => `${t.id}=${t.tier}`).join(", ").slice(0, 120)}`
-          : "none flagged (missing or suite-only)");
+          ? `${flagged.length} non-done task(s) whose Verify won't prove the task — missing, suite-only, or skipping the engine tests the acceptance names; the grader runs these verbatim, triage should fix them: ${flagged.map((t) => `${t.id}=${t.tier}`).join(", ").slice(0, 120)}`
+          : "none flagged (missing, suite-only, or engine cross-check)");
     }
   }
 
@@ -3425,9 +3425,12 @@ const runSingle = async (name) => {
     const flagged = lintVerify(effectiveTasks(), cfg.gateCommand);
     if (flagged.length) {
       promptText += `\n\n## Verify-line lint (driver-computed — fix these with your other backlog edits)\n\n` +
-        `These tasks' \`Verify:\` lines prove nothing beyond what the merge gate/CI already runs. ` +
-        `The acceptance grader executes them verbatim, so rewrite each to DRIVE THE PRODUCT (the backlog skill's Verify tiers):\n\n` +
-        flagged.map((t) => `- ${t.id} (${t.epic}, ${t.status}) — ${t.tier === "missing" ? "no Verify line" : `suite-only: \`${t.verify}\``}`).join("\n") + "\n";
+        `These tasks' \`Verify:\` lines won't prove their task. ` +
+        `The acceptance grader executes them verbatim, so rewrite each to DRIVE THE PRODUCT and run the tests the acceptance names (the backlog skill's Verify tiers):\n\n` +
+        flagged.map((t) => `- ${t.id} (${t.epic}, ${t.status}) — ${
+          t.tier === "missing" ? "no Verify line"
+          : t.tier === "engine" ? `acceptance names engine-tier tests this line never runs: \`${t.verify}\``
+          : `suite-only: \`${t.verify}\``}`).join("\n") + "\n";
     }
   }
   // Triage/report consume the forge through the driver's eyes — they hold
