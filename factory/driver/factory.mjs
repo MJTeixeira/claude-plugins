@@ -255,7 +255,12 @@ const readSessionResult = (factoryDir) => {
   const p = path.join(factoryDir, "log", "last-session.json");
   if (!fs.existsSync(p)) return null;
   try {
-    return JSON.parse(fs.readFileSync(p, "utf8"));
+    const r = JSON.parse(fs.readFileSync(p, "utf8"));
+    // Session-authored, no validating layer in between (the MCP path
+    // validates; this fallback file does not): a result without a settled
+    // status is not a result — the caller derives the session status from
+    // it unguarded, and a truthy-but-statusless one crashes the window.
+    return typeof r?.status === "string" && r.status ? r : null;
   } catch {
     return null;
   }
@@ -843,10 +848,18 @@ const noteRuntimeStatus = (taskId, status, prUrl) => {
   writeState(s);
 };
 
+// Session-reported task ids are free text (the MCP tool caps length only;
+// the last-session.json fallback validates nothing) and land in `new RegExp`
+// below. The backlog parser only ever produces ids of this shape — anything
+// else is dropped before it can crash the window (unbalanced metacharacters)
+// or, worse, match ANOTHER task's heading and flip it silently ("T-0.*").
+const validTaskId = (id) => typeof id === "string" && /^T-[\w-]+$/.test(id);
+
 // Edit the Status: line of one task in its epic file (in the meta worktree —
 // tracked metadata is written there and pushed, never in the owner's
 // checkout). Idempotent.
 const setTaskStatusInFiles = (taskId, status) => {
+  if (!validTaskId(taskId)) return { ok: false, reason: `invalid task id ${JSON.stringify(taskId)}` };
   const dir = path.join(runtimeFactoryDir(), "backlog");
   if (!fs.existsSync(dir)) return { ok: false, reason: "no backlog dir" };
   for (const f of fs.readdirSync(dir).filter((f) => f.endsWith(".md") && f !== "index.md")) {
@@ -871,6 +884,7 @@ const setTaskStatusInFiles = (taskId, status) => {
 // Link a filed question issue on its task (`- Question: <url>` under the
 // Status line) so the owner and the board can jump to it. Idempotent.
 const addTaskLinkInFiles = (taskId, url) => {
+  if (!validTaskId(taskId)) return false;
   const dir = path.join(runtimeFactoryDir(), "backlog");
   if (!fs.existsSync(dir)) return false;
   for (const f of fs.readdirSync(dir).filter((f) => f.endsWith(".md") && f !== "index.md")) {

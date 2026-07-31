@@ -41,7 +41,11 @@ export const readEnvFile = (stateRoot) => {
 // state.json, registry.json) — a crash mid-write must never leave a torn file.
 export const writeJsonAtomic = (p, value) => {
   fs.mkdirSync(path.dirname(p), { recursive: true });
-  const tmp = p + ".tmp";
+  // Per-process temp name: several drivers write the same machine-global
+  // targets concurrently (every factory's trustWorkspace rewrites
+  // ~/.claude.json on each addWorktree) — a shared temp path lets one
+  // writer rename another's half-written file over the target.
+  const tmp = `${p}.${process.pid}.tmp`;
   fs.writeFileSync(tmp, JSON.stringify(value, null, 2) + "\n");
   fs.renameSync(tmp, p);
 };
