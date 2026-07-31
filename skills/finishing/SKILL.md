@@ -111,26 +111,10 @@ then open the PR per the forge (`git remote get-url origin`):
   `bb pr create --title "..." --body "..."` — it resolves credentials and
   the destination branch itself (`bb` alone prints usage). Also
   `bb pr list|view|merge|comment`.
-- **Bitbucket Cloud, no `bb`**: REST, in TWO steps:
-  1. Write the request body to a scratch file (gitignored scratch dir —
-     `.factory/tmp/` in factory projects, the session scratchpad
-     otherwise) with
-     the Write tool — never a heredoc, never inline JSON in the command:
-     `{"title": "...", "description": "...", "source": {"branch": {"name":
-     "<branch>"}}, "destination": {"branch": {"name": "<target branch>"}}}`
-  2. Then ONE single-line command:
-     `echo "user = \"$BITBUCKET_EMAIL:$BITBUCKET_API_TOKEN\"" | curl -sS -K - -X POST -H "Content-Type: application/json" --data @<scratch>/pr.json https://api.bitbucket.org/2.0/repositories/<workspace>/<slug>/pullrequests`
-
-  A multi-line `--data '{...}'` inline in the command is what fails: the
-  Bash permission matcher cannot decompose a command carrying newlines, so
-  restricted permission modes deny it outright. The body file keeps the
-  command one line and short.
-  (workspace/slug from the origin URL; keys are an Atlassian API token —
-  the username is the account EMAIL — and ride stdin via `-K -`, never
-  `-u`: argv is visible to every process on the host. Always set
-  `destination`; omitted, Bitbucket targets the repo's main branch.)
-  Keys not in the env? Push, then give the user the create-PR link instead:
-  `https://bitbucket.org/<workspace>/<slug>/pull-requests/new?source=<branch>`
+- **Bitbucket Cloud, no `bb`**: REST — read
+  `references/bitbucket-rest-pr.md` first; the command SHAPE is the trap
+  (body via scratch file, creds via stdin, one-line command), not the
+  endpoint.
 
 Commit subject: `<area>: <imperative summary>`, ≤ 72 chars, matching the
 repo's existing style (`git log --oneline -10`); body only when the why

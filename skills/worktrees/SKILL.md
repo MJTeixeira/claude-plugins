@@ -5,6 +5,11 @@ description: Need an isolated workspace for feature-sized work while the repo si
 
 # Git worktrees
 
+**Unity projects: don't.** Unity editors pin one project path and .NET
+marks dot-prefixed ancestor dirs Hidden, breaking config loading — branch
+in-checkout instead (the `unity` skill's rule; load order must not decide
+this).
+
 ## Create
 
 From the main worktree root:
