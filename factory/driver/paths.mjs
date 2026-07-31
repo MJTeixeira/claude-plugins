@@ -49,3 +49,13 @@ export const writeJsonAtomic = (p, value) => {
   fs.writeFileSync(tmp, JSON.stringify(value, null, 2) + "\n");
   fs.renameSync(tmp, p);
 };
+
+// Workspace trust (~/.claude.json): BOTH flags are required for a session
+// to actually work — hasTrustDialogAccepted alone lets it run, but Claude
+// Code only applies the project's `.claude/settings.json` allowlist (and
+// its hooks) once hasCompletedProjectOnboarding is also set; without it a
+// dontAsk session denies even `echo` (NOTES item 42). One home for the
+// pair: the driver's trustWorkspace, init's trust step, and doctor's
+// projectTrusted all read THIS object — stamping one flag while checking
+// the other is how the half-trusted legacy state grew (review S12).
+export const TRUST_FLAGS = { hasTrustDialogAccepted: true, hasCompletedProjectOnboarding: true };

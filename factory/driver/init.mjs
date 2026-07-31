@@ -21,7 +21,7 @@ import * as os from "node:os";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import * as readline from "node:readline/promises";
-import { stateDir, writeJsonAtomic } from "./paths.mjs";
+import { stateDir, writeJsonAtomic, TRUST_FLAGS } from "./paths.mjs";
 import { detectStack, stampFactoryGitignore, stampFactoryReadme } from "./workspace.mjs";
 import { PLATFORM_SCHEDULER, DEFAULTS, buildConfig } from "./config.mjs";
 
@@ -172,10 +172,13 @@ const step_trust = () => {
   if (!fs.existsSync(p)) return skip("workspace trust (~/.claude.json not found — run claude once first)");
   const j = JSON.parse(fs.readFileSync(p, "utf8"));
   j.projects ??= {};
-  if (j.projects[project]?.hasTrustDialogAccepted === true) return skip("workspace trust (already trusted)");
+  // Both TRUST_FLAGS (paths.mjs) — stamping only the dialog flag left
+  // non-git sessions running without the project allowlist (review S12);
+  // a half-stamped legacy entry is completed, never skipped.
+  if (Object.entries(TRUST_FLAGS).every(([f, v]) => j.projects[project]?.[f] === v)) return skip("workspace trust (already trusted)");
   const bak = p + ".bak-factory-init";
   if (!fs.existsSync(bak)) fs.copyFileSync(p, bak);
-  j.projects[project] = { ...(j.projects[project] ?? {}), hasTrustDialogAccepted: true };
+  j.projects[project] = { ...(j.projects[project] ?? {}), ...TRUST_FLAGS };
   writeJsonAtomic(p, j); // atomic: a torn ~/.claude.json breaks every session on the machine
   done("workspace trusted for headless allowlist use");
 };

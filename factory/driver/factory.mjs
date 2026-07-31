@@ -15,7 +15,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
 import { fileURLToPath } from "node:url";
-import { factoryKey, stateDir, writeJsonAtomic, readEnvFile } from "./paths.mjs";
+import { factoryKey, stateDir, writeJsonAtomic, readEnvFile, TRUST_FLAGS } from "./paths.mjs";
 import { materializeWorkspace, isInjectedPath, factorySkillNames, stripFactorySettings, buildSessionSettings, detectStack, detectEngines, missingGitignoreEntries, stampFactoryGitignore, stampFactoryReadme } from "./workspace.mjs";
 import { healConfigSchema } from "./config.mjs";
 import { SCHEDULE_KINDS, SCHEDULE_MODES, normalizeSchedule, validateDeclaration, generateUnits, parseInstalled, compareInstalled, defaultPathLine } from "./schedule.mjs";
@@ -568,13 +568,10 @@ const startRef = () =>
   hasOrigin() && gitOk(["rev-parse", "--verify", `origin/${cfg.baseBranch}`]) ? `origin/${cfg.baseBranch}` : cfg.baseBranch;
 
 // A worktree is a NEW workspace path — without a trust entry the session
-// silently loses every mutating tool (NOTES item 11). BOTH flags are
-// required: hasTrustDialogAccepted alone lets the session run, but Claude
-// Code only applies the project's `.claude/settings.json` allowlist (and
-// its hooks) once hasCompletedProjectOnboarding is also set — without it a
-// dontAsk session in the worktree denies even `echo`, and heavy-Bash
-// sessions (triage's gh calls) thrash on the denials (NOTES item 42).
-const TRUST_FLAGS = { hasTrustDialogAccepted: true, hasCompletedProjectOnboarding: true };
+// silently loses every mutating tool (NOTES item 11). TRUST_FLAGS (both
+// flags, paths.mjs) is the shared vocabulary: heavy-Bash sessions
+// (triage's gh calls) thrash on denials when either flag is missing
+// (NOTES item 42).
 const trustWorkspace = (p) => {
   const cj = path.join(os.homedir(), ".claude.json");
   let j = {};
@@ -630,7 +627,10 @@ const pruneLocalBranch = (name, context) => {
     return;
   }
   try {
-    git(["branch", "-D", name]);
+    // `--` is belt: the rev-parse above already proved `name` is a real
+    // ref, but this is the file's one forge-controlled argv without the
+    // separator (review SEC-3).
+    git(["branch", "-D", "--", name]);
     log(`${context}: pruned local branch ${name} (${merged ? "merged into base" : "on origin at the same sha"})`);
   } catch (e) {
     // Checked out in another worktree, or a concurrent delete — best effort.
@@ -1060,15 +1060,30 @@ const resolveCmd = (cmd, pathStr = process.env.PATH) => {
   return null;
 };
 
-const projectTrusted = (project) => {
+// "full" (both TRUST_FLAGS) | "half" (dialog flag only) | false. A half
+// entry runs sessions WITHOUT the project allowlist (review S12) — but
+// only where they run IN PLACE: git projects' sessions live in worktrees/
+// meta that trustWorkspace fully restamps every spawn, so for them half is
+// a cosmetic drift (6 of 9 VPS factories carried it at review time —
+// failing those would abort every scheduled window over nothing).
+const projectTrustState = (project) => {
   try {
     const j = JSON.parse(fs.readFileSync(path.join(os.homedir(), ".claude.json"), "utf8"));
     const keys = [project];
     try { keys.push(fs.realpathSync(project)); } catch { /* gone paths checked as-is */ }
-    return keys.some((k) => j.projects?.[k]?.hasTrustDialogAccepted === true);
+    const states = keys.map((k) => {
+      const e = j.projects?.[k];
+      if (Object.entries(TRUST_FLAGS).every(([f, v]) => e?.[f] === v)) return "full";
+      return e?.hasTrustDialogAccepted === true ? "half" : false;
+    });
+    return states.includes("full") ? "full" : states.includes("half") ? "half" : false;
   } catch {
     return false; // no ~/.claude.json = claude never ran for this user
   }
+};
+const projectTrusted = (project) => {
+  const s = projectTrustState(project);
+  return s === "full" || (s === "half" && isGitRepo());
 };
 
 const preflight = ({ project, cfg, log }) => {
@@ -1909,9 +1924,18 @@ const runDoctor = () => {
     }
   }
 
-  // 3. workspace trust — untrusted projects deny every mutating tool
-  check(projectTrusted(project) ? "ok" : "fail", "workspace trust (~/.claude.json)",
-    projectTrusted(project) ? "" : `re-run init.mjs --project ${project}, or claude interactively once`);
+  // 3. workspace trust — untrusted projects deny every mutating tool. A
+  //    half-stamped entry (dialog flag only) is a warn on git projects
+  //    (worktrees restamp both flags every spawn) and a fail on non-git
+  //    ones, where sessions run in place without the allowlist (S12).
+  {
+    const ts = projectTrustState(project);
+    check(projectTrusted(project) ? (ts === "half" ? "warn" : "ok") : "fail", "workspace trust (~/.claude.json)",
+      ts === "full" ? ""
+        : ts === "half" && projectTrusted(project)
+          ? `half-stamped (dialog flag only) — harmless here (git worktrees restamp), complete it with init.mjs --project ${project}`
+          : `re-run init.mjs --project ${project}, or claude interactively once`);
+  }
 
   // 4. scaffold (prompts are NOT project scaffold anymore — they ship with
   //    the runtime, next to this driver)
@@ -2419,15 +2443,55 @@ if (cfg.enabled === false && ["dev", "triage", "report"].includes(mode)) {
 }
 
 // One driver per project: refuse to start if another run's lock is alive
-// (e.g. a manual babysit run overlapping the scheduled window).
+// (e.g. a manual babysit run overlapping the scheduled window). For the
+// modes that will hold the window lock anyway, the guard CLAIMS it here,
+// atomically (open 'wx') — check-then-claim left the first lock write a
+// networked preflight away, a seconds-wide race two overlapping drivers
+// both fit through (review S4; reproduced: a --scheduled run answered its
+// tracker probe with no lock held). Modes that never hold the lock
+// (schedule, sync-board, promote) keep the pure check — their runs must
+// not look like windows to the supervisor or to each other.
 {
-  const existing = (() => {
-    try { return JSON.parse(fs.readFileSync(lockPath(stateD), "utf8")); } catch { return null; }
-  })();
-  if (existing?.pid) {
-    let alive = false;
-    try { process.kill(existing.pid, 0); alive = true; } catch { /* stale */ }
-    if (alive) fail(`another driver (pid ${existing.pid}, mode ${existing.mode}) is already running for this project`);
+  const p = lockPath(stateD);
+  const readExisting = () => {
+    try { return JSON.parse(fs.readFileSync(p, "utf8")); } catch { return null; }
+  };
+  const lockAlive = (rec) => {
+    if (!rec?.pid) return false; // pid-less or unparseable = stale
+    try { process.kill(rec.pid, 0); return true; } catch { return false; }
+  };
+  const refuse = (rec) => fail(`another driver (pid ${rec.pid}, mode ${rec.mode}) is already running for this project`);
+  if (["dev", "triage", "report", "prep"].includes(mode)) {
+    const claim = () => {
+      fs.mkdirSync(path.dirname(p), { recursive: true });
+      const fd = fs.openSync(p, "wx");
+      // Dev claims WINDOW-shaped: without windowEndsAt the supervisor's
+      // hang bound reads the pre-window legs as one session (~75min
+      // static) and would kill a healthy driver whose finalization replay
+      // grades several PRs back-to-back; with it, grader re-stamps are
+      // honored. The dev loop's writeLock refreshes the exact values.
+      // Single-leg modes (triage/report/prep) stay single-shaped: one
+      // session IS their correct budget.
+      const shape = { pid: process.pid, mode, startedAt: new Date().toISOString() };
+      if (mode === "dev") shape.windowEndsAt = new Date(Date.now() + cfg.windowHours * 3600 * 1000).toISOString();
+      fs.writeSync(fd, JSON.stringify(shape, null, 2));
+      fs.closeSync(fd);
+    };
+    try { claim(); }
+    catch (e) {
+      if (e.code !== "EEXIST") throw e;
+      const existing = readExisting();
+      if (lockAlive(existing)) refuse(existing);
+      fs.rmSync(p, { force: true }); // stale — dead pid or corrupt
+      try { claim(); }
+      catch (e2) {
+        if (e2.code !== "EEXIST") throw e2;
+        fail(`another driver claimed the window lock at the same instant — lost the race for this project`);
+      }
+    }
+  } else {
+    const existing = readExisting();
+    if (lockAlive(existing)) refuse(existing);
   }
 }
 
@@ -3235,6 +3299,7 @@ const parkNeedsHuman = (filed, result = null) => {
   return { applied, touched: applied.length > 0 || linked };
 };
 
+// ---------- session prompt assembly ----------
 // Prompts ship with the driver (O6): one source in the machine runtime,
 // nothing per-project to drift, and worktree sessions can't even see them.
 const promptFor = (name) => {
@@ -3344,6 +3409,7 @@ const forgeInputsNote = () => {
     `### Recently closed tracker issues, with comments (owner answers land here)\n\n${closed}\n`;
 };
 
+// ---------- single-session modes: triage / report ----------
 const runSingle = async (name) => {
   log(`${name} session starting`);
   writeLock(stateD, { mode: name, startedAt: new Date().toISOString() });
@@ -3491,6 +3557,7 @@ if (mode === "triage" || mode === "report") {
   await single(mode);
 }
 
+// ---------- merge gate: check-watching + the gate suite ----------
 // Merge-gate (NOTES items 13, 27): when a session reports `review` with a
 // PR url under auto-merge-dev, the driver — not a paid session — watches
 // checks and merges on green. v2 merges LOCALLY (git merge + push) so the
@@ -3541,6 +3608,7 @@ const suiteNote = ({ pr, taskId, head, suite }) =>
   `The driver merges once checks and the suite are green — do NOT merge yourself.` +
   (suite.tail ? `\nSuite output tail:\n${suite.tail}` : "");
 
+// ---------- acceptance grader (autonomy epic chunk 4) ----------
 // The acceptance grader (autonomy epic chunk 4): before the gate may merge a
 // task PR, an INDEPENDENT session — spawned here, briefed by the DRIVER from
 // the task's own Acceptance:/Verify: lines, never by the implementer — must
@@ -3646,6 +3714,7 @@ const gradeNote = ({ pr, taskId, head, grade }) =>
       grade.criteria.filter((c) => !c.pass).map((c) => `- ${c.criterion}\n  evidence: ${c.evidence}`).join("\n")
     : "");
 
+// ---------- landing: local merge + push, grade-gated ----------
 // The actual landing: local merge with the status flip folded into the
 // merge commit. Retries on push races; falls back to `gh pr merge` (flip
 // goes to pendingFlips) if local landing keeps failing.
@@ -4073,6 +4142,7 @@ const sweepOpenPRs = async ({ waitForChecks = true, excludePr = null, context = 
   return notes;
 };
 
+// ---------- PR sweep (window start/end, prep) ----------
 // Window-end/prep sweeps persist their notes: there is no next session to
 // hand them to, so the next window's first session reads carryNotes
 // (fleet PR #47 sat CONFLICTING across windows because the sweep dropped
