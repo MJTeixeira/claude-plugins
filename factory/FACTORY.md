@@ -428,7 +428,11 @@ display on 4 of 6 fleet factories (2026-07-19).
 - **Worktree isolation (v2): your checkout is yours.** Every session runs in
   a throwaway worktree under `~/.factory/worktrees/<name>/`, detached at the
   base branch's origin tip (clean by construction, trusted automatically,
-  removed after the session). All driver git work — gate merges, status
+  removed after the session). The task branch a session creates in there is
+  pruned from the shared `.git` when the worktree drops or its PR merges —
+  but only refs merged into base or on origin at the same sha; a branch
+  holding unmerged local work survives, and remote branches are never
+  touched. All driver git work — gate merges, status
   flips, triage commits — happens in a persistent detached `meta` worktree
   there, refreshed from origin at every boundary and pushed `HEAD:<base>`.
   The factory never flips your checkout's branch or quarantines your WIP
