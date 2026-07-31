@@ -69,11 +69,11 @@ branches, no checkouts, no commits, no merges.
 - New requirement/request → new task(s) in the right epic with acceptance
   criteria + Verify; note the source (issue #, inbox file, Jira key). If it
   contradicts the spec, don't guess: ask via `open_question` instead.
-- A good `Verify:` line DRIVES THE PRODUCT, not the test suite again: a
-  curl against the changed endpoint, a headless engine run, the CLI with
-  real arguments (see the `code4food-factory:verify` skill's recipes). `npm test` is what CI
-  already proves — fix any task whose Verify line only re-runs it, along
-  with your other backlog edits.
+- Write each `Verify:` line at the highest tier the criteria reach — the
+  grader executes it verbatim (the backlog skill's §Verify tiers is the
+  one home for what that means). When your prompt carries a
+  **Verify-line lint** section, those tasks' lines prove nothing beyond
+  the suite/gate: fix them along with your other backlog edits.
 - **Stamp `- Gate: human (<reason>)`** on any task whose acceptance criteria
   need owner judgment a headless session cannot make (visual/aesthetic
   review, playtest feel, product sign-off). The merge gate then holds its

@@ -46,9 +46,10 @@ evidence means captured output, not eyes on a screen.
 
 - Verify what YOU changed — don't re-drive flows this session never
   touched, and don't re-prove what CI or a previous session already proved.
-- The task's `Verify:` line is the contract: run it verbatim. If it's just
-  the test suite again, ALSO drive the product once (step 2) and say so in
-  your report — then flag the weak Verify line so triage fixes the task.
+- The task's `Verify:` line is the contract: run it verbatim. If it's
+  suite-only (tier 1 of the backlog skill's §Verify tiers), ALSO drive the
+  product once (step 2) and say so in your report — then flag the weak
+  Verify line so triage fixes the task.
 - Scratch probes (seed scripts, curl loops, one-off Playwright scripts) go
   in `.factory/tmp/`, never the repo root.
 - Evidence goes in the PR body / report summary: the command you ran and

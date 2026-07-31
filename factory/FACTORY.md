@@ -356,7 +356,7 @@ without its row.
 | `triageModel` | *(= `model`)* | triage-only model. Planning gates everything downstream, so cheap dev sessions can pair with strong triage |
 | `graderModel` | `"opus"` | the acceptance grader's model — deliberately NOT `model` (§Verification & review contract) |
 | `mergeGateMinutes` | `10` | how long the gate polls CI before leaving a PR for the sweep (auto-merge only) |
-| `gateCommand` | `null` | repo suite the gate runs on the MERGED tree before pushing (e.g. `"npm ci --silent && npm test"`); `null` = rely on CI. With NEITHER, the gate refuses to auto-merge and doctor goes red |
+| `gateCommand` | `null` | repo suite the gate runs on the MERGED tree before pushing (e.g. `"npm ci --silent && npm test"`); `null` = rely on CI. With NEITHER, the gate refuses to auto-merge and doctor goes red. It is the merge FLOOR, not verification: a task `Verify:` line that only repeats it proves nothing the gate didn't — doctor's `Verify lines` row and the triage lint flag those (backlog skill, Verify tiers) |
 | `gateSuiteTimeoutMin` | `15` | wall-clock bound on `gateCommand`; a timeout counts as a failed suite |
 | `riskTiers` | `{"high": []}` | path prefixes (end dirs with `/`) whose PRs always park for owner review. A malformed value FAILS doctor rather than silently disabling the floor |
 | `toolchain` | *(unset)* | external tools the window needs, `[{"name": "godot", "check": "godot --version"}]` — one doctor row each, so a missing tool stops the window before it burns sessions. Malformed = doctor fail |
@@ -957,7 +957,10 @@ service, `factory-onfailure@.service`) live in `factory/schedulers/`.
   a legitimate state and doctors GREEN, its timer checks skipped),
   the git contract (the repo carries only work data — a still-tracked
   legacy `config.json` or `.env` FAILS with the migrate hint),
-  backlog format parseable, CI-or-gateCommand present under auto-merge
+  backlog format parseable, Verify-line tiers (a non-done task whose
+  `Verify:` only re-runs the suite/gateCommand warns — the grader executes
+  the line verbatim; the same lint feeds the triage prompt),
+  CI-or-gateCommand present under auto-merge
   (neither = red FAIL, per the gate floor). Exit 1 on
   problems. Run it after ANY infra change (new machine, runtime deploy,
   token rotation, scheduler edit, feature enable) — it is cheaper than

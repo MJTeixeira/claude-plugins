@@ -43,7 +43,7 @@ Each `.factory/backlog/<epic>.md` holds tasks:
                                # the merge gate holds green PRs for owner review
 - Acceptance:
   - <observable criterion, testable>
-- Verify: <command(s) that prove it>
+- Verify: <command(s) that prove it — §Verify tiers below>
 - Notes: <PR link, blocked reason, decisions>
 - Model: opus                  # required unless done: model for the session
 - Effort: high                 # required unless done: low|medium|high|xhigh|max
@@ -79,6 +79,26 @@ two tiers, take the higher one — a session that flails against a task too
 big for its model, or a burned owner-review cycle, costs more than any
 model delta. Stay honest at the bottom (docs and data files don't need
 opus), but never talk yourself DOWN a tier to save money.
+
+### Verify tiers (the one home for this — other docs point here)
+
+The acceptance grader executes the `Verify:` line VERBATIM in a fresh
+checkout. Write it at the highest tier the acceptance criteria reach:
+
+1. **Suite-only — weak.** `npm test`, `dotnet test`, or a repeat of the
+   config's `gateCommand`: the merge gate already runs these on the merged
+   tree, so this line grades the diff, never the task. The driver lints
+   for it — doctor's `Verify lines` row, and the triage prompt lists the
+   hits to fix.
+2. **Drive the product — the bar.** A curl against the changed endpoint
+   (status AND body), the CLI with real arguments, a headless engine run —
+   and assert on output, not just exit codes (exit-0 proves almost
+   nothing). On engine projects, a game-touching task's Verify includes
+   the pinned engine-test command (godot/unity skill): engine-free unit
+   tests alone skip the engine.
+3. **Human eyes.** Visual quality, game feel, aesthetics — that is
+   `Gate: human (<reason>)`, never a Verify command; a headless session
+   cannot self-judge it.
 
 Triage copies hints into the day's session plan and corrects them against
 observed usage (a task that keeps turn-capping gets more turns next time).
