@@ -72,8 +72,9 @@ branches, no checkouts, no commits, no merges.
 - Write each `Verify:` line at the highest tier the criteria reach — the
   grader executes it verbatim (the backlog skill's §Verify tiers is the
   one home for what that means). When your prompt carries a
-  **Verify-line lint** section, those tasks' lines prove nothing beyond
-  the suite/gate: fix them along with your other backlog edits.
+  **Verify-line lint** section, each entry says what its line fails to
+  prove — nothing beyond the suite/gate, or the engine-tier tests its
+  own acceptance names: fix them along with your other backlog edits.
 - **Stamp `- Gate: human (<reason>)`** on any task whose acceptance criteria
   need owner judgment a headless session cannot make (visual/aesthetic
   review, playtest feel, product sign-off). The merge gate then holds its

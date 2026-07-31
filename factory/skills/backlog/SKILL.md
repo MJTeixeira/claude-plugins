@@ -95,7 +95,9 @@ checkout. Write it at the highest tier the acceptance criteria reach:
    and assert on output, not just exit codes (exit-0 proves almost
    nothing). On engine projects, a game-touching task's Verify includes
    the pinned engine-test command (godot/unity skill): engine-free unit
-   tests alone skip the engine.
+   tests alone skip the engine. The lint cross-checks this edge too —
+   acceptance naming engine-tier tests with a Verify that never runs
+   them is flagged even when the line otherwise drives the product.
 3. **Human eyes.** Visual quality, game feel, aesthetics — that is
    `Gate: human (<reason>)`, never a Verify command; a headless session
    cannot self-judge it.
