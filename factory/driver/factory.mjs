@@ -21,7 +21,7 @@ import { healConfigSchema } from "./config.mjs";
 import { SCHEDULE_KINDS, SCHEDULE_MODES, normalizeSchedule, validateDeclaration, generateUnits, parseInstalled, compareInstalled, defaultPathLine } from "./schedule.mjs";
 import { deriveFactoryStatus } from "./status.mjs";
 import { createForge, createTracker, nativeTrackerCheck } from "./forge.mjs";
-import { parseMilestones, unparsedMilestoneHeadings, parseBacklogTasks as parseTasksInDir } from "./backlog-index.mjs";
+import { parseMilestones, unparsedMilestoneHeadings, parseBacklogTasks as parseTasksInDir, lintVerify } from "./backlog-index.mjs";
 import { jiraTracker } from "./jira.mjs";
 import { jiraBoardInit, syncJiraBoard } from "./jira-board.mjs";
 import { expectedOrigin, sameOrigin } from "./distribution.mjs";
@@ -2248,6 +2248,24 @@ const runDoctor = () => {
     } else check("skip", "milestone headings", "backlog/index.md declares no milestones");
   }
 
+  // 14c. Verify-line tiers — the acceptance grader executes each task's
+  //      `Verify:` line verbatim, so a line that only re-runs the suite (or
+  //      repeats gateCommand — the gate already runs that on the merged
+  //      tree) proves nothing beyond the diff: it grades the code, never
+  //      the task. Warn, never fail: triage's prompt carries this same lint
+  //      and fixes the lines with its other backlog edits.
+  {
+    const all = parseBacklogTasks();
+    if (!all.length) check("skip", "Verify lines", "no tasks");
+    else {
+      const flagged = lintVerify(all, cfg.gateCommand);
+      check(flagged.length ? "warn" : "ok", "Verify lines",
+        flagged.length
+          ? `${flagged.length} non-done task(s) prove nothing beyond the suite/gate — the grader runs these verbatim; triage should make them drive the product: ${flagged.map((t) => `${t.id}=${t.tier}`).join(", ").slice(0, 120)}`
+          : "none flagged (missing or suite-only)");
+    }
+  }
+
   // 15. auto-merge needs verification — with no checks AND no gateCommand the
   //     gate refuses to merge, so this state means the factory silently stops
   //     shipping (fleet incident 2026-07-07: 12 sessions merged into dev
@@ -3334,6 +3352,17 @@ const runSingle = async (name) => {
   if (name === "triage") {
     const overlay = stateOverlayNote();
     if (overlay) promptText += `\n\n## Driver state overlay (runtime statuses — authoritative over backlog files)\n\n${overlay}\n`;
+    // The Verify-line lint, driver-computed over the overlay-applied tasks:
+    // the grader executes these lines verbatim, so a suite-only line grades
+    // the diff, never the task. Feeding triage the flagged list is what
+    // makes "fix weak Verify lines" agent-fed instead of aspirational.
+    const flagged = lintVerify(effectiveTasks(), cfg.gateCommand);
+    if (flagged.length) {
+      promptText += `\n\n## Verify-line lint (driver-computed — fix these with your other backlog edits)\n\n` +
+        `These tasks' \`Verify:\` lines prove nothing beyond what the merge gate/CI already runs. ` +
+        `The acceptance grader executes them verbatim, so rewrite each to DRIVE THE PRODUCT (the backlog skill's Verify tiers):\n\n` +
+        flagged.map((t) => `- ${t.id} (${t.epic}, ${t.status}) — ${t.tier === "missing" ? "no Verify line" : `suite-only: \`${t.verify}\``}`).join("\n") + "\n";
+    }
   }
   // Triage/report consume the forge through the driver's eyes — they hold
   // no credentials and every credential command form is denied live.

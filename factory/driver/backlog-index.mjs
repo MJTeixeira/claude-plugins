@@ -223,6 +223,84 @@ export const parseTaskFile = (text, epic) => {
   return tasks;
 };
 
+// ---------- Verify-line tiers ----------
+// The grader executes a task's `Verify:` line verbatim, so a line that only
+// re-runs the test suite proves nothing the merge gate doesn't already prove
+// — it grades the diff, never the task (the backlog skill's Verify tiers).
+// Classification is deliberately conservative: flag only lines we are SURE
+// are weak — missing, or every command a recognizable suite/setup
+// invocation. Prose and anything unrecognized pass as "product"; a lint
+// that cries wolf is a lint triage stops reading.
+//
+// Segments are the `&&`/`||`/`;`-separated commands (a single `|` stays
+// inside its command — `curl … | grep …` is one probe). Leading env
+// assignments and `timeout <n>` are wrappers, not commands: they must not
+// rescue `timeout 60 npm test`, and must not hide `timeout 120 godot …`.
+const WRAPPER = /^(?:[A-Za-z_][A-Za-z0-9_]*=\S+[ \t]+|timeout[ \t]+(?:-\S+[ \t]+)*\d+[smh]?[ \t]+)+/;
+
+const SUITE_RES = [
+  /^(?:npm|yarn|pnpm)[ \t]+(?:run[ \t]+)?t(?:est)?\b/,
+  /^npx[ \t]+(?:jest|vitest|mocha|ava|tap)\b/,
+  /^(?:jest|vitest|mocha|ava|rspec|ctest|tox|pytest)\b/,
+  /^node[ \t]+--test\b/,
+  /^python3?[ \t]+-m[ \t]+pytest\b/,
+  /^(?:go|cargo|dotnet|mvn)[ \t]+test\b/,
+  /^make[ \t]+(?:test|check)\b/,
+  /^(?:\.\/)?gradlew?[ \t]+(?:test|check)\b/,
+  /^rake[ \t]+(?:test|spec)\b/,
+  /^bundle[ \t]+exec[ \t]+rspec\b/,
+  /^mix[ \t]+test\b/,
+];
+
+// Install/chdir preludes: neither proof nor product. A line of ONLY these
+// (`npm ci`) proves even less than the suite and lands in the same tier.
+const SETUP_RES = [
+  /^cd\b/,
+  /^npm[ \t]+(?:ci|i|install)\b/,
+  /^yarn(?:[ \t]+install)?$/,
+  /^pnpm[ \t]+(?:i|install)\b/,
+  /^pip3?[ \t]+install\b/,
+  /^python3?[ \t]+-m[ \t]+pip[ \t]+install\b/,
+  /^dotnet[ \t]+restore\b/,
+  /^bundle(?:[ \t]+install)?$/,
+  /^composer[ \t]+install\b/,
+];
+
+const norm = (s) => s.trim().replace(/\s+/g, " ");
+const segments = (line) => line.split(/&&|\|\||;/).map(norm).filter(Boolean);
+
+// One Verify line → "missing" | "suite" | "product". `gateCommand` is the
+// project's merge-gate suite: its segments count as suite runs whatever they
+// look like — the gate already runs them on the merged tree, so a Verify
+// line repeating the gateCommand adds nothing (FACTORY.md, its config row).
+export const verifyTier = (verify, gateCommand = null) => {
+  const line = norm(String(verify ?? ""));
+  if (!line) return "missing";
+  const gateSegs = new Set(gateCommand ? segments(String(gateCommand)) : []);
+  for (const seg of segments(line)) {
+    const cmd = seg.replace(WRAPPER, "");
+    if (gateSegs.has(seg) || gateSegs.has(cmd)) continue;
+    // A parenthetical mid-segment (`dotnet test (serialization, 409 path)`)
+    // is prose describing evidence, not a shell command — triage writes
+    // these as briefs for engine tests the task will CREATE, so they can't
+    // be verbatim-executable yet. Prose keeps the benefit of the doubt
+    // even when it opens with a suite token.
+    if (/\s\(/.test(cmd)) return "product";
+    if (SUITE_RES.some((re) => re.test(cmd)) || SETUP_RES.some((re) => re.test(cmd))) continue;
+    return "product"; // one unrecognized command = benefit of the doubt
+  }
+  return "suite"; // every command a suite/setup/gate run — nothing drove the product
+};
+
+// The lint doctor and triage consume: non-done tasks whose Verify line the
+// tier check is sure about. Done tasks already shipped — their weak lines
+// are history, not work.
+export const lintVerify = (tasks, gateCommand = null) =>
+  tasks
+    .filter((t) => t.status !== "done")
+    .map((t) => ({ id: t.id, epic: t.epic, status: t.status, verify: t.verify ?? null, tier: verifyTier(t.verify, gateCommand) }))
+    .filter((t) => t.tier !== "product");
+
 // Every task in a backlog directory. index.md holds milestones, never tasks.
 export const parseBacklogTasks = (backlogDir) => {
   if (!fs.existsSync(backlogDir)) return [];
