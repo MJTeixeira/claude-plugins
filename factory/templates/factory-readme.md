@@ -24,6 +24,9 @@ it — this file is the whole contract.
   the PR releases the claim.
 - Work on a branch and push it — unpushed work is invisible to the factory
   and may be redone.
+- On Bitbucket repos, machines that run a factory also carry `bb`, a
+  gh-style PR CLI (`bb pr create|list|view|merge|comment`; run `bb` alone
+  for usage) — no tokens or curl needed in your session.
 - If you ship a task yourself, flip that task's `- Status:` line to `done`
   (and put the PR link in its `- Notes:`) in the same PR that ships the
   work. Only your own tasks' lines — never the counts in `index.md`, never
