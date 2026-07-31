@@ -3511,6 +3511,13 @@ const runGrader = async ({ pr, taskId, head, sha }) => {
     log(`grader: worktree create failed (${firstLine(e)}) — treating as no verdict`);
     return { pass: false, noVerdict: true };
   }
+  // Heartbeat for the supervisor's hang bound: each grader leg re-stamps the
+  // lock, so a sweep grading N PRs extends the kill horizon one bounded leg
+  // at a time instead of overrunning the static window budget (false
+  // hung-window-kill on catch-up windows). Advisory — a stamp failure must
+  // not cost the grade.
+  try { writeLock(stateD, { ...readJson(lockPath(stateD)), graderStartedAt: new Date().toISOString() }); }
+  catch { log("grader: could not stamp window.lock — hang bound stays static this leg"); }
   const sessionLog = path.join(logDir, `grade-${stamp}.out`);
   const promptText = promptFor("grade") +
     `\n\n## Grading brief (driver-generated from the task's backlog entry)\n\n` +

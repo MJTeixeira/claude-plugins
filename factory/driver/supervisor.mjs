@@ -242,18 +242,23 @@ const runPrep = (project) => {
 // sized for the realistic tail past windowEnd: a last session may start just
 // before it and run its full timeout, its own PR then draws an acceptance-
 // grader session (a second timeout), and the window-end sweep may grade one
-// more (a third) — plus the merge gate's poll budget around each. Three
-// timeouts covers the common case; a factory that ends a window with a large
-// backlog of green-but-ungraded PRs can still have the boundary sweep grade
-// several back-to-back and overrun this — a false hang-kill there is
-// safe-direction (the killed grader cached nothing, the next window re-grades
-// and re-merges), never a bad merge. See .docs/known-issues.md.
+// more (a third) — plus the merge gate's poll budget around each. A window
+// whose sweep grades SEVERAL green-but-ungraded PRs back-to-back outlives
+// that static budget legitimately: runGrader re-stamps graderStartedAt into
+// the lock at each grader start, so a live sweep advances the horizon one
+// bounded leg at a time (each grader is itself killed by the session
+// timeout), while a hung grader still dies one leg after its stamp.
 const hangBound = (lock, cfg) => {
   const timeoutMin = Number(cfg?.sessionTimeoutMin) || 45;
   const windowEnd = Date.parse(lock.windowEndsAt ?? "");
   if (!Number.isNaN(windowEnd)) {
     const gateMin = Number(cfg?.mergeGateMinutes) || 10;
-    return windowEnd + (3 * timeoutMin + 2 * gateMin + 30) * 60 * 1000;
+    const base = windowEnd + (3 * timeoutMin + 2 * gateMin + 30) * 60 * 1000;
+    const graderStart = Date.parse(lock.graderStartedAt ?? "");
+    if (!Number.isNaN(graderStart)) {
+      return Math.max(base, graderStart + (timeoutMin + gateMin + 30) * 60 * 1000);
+    }
+    return base;
   }
   const started = Date.parse(lock.startedAt ?? "");
   if (!Number.isNaN(started)) return started + timeoutMin * 60 * 1000 + SINGLE_GRACE_MS;

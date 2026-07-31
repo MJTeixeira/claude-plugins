@@ -42,6 +42,10 @@ const KEYS = ["DISCORD_BOT_TOKEN"];
 const API = "https://discord.com/api/v10";
 const MSG_MAX = 2000; // Discord message cap; longer bodies post as chunks
 const NAME_MAX = 100; // Discord thread-name cap
+const PACE_MS = 350; // gap between chunk posts — under the per-channel bucket's burst
+const MAX_429_WAIT_S = 30; // a retry_after above this is a global limit; don't sit on it
+// Sync wait, matching this module's execFileSync transport.
+const sleepMs = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 // Mirrors factory.mjs's QUESTION_PREFIX — the one title convention the
 // tracker must recognize to classify answer state.
 const QUESTION_PREFIX = "[factory] question:";
@@ -173,15 +177,37 @@ export const discordTracker = ({ cfg = {}, env = {} }) => {
     return [...seen.values()];
   };
 
-  // Post one message; a refusal (archived thread — Discord's REST behavior
-  // for bots is on the spec's verify list) unarchives and retries once.
+  // Post one message. Two failures get an in-session remedy: a 429 (the
+  // body carries retry_after seconds — honor it and retry; before this, a
+  // factory's 12-chunk daily log 429'd and the whole log queued for the
+  // NEXT session, landing fragmented and out of order, 2026-07-28) and a
+  // refusal on an archived thread (unarchive and retry once — Discord's
+  // REST behavior for bots is on the spec's verify list). Anything else
+  // still throws; queue-for-next-session remains the backstop, including
+  // a global rate limit whose retry_after exceeds the cap.
   const postMessage = (threadId, content) => {
     const send = () => req(`${API}/channels/${threadId}/messages`, { method: "POST", body: { content } });
-    try { send(); } catch {
-      req(`${API}/channels/${threadId}`, { method: "PATCH", body: { archived: false } });
-      send();
+    let unarchived = false, waits = 0;
+    for (;;) {
+      try { send(); return; } catch (e) {
+        let retryAfter = null;
+        try { retryAfter = JSON.parse(String(e.stdout ?? "")).retry_after ?? null; } catch { /* not a rate-limit body */ }
+        if (typeof retryAfter === "number" && retryAfter <= MAX_429_WAIT_S && waits++ < 3) { sleepMs(retryAfter * 1000 + 50); continue; }
+        if (typeof retryAfter !== "number" && !unarchived) {
+          unarchived = true;
+          req(`${API}/channels/${threadId}`, { method: "PATCH", body: { archived: false } });
+          continue;
+        }
+        throw e;
+      }
     }
   };
+
+  // Chunked bodies post paced: Discord's per-channel bucket tolerates only
+  // a short burst, and a stale factory's first daily log is exactly the
+  // many-chunk case that trips it.
+  const postChunks = (threadId, body) =>
+    chunks(body).forEach((c, i) => { if (i) sleepMs(PACE_MS); postMessage(threadId, c); });
 
   // Dashboard transport: async, resolve-{data|error}, never rejects — even
   // on sync throws (missing token/channel/tag). Same shape and rationale as
@@ -242,10 +268,10 @@ export const discordTracker = ({ cfg = {}, env = {} }) => {
       const t = json(`${API}/channels/${channel()}/threads`, { method: "POST", body: {
         name: `${prefix()}${title}`.slice(0, NAME_MAX), type: 11, auto_archive_duration: 10080,
       } });
-      for (const c of chunks(body || " ")) postMessage(t.id, c);
+      postChunks(t.id, body || " ");
       return threadUrl(t.id);
     },
-    issueComment: (threadId, body) => { for (const c of chunks(body)) postMessage(threadId, c); },
+    issueComment: (threadId, body) => postChunks(threadId, body),
     issueComments: (threadId) => fetchMessages(threadId).map((m) => ({
       author: m.author?.username ?? null, authorId: m.author?.id ?? null,
       body: m.content ?? "", createdAt: m.timestamp ?? null,
