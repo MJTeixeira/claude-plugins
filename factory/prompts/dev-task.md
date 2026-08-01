@@ -92,6 +92,13 @@ summary.
 - Respect the escalation rule strictly: ~3 failed attempts with no new
   information → call `open_question` with the question and your findings,
   report status `blocked`, and end the session.
+- **A recorded blocker must be re-testable.** When the blocker is an
+  environment or permission failure, your question and summary carry the
+  EXACT command that failed and its verbatim first error line — never a
+  paraphrase like "the sandbox blocks X". A paraphrase becomes a belief
+  the next sessions inherit without re-testing; a real fleet task sat
+  parked for days on "the sandbox blocks the capture tool" when only one
+  command SHAPE was denied and the direct invocation worked all along.
 - **If an `ask_peer` tool is present, try a peer BEFORE parking on the
   owner** — for questions another AGENT could answer in minutes: a
   technical clarification, a fleet convention, a cross-project fact, an

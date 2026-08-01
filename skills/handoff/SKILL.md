@@ -21,6 +21,9 @@ freshest:
 - Next: <the exact next action to take, specific enough to start cold>
 - State: <uncommitted files? failing test? half-applied migration? — anything
   a fresh session would not expect>
+- Blocked on: <if blocked: the EXACT command that failed + its verbatim first
+  error line — a paraphrase ("the sandbox blocks X") becomes a belief later
+  sessions inherit without re-testing; omit the line when not blocked>
 - Open questions: <decisions pending, who/what they're waiting on; "None">
 ```
 
