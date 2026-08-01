@@ -27,7 +27,8 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
-import { stateDir, writeJsonAtomic } from "./paths.mjs";
+import { stateDir, writeJsonAtomic, readJson, pidAlive } from "./paths.mjs";
+import { telegramCreds as scanTelegramCreds, sendTelegram } from "./notify.mjs";
 import { generateSupervisorUnits, defaultPathLine } from "./schedule.mjs";
 
 const DRIVER = fileURLToPath(new URL("factory.mjs", import.meta.url));
@@ -62,32 +63,7 @@ const log = (msg) => {
   process.stdout.write(line + "\n");
 };
 
-const readJson = (p) => {
-  try { return JSON.parse(fs.readFileSync(p, "utf8")); } catch { return null; }
-};
-
-// KEY=VALUE lines, # comments — same format as watchdog.mjs/factory.mjs.
-const loadEnv = (p) => {
-  const env = {};
-  if (!fs.existsSync(p)) return env;
-  for (const line of fs.readFileSync(p, "utf8").split("\n")) {
-    const t = line.trim();
-    if (!t || t.startsWith("#")) continue;
-    const eq = t.indexOf("=");
-    if (eq > 0) env[t.slice(0, eq).trim()] = t.slice(eq + 1).trim();
-  }
-  return env;
-};
-
-// kill(pid, 0) succeeds on a zombie, and a hung driver's parent may never
-// reap it — a zombie is dead for every purpose the supervisor has.
-const alive = (pid) => {
-  try { process.kill(pid, 0); } catch { return false; }
-  try {
-    const stat = execFileSync("ps", ["-p", String(pid), "-o", "stat="], { encoding: "utf8", timeout: 30_000 }).trim();
-    return !!stat && !stat.startsWith("Z");
-  } catch { return false; }
-};
+const alive = pidAlive; // zombie = dead (paths.mjs — one semantic fleet-wide)
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // ---------- process tree ----------
@@ -165,19 +141,7 @@ const killTree = async (rootPid) => {
 let telegram; // resolved once per process, cached
 const telegramCreds = () => {
   if (telegram !== undefined) return telegram;
-  telegram = null;
-  const reg = readJson(regPath);
-  const credFiles = [
-    path.join(home, ".factory", "telegram.env"),
-    ...Object.keys(reg?.factories ?? {}).map((p) => path.join(stateDir(p), ".env")),
-  ];
-  for (const p of credFiles) {
-    const env = loadEnv(p);
-    if (env.TELEGRAM_BOT_TOKEN && env.TELEGRAM_CHAT_ID) {
-      telegram = { token: env.TELEGRAM_BOT_TOKEN, chatId: env.TELEGRAM_CHAT_ID };
-      break;
-    }
-  }
+  telegram = scanTelegramCreds(readJson(regPath)?.factories ?? {}, home);
   return telegram;
 };
 
@@ -206,22 +170,8 @@ const escalate = async ({ project, name, type, detail, key }) => {
   log(`escalation: ${name} ${type} — ${detail}`);
   const creds = telegramCreds();
   if (creds) {
-    try {
-      // FACTORY_TELEGRAM_API: test double (helpers.mjs startTelegramStub).
-      const res = await fetch(`${process.env.FACTORY_TELEGRAM_API ?? "https://api.telegram.org"}/bot${creds.token}/sendMessage`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          chat_id: creds.chatId,
-          text: `[supervisor] 🚨 ${name}: ${type}\n${detail}`,
-          disable_web_page_preview: true,
-        }),
-        signal: AbortSignal.timeout(10_000),
-      });
-      if (!res.ok) log(`telegram HTTP ${res.status} — outbox record stands`);
-    } catch (e) {
-      log(`telegram failed (${String(e.message ?? e).split("\n")[0]}) — outbox record stands`);
-    }
+    await sendTelegram(creds, `[supervisor] 🚨 ${name}: ${type}\n${detail}`,
+      { log: (m) => log(`${m} — outbox record stands`) });
   }
   return true;
 };

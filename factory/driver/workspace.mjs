@@ -8,10 +8,10 @@
 // Shared by factory.mjs (materialization, migrate cleanup), config.mjs
 // (schema healing), and init.mjs (stack detection) so the allowlist presets
 // and stack detection can never drift between them.
-import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
+import { execGit } from "./paths.mjs";
 
 export const ALLOW_BASE = ["Read", "Edit", "Write", "Glob", "Grep", "TodoWrite",
   "Bash(git:*)", "Bash(gh:*)", "Bash(ls:*)", "Bash(cat:*)", "Bash(mkdir:*)", "Bash(node:*)",
@@ -142,8 +142,7 @@ export const parseAnswerFile = (p) => {
   return out;
 };
 
-const git = (cwd, args) =>
-  execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+const git = (cwd, args) => execGit(cwd, args);
 
 // Every skill name the factory ever deployed into project repos (engine
 // skills and factory-setup included) — the removal list for migrate's repo

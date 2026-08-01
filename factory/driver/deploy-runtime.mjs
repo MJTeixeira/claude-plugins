@@ -17,7 +17,8 @@ import { execFileSync, spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { stateDir } from "./paths.mjs";
+import { stateDir, readJson, execGit } from "./paths.mjs";
+import { telegramCreds, sendTelegram } from "./notify.mjs";
 import { expectedOrigin, sameOrigin } from "./distribution.mjs";
 
 const RUNTIME = path.join(os.homedir(), ".factory", "runtime");
@@ -36,55 +37,12 @@ for (let i = 0; i < argv.length; i++) {
   else { process.stderr.write(`deploy-runtime: unknown flag ${argv[i]} — usage: deploy-runtime.mjs [--ref <ref>]\n`); process.exit(1); }
 }
 
-const git = (args, cwd = RUNTIME) =>
-  execFileSync("git", args, { cwd, encoding: "utf8", timeout: 120_000, stdio: ["ignore", "pipe", "pipe"] }).trim();
-
-const readJson = (p) => {
-  try { return JSON.parse(fs.readFileSync(p, "utf8")); } catch { return null; }
-};
-
-// KEY=VALUE lines, # comments — same format as .factory/.env.
-const loadEnv = (p) => {
-  const env = {};
-  if (!fs.existsSync(p)) return env;
-  for (const line of fs.readFileSync(p, "utf8").split("\n")) {
-    const t = line.trim();
-    if (!t || t.startsWith("#")) continue;
-    const eq = t.indexOf("=");
-    if (eq > 0) env[t.slice(0, eq).trim()] = t.slice(eq + 1).trim();
-  }
-  return env;
-};
-
-// ~/.factory/telegram.env first (the machine-level creds the OnFailure unit
-// uses), then any registered factory's .env — one bot serves the fleet.
-const telegramCreds = (registry) => {
-  const candidates = [
-    path.join(os.homedir(), ".factory", "telegram.env"),
-    ...Object.keys(registry?.factories ?? {}).map((p) => path.join(stateDir(p), ".env")),
-  ];
-  for (const p of candidates) {
-    const env = loadEnv(p);
-    if (env.TELEGRAM_BOT_TOKEN && env.TELEGRAM_CHAT_ID) return { token: env.TELEGRAM_BOT_TOKEN, chatId: env.TELEGRAM_CHAT_ID };
-  }
-  return null;
-};
+const git = (args, cwd = RUNTIME) => execGit(cwd, args, { timeoutMs: 120_000 });
 
 const notify = async (registry, text) => {
-  const creds = telegramCreds(registry);
+  const creds = telegramCreds(registry?.factories ?? {});
   if (!creds) return;
-  try {
-    // FACTORY_TELEGRAM_API: test double (helpers.mjs startTelegramStub).
-    const res = await fetch(`${process.env.FACTORY_TELEGRAM_API ?? "https://api.telegram.org"}/bot${creds.token}/sendMessage`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ chat_id: creds.chatId, text: `[runtime] ${text}`, disable_web_page_preview: true }),
-      signal: AbortSignal.timeout(10_000),
-    });
-    if (!res.ok) log(`telegram HTTP ${res.status}`);
-  } catch (e) {
-    log(`telegram failed: ${String(e.message ?? e).split("\n")[0]}`);
-  }
+  await sendTelegram(creds, `[runtime] ${text}`, { log });
 };
 
 const registry = readJson(path.join(os.homedir(), ".factory", "registry.json"));

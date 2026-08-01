@@ -21,8 +21,16 @@
 //   route (roadmap) supersedes this.
 
 import { execFileSync, spawn } from "node:child_process";
+import { execGit } from "./paths.mjs";
 
 const API = "https://api.bitbucket.org/2.0";
+
+// "workspace/slug" from any bitbucket.org remote shape (ssh or https), null
+// when the url is something else. The ONE parser for bitbucket origins —
+// bb.mjs matches factories with the same regex, and the two copies are how
+// a shape fixed here would silently stay broken there.
+export const bitbucketRepoPath = (url) =>
+  String(url ?? "").match(/bitbucket\.org[:/]+([^/]+)\/([^/]+?)(?:\.git)?\/?$/)?.slice(1, 3).join("/") ?? null;
 
 // Bitbucket PR states → the contract's gh vocabulary.
 const mapPrState = (s) => (s === "OPEN" || s === "MERGED" ? s : "CLOSED"); // DECLINED | SUPERSEDED
@@ -53,10 +61,9 @@ export const bitbucketForge = ({ project, env = {} }) => {
   let repoPath = null; // "workspace/slug", lazily parsed from origin
   const repo = () => {
     if (repoPath) return repoPath;
-    const url = execFileSync("git", ["remote", "get-url", "origin"], { cwd: project, encoding: "utf8", timeout: 15_000, stdio: ["ignore", "pipe", "pipe"] }).trim();
-    const m = url.match(/bitbucket\.org[:/]+([^/]+)\/([^/]+?)(?:\.git)?\/?$/);
-    if (!m) throw new Error(`origin '${url}' is not a bitbucket.org repo — cfg.forge says bitbucket`);
-    repoPath = `${m[1]}/${m[2]}`;
+    const url = execGit(project, ["remote", "get-url", "origin"], { timeoutMs: 15_000 });
+    repoPath = bitbucketRepoPath(url);
+    if (!repoPath) throw new Error(`origin '${url}' is not a bitbucket.org repo — cfg.forge says bitbucket`);
     return repoPath;
   };
   const base = () => `${API}/repositories/${repo()}`;

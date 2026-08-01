@@ -20,7 +20,8 @@ import * as path from "node:path";
 import * as os from "node:os";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
-import { stateDir, writeJsonAtomic } from "./paths.mjs";
+import { stateDir, writeJsonAtomic, readJson } from "./paths.mjs";
+import { telegramCreds, sendTelegram } from "./notify.mjs";
 
 const execFileP = promisify(execFile);
 const DRIVER = fileURLToPath(new URL("factory.mjs", import.meta.url));
@@ -31,24 +32,6 @@ const log = (msg) => {
   const line = `[${new Date().toISOString()}] ${msg}`;
   fs.appendFileSync(logPath, line + "\n");
   process.stdout.write(line + "\n");
-};
-
-const readJson = (p) => {
-  try { return JSON.parse(fs.readFileSync(p, "utf8")); } catch { return null; }
-};
-
-// KEY=VALUE lines, # comments — ~/.factory/telegram.env or a factory's
-// machine-side .env.
-const loadEnv = (p) => {
-  const env = {};
-  if (!fs.existsSync(p)) return env;
-  for (const line of fs.readFileSync(p, "utf8").split("\n")) {
-    const t = line.trim();
-    if (!t || t.startsWith("#")) continue;
-    const eq = t.indexOf("=");
-    if (eq > 0) env[t.slice(0, eq).trim()] = t.slice(eq + 1).trim();
-  }
-  return env;
 };
 
 const reg = readJson(regPath);
@@ -100,19 +83,7 @@ const doctorOne = async ([project, meta]) => {
 // small pool (7 sequential doctors made the fleet check take 7× one doctor).
 {
   const entries = Object.entries(reg.factories);
-  // ~/.factory/telegram.env first (the machine-level creds the OnFailure
-  // unit uses — same order as deploy-runtime), then any factory's .env.
-  const credFiles = [
-    path.join(os.homedir(), ".factory", "telegram.env"),
-    ...entries.map(([project]) => path.join(stateDir(project), ".env")),
-  ];
-  for (const p of credFiles) {
-    if (telegram) break;
-    const env = loadEnv(p);
-    if (env.TELEGRAM_BOT_TOKEN && env.TELEGRAM_CHAT_ID) {
-      telegram = { token: env.TELEGRAM_BOT_TOKEN, chatId: env.TELEGRAM_CHAT_ID };
-    }
-  }
+  telegram = telegramCreds(reg.factories);
   const POOL = 4;
   const queue = [...entries];
   await Promise.all(
@@ -126,18 +97,7 @@ if (failures.length && telegram) {
   const text =
     `🩺 watchdog: ${failures.length}/${Object.keys(reg.factories).length} factory(ies) failing doctor\n` +
     failures.map((f) => `• ${f.name}: ${f.fails.slice(0, 3).join("; ").slice(0, 250)}`).join("\n");
-  try {
-    // FACTORY_TELEGRAM_API: test double (helpers.mjs startTelegramStub).
-    const res = await fetch(`${process.env.FACTORY_TELEGRAM_API ?? "https://api.telegram.org"}/bot${telegram.token}/sendMessage`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ chat_id: telegram.chatId, text: `[fleet] ${text}`, disable_web_page_preview: true }),
-      signal: AbortSignal.timeout(10_000),
-    });
-    if (!res.ok) log(`telegram HTTP ${res.status}`);
-  } catch (e) {
-    log(`telegram failed: ${String(e.message ?? e).split("\n")[0]}`);
-  }
+  await sendTelegram(telegram, `[fleet] ${text}`, { log });
 } else if (failures.length) {
   log("failures found but no Telegram creds in any factory's .env — log only");
 }
