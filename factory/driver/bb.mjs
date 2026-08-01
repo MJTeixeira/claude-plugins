@@ -18,12 +18,11 @@
 // API. The destination is ALWAYS sent explicitly: an omitted destination
 // makes Bitbucket target the repo's main branch, which on develop-based
 // repos ships to the wrong branch silently (fleet gotcha, 2026-07).
-import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { bitbucketForge } from "./bitbucket.mjs";
-import { stateDir, readEnvFile } from "./paths.mjs";
+import { bitbucketForge, bitbucketRepoPath } from "./bitbucket.mjs";
+import { stateDir, readEnvFile, execGit } from "./paths.mjs";
 
 const USAGE = `bb — Bitbucket PRs from the terminal, gh-style
 
@@ -44,10 +43,9 @@ else the repo's mainbranch — always sent explicitly.
 
 const fail = (msg) => { process.stderr.write(`bb: ${msg}\n`); process.exit(1); };
 
-const gitIn = (cwd, args) => execFileSync("git", args, { cwd, encoding: "utf8", timeout: 15_000, stdio: ["ignore", "pipe", "pipe"] }).trim();
+const gitIn = (cwd, args) => execGit(cwd, args, { timeoutMs: 15_000 });
 const originOf = (dir) => { try { return gitIn(dir, ["remote", "get-url", "origin"]); } catch { return null; } };
-// workspace/slug from any bitbucket.org remote shape (ssh or https).
-const repoPathOf = (url) => url?.match(/bitbucket\.org[:/]+([^/]+)\/([^/]+?)(?:\.git)?\/?$/)?.slice(1, 3).join("/") ?? null;
+const repoPathOf = bitbucketRepoPath; // the one bitbucket-origin parser (bitbucket.mjs)
 
 // Find the registered factory whose origin names the same bitbucket repo as
 // `cwd`, and return its machine-side context (credentials + config).

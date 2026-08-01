@@ -28,7 +28,7 @@ import * as os from "node:os";
 import { execFile, execFileSync, spawn } from "node:child_process";
 import { timingSafeEqual } from "node:crypto";
 import { fileURLToPath } from "node:url";
-import { stateDir, readEnvFile } from "./paths.mjs";
+import { stateDir, readEnvFile, readJson, pidAlive } from "./paths.mjs";
 import { normalizeSchedule, nextFire } from "./schedule.mjs";
 import { deriveFactoryStatus } from "./status.mjs";
 import { createForge, createTracker } from "./forge.mjs";
@@ -87,13 +87,9 @@ const tokenOk = (req) => {
   return a.length === b.length && timingSafeEqual(a, b);
 };
 
-const readJson = (p) => {
-  try { return JSON.parse(fs.readFileSync(p, "utf8")); } catch { return null; }
-};
-
-const pidAlive = (pid) => {
-  try { process.kill(pid, 0); return true; } catch { return false; }
-};
+// readJson + pidAlive come from paths.mjs — pidAlive counts zombies as
+// DEAD (owner decision 2026-07-31): the dashboard's private copy counted
+// them alive, so a crashed window's tile could show running forever.
 
 // git@github.com:u/r.git | https://github.com/u/r.git -> https://github.com/u/r
 const repoWebUrl = (project) => {

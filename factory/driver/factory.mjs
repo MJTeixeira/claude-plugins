@@ -15,7 +15,8 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
 import { fileURLToPath } from "node:url";
-import { factoryKey, stateDir, writeJsonAtomic, readEnvFile, TRUST_FLAGS } from "./paths.mjs";
+import { factoryKey, stateDir, writeJsonAtomic, readEnvFile, readJson, execGit, pidAlive, TRUST_FLAGS } from "./paths.mjs";
+import { sendTelegram } from "./notify.mjs";
 import { materializeWorkspace, isInjectedPath, factorySkillNames, stripFactorySettings, buildSessionSettings, detectStack, detectEngines, missingGitignoreEntries, stampFactoryGitignore, stampFactoryReadme } from "./workspace.mjs";
 import { healConfigSchema } from "./config.mjs";
 import { SCHEDULE_KINDS, SCHEDULE_MODES, normalizeSchedule, validateDeclaration, generateUnits, parseInstalled, compareInstalled, defaultPathLine } from "./schedule.mjs";
@@ -106,10 +107,6 @@ const loadConfig = (stateRoot) => {
   return { ...CONFIG_DEFAULTS, ...JSON.parse(fs.readFileSync(p, "utf8")) };
 };
 
-
-const readJson = (p) => {
-  try { return JSON.parse(fs.readFileSync(p, "utf8")); } catch { return null; }
-};
 
 const nowStamp = () => new Date().toISOString().replace(/[:.]/g, "-");
 const today = () => new Date().toISOString().slice(0, 10);
@@ -452,11 +449,7 @@ const parseBacklogTasks = (root = dataDir) => parseTasksInDir(path.join(root, "b
 // to poison the next session or a human deploy (a real deploy race on the fleet, 2026-07-07).
 
 const isGitRepo = () => fs.existsSync(path.join(project, ".git"));
-const gitRaw = (args, cwd = project) =>
-  execFileSync("git", args, {
-    cwd, env: { ...process.env, ...env }, timeout: 120_000,
-    encoding: "utf8", stdio: ["ignore", "pipe", "pipe"],
-  });
+const gitRaw = (args, cwd = project) => execGit(cwd, args, { timeoutMs: 120_000, env, trim: false });
 const git = (args, cwd) => gitRaw(args, cwd).trim();
 const gitOk = (args, cwd) => { try { git(args, cwd); return true; } catch { return false; } };
 const hasOrigin = () => gitOk(["remote", "get-url", "origin"]);
@@ -687,7 +680,7 @@ const pruneStaleLockedWorktrees = () => {
       log(`prep: locked worktree ${wtPath} — no pid in lock reason ("${(locked[1] ?? "").trim()}"), leaving it`);
       continue;
     }
-    try { process.kill(pid, 0); continue; } catch { /* locker is dead */ }
+    if (pidAlive(pid)) continue; // zombie locker = dead (paths.mjs semantic)
     try {
       if (fs.existsSync(wtPath) && statusRecords(wtPath).some(({ rel }) => !isInjectedPath(rel))) {
         const q = copyDirtyBytes(wtPath, nowStamp(), { skipInjected: true });
@@ -1143,7 +1136,7 @@ if (mode === "migrate") {
   for (const lockFile of [path.join(dataDir, "log", "window.lock"), path.join(stateD, "log", "window.lock")]) {
     const lock = readJson(lockFile);
     if (!lock?.pid) continue;
-    try { process.kill(lock.pid, 0); } catch { continue; } // stale lock from a crash
+    if (!pidAlive(lock.pid)) continue; // stale or zombie lock from a crash
     fail(`a driver is running (pid ${lock.pid}, mode ${lock.mode ?? "?"}) — migrate after the window finishes`);
   }
   const legacyState = ["config.json", ".env", "plan.json", "board.json", "STOP", "log", "tmp"];
@@ -2456,10 +2449,10 @@ if (cfg.enabled === false && ["dev", "triage", "report"].includes(mode)) {
   const readExisting = () => {
     try { return JSON.parse(fs.readFileSync(p, "utf8")); } catch { return null; }
   };
-  const lockAlive = (rec) => {
-    if (!rec?.pid) return false; // pid-less or unparseable = stale
-    try { process.kill(rec.pid, 0); return true; } catch { return false; }
-  };
+  // pidAlive, not bare kill(0): a zombie-locked window must read DEAD here
+  // exactly like it does on the dashboard tile and run-now guard — if the
+  // two disagree, run-now reports success while this refuses, forever.
+  const lockAlive = (rec) => !!rec?.pid && pidAlive(rec.pid);
   const refuse = (rec) => fail(`another driver (pid ${rec.pid}, mode ${rec.mode}) is already running for this project`);
   if (["dev", "triage", "report", "prep"].includes(mode)) {
     const claim = () => {
@@ -2817,18 +2810,8 @@ const notify = async (text) => {
     notifyWarned = true;
     return;
   }
-  try {
-    // FACTORY_TELEGRAM_API: test double (helpers.mjs startTelegramStub).
-    const res = await fetch(`${process.env.FACTORY_TELEGRAM_API ?? "https://api.telegram.org"}/bot${token}/sendMessage`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ chat_id: chatId, text: `[${factoryName}] ${text}`, disable_web_page_preview: true }),
-      signal: AbortSignal.timeout(5_000),
-    });
-    if (!res.ok) log(`notify: telegram HTTP ${res.status} — continuing`);
-  } catch (e) {
-    log(`notify: telegram failed (${String(e.message).split("\n")[0]}) — continuing`);
-  }
+  await sendTelegram({ token, chatId }, `[${factoryName}] ${text}`,
+    { timeoutMs: 5_000, log: (m) => log(`notify: ${m} — continuing`) });
 };
 
 // ---------- --scheduled preflight (NOTES item 25) ----------
