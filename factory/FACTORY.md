@@ -532,7 +532,11 @@ display on 4 of 6 fleet factories (2026-07-19).
   histogram. Written wherever a usage row is written — one ledger row and
   one metrics row per session, every mode. usage.jsonl stays the spend
   ledger; metrics.jsonl feeds plan correction and the no-progress breaker
-  (chunk 6).
+  (chunk 6). Dev rows carry a `taskId`: a settled report's id verbatim
+  (null there means no-tasks); a reportless death (runaway, kill, timeout)
+  recovers it from the retry assignment, then the session's last mid-run
+  `report_status` breadcrumb, then the plan entry — so every session the
+  driver could attribute joins to its task.
 
 ## Per-task model & effort routing
 
