@@ -4694,13 +4694,21 @@ while (true) {
   removeWorktree(sessionWt, `session ${sessions} end`);
   const end = result ? null : classifySessionEnd(sessionLog);
   const status = result?.status ?? (timedOut ? "timeout" : end.kind === "turn-capped" ? "turn-capped" : "died");
-  const row = recordUsage({ factoryDir: stateD, sessionLogPath: sessionLog, mode: "dev", taskId: result?.taskId ?? retryingId, status,
+  // Task attribution: a settled report is trusted as-is — a null taskId
+  // there means no-tasks, the one status where null is truthful. Reportless
+  // deaths (runaways, instant kills) recover the id from what the driver
+  // knows: the fixed retry assignment, then the session's mid-run breadcrumb
+  // (sessions legitimately override their plan entry), then the entry itself.
+  const taskId = result
+    ? result.taskId ?? retryingId
+    : retryingId ?? mcp.inProgress?.taskId ?? entry?.taskId ?? null;
+  const row = recordUsage({ factoryDir: stateD, sessionLogPath: sessionLog, mode: "dev", taskId, status,
     model: retryOverrides?.model ?? entry?.model ?? cfg.model, log });
   journal("session", "done",
-    `${sessions} ${result?.taskId ?? entry?.taskId ?? retryingId ?? "?"} → ${status}${row?.costUsd != null ? ` $${row.costUsd.toFixed(2)}` : ""}${result?.pr ? ` ${result.pr}` : ""}`);
+    `${sessions} ${taskId ?? "?"} → ${status}${row?.costUsd != null ? ` $${row.costUsd.toFixed(2)}` : ""}${result?.pr ? ` ${result.pr}` : ""}`);
   const alert = ["blocked", "timeout", "died"].includes(status);
   await notify(
-    `${alert ? "⚠" : "✔"} session ${sessions}: ${result?.taskId ?? entry?.taskId ?? retryingId ?? "?"} → ${status}` +
+    `${alert ? "⚠" : "✔"} session ${sessions}: ${taskId ?? "?"} → ${status}` +
       (row?.costUsd != null ? ` ($${row.costUsd.toFixed(2)})` : "") +
       (result?.pr ? `\n${result.pr}` : "") +
       (status === "blocked" && result?.summary ? `\n${result.summary}` : "")
