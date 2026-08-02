@@ -9,7 +9,7 @@
     {
       "name": "code4food-skillset",
       "description": "Attention-lean dev workflow, injected at session start into opted-in projects: task sizing, explore/plan/TDD/verify/finishing discipline, debugging, worktrees, handoff \u2014 plus a code-reviewer agent, /commit, and a protected-branch guard hook.",
-      "version": "1.10.6",
+      "version": "1.11.0",
       "license": "MIT",
       "keywords": [
         "workflow",
@@ -21,7 +21,7 @@
     {
       "name": "code4food-factory",
       "description": "Factory \u2014 autonomous spec-driven development. Claude Code develops a fully-specced product alone in daily windows; skills cover speccing (multi-sitting interview + red-team pass, no factory machine required), setup (interview wizard), the backlog vocabulary, and headless verification for unattended sessions.",
-      "version": "1.18.3",
+      "version": "1.19.0",
       "license": "MIT",
       "keywords": [
         "autonomous",

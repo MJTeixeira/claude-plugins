@@ -110,6 +110,29 @@ test("split-message transcripts count messages, not lines — and usage-less lin
   assert.deepEqual(row.tools, { Bash: 2, Edit: 1, Grep: 1 }, "tools count across all lines regardless");
 });
 
+test("Skill tool_use blocks key by skill name — Skill:<name> (skill-firing instrument 1)", (t) => {
+  const project = makeDir(t);
+  optIn(project);
+  const out = makeDir(t);
+  const skillLine = JSON.stringify({
+    type: "assistant",
+    message: {
+      id: "s1",
+      usage: { input_tokens: 500, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, output_tokens: 10 },
+      content: [
+        { type: "tool_use", name: "Skill", input: { skill: "code4food-skillset:tdd" } },
+        { type: "tool_use", name: "Skill", input: { skill: "code4food-skillset:tdd" } },
+        { type: "tool_use", name: "Skill", input: {} }, // nameless — stays the plain bucket
+        { type: "tool_use", name: "Bash", input: {} },
+      ],
+    },
+  });
+  const transcript = writeTranscript(project, [skillLine]);
+  const r = run(project, out, { cwd: project, transcript_path: transcript });
+  assert.equal(r.status, 0, `stderr:\n${r.stderr}`);
+  assert.deepEqual(readRows(out)[0].tools, { "Skill:code4food-skillset:tdd": 2, Skill: 1, Bash: 1 });
+});
+
 test("factory session worktrees are the driver's territory → no row (driver metrics already cover them)", (t) => {
   const base = makeDir(t);
   const project = path.join(base, ".factory", "worktrees", "someproj", "task-branch");

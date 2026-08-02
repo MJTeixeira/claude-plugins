@@ -361,6 +361,8 @@ without its row.
 | `riskTiers` | `{"high": []}` | path prefixes (end dirs with `/`) whose PRs always park for owner review. A malformed value FAILS doctor rather than silently disabling the floor |
 | `toolchain` | *(unset)* | external tools the window needs, `[{"name": "godot", "check": "godot --version"}]` — one doctor row each, so a missing tool stops the window before it burns sessions. Malformed = doctor fail |
 | `noProgressSessions` | `3` | `dev --until-done` only: sessions a task may burn without settling before it parks `needs-human` |
+| `staleRetryDays` | `1` | days a parked (`blocked`/`needs-human`) task waits before its ONE escalated retry on idle window capacity (§Stale-parked retry); `0` disables the lane |
+| `staleRetryModel` | `"fable"` | the retry session's model — the escalation IS the point: the task's own pin and the factory default already parked it |
 | `permissionMode` | `"dontAsk"` | keep it; `"bypassPermissions"` only inside a container/VM you could afford to lose |
 | `claudeCmd` | `"claude"` | binary to launch; set it when the CLI lives off the scheduler's PATH |
 | `forge` | `"github"` | where PRs live: `"github"` (gh CLI) or `"bitbucket"` (Cloud REST) — see §Scheduling → Forge |
@@ -721,6 +723,43 @@ restarts, and reset the moment the task settles. When the park leaves
 nothing actionable, the window ends immediately instead of burning a
 probe session.
 
+## Stale-parked retry (one escalated look per park)
+
+Sessions believe recorded blockers instead of re-testing them — the
+2026-08-01 rethrow experiment recovered 2 of 3 long-parked tasks the
+moment a fresh top-tier session re-ran the recorded command (spec:
+`factory/specs/stale-parked-retry.md`). This lane automates exactly that,
+on idle capacity only:
+
+- **Trigger** — a window that would otherwise skip (all-parked backlog) or
+  end on a `no-tasks` report runs ONE retry session instead, when session
+  budget and window time remain. Queued todo work is never displaced, and
+  triage's "never queue a parked task" rule is untouched — the lane lives
+  outside the plan. In `--until-done` this is per cycle, so a parked
+  backlog drains one task per cycle without ever looping.
+- **Eligibility** (all must hold) — status `blocked`/`needs-human`; parked
+  at least `staleRetryDays` days (`state.json` `updatedAt`; a record
+  without the stamp counts as old enough); no retry since the current park
+  (**one per park, ever** — a re-park after owner action re-arms it); not
+  claimed by a human's open PR; its linked question, if any, still open
+  and unanswered (an answered question is triage's fold). Oldest park
+  first.
+- **Session** — exit-criteria-only prompt (`prompts/retry-task.md`: the
+  task block verbatim plus the report/boundary contracts, no dev-task
+  coaching) on `staleRetryModel` at effort high. **Re-test the recorded
+  blocker FIRST** is the load-bearing instruction. Deliverables ride the
+  normal path — same PR flow, same acceptance grader, same merge gate and
+  `Gate: human` floor; the retry never hand-flips a parked status and
+  never feeds the no-progress or silent-death breakers.
+- **Outcome** — stamped in `state.json` (`tasks.<id>.retry = {at, model,
+  outcome}`) and appended on the task as `- Retried: <date> <model> —
+  <outcome>: <detail>` (inert to the backlog parsers): `recovered` (the
+  task re-entered the working pool — delivered, or resumed as a normal
+  task), `gate-held` (machine half delivered, waiting at the owner's
+  gate), `still-stuck` (blocker confirmed or owner input genuinely
+  required; with an existing question thread the fresh evidence lands
+  there as a comment — no new threads, no extra notifications).
+
 ## Scheduling (`factory.mjs schedule`)
 
 The schedule is a DECLARATION in machine config (`config.json → schedule`:
@@ -958,9 +997,12 @@ service, `factory-onfailure@.service`) live in `factory/schedulers/`.
   the git contract (the repo carries only work data — a still-tracked
   legacy `config.json` or `.env` FAILS with the migrate hint),
   backlog format parseable, Verify-line tiers (a non-done task warns when
-  its `Verify:` only re-runs the suite/gateCommand, or skips the
-  engine-tier tests its own acceptance names — the grader executes
-  the line verbatim; the same lint feeds the triage prompt),
+  its `Verify:` only re-runs the suite/gateCommand, skips the
+  engine-tier tests its own acceptance names, or carries vague
+  acceptance wording — a mood adjective with no measurable anchor; the
+  grader executes the line verbatim and judges each criterion as
+  written (backlog skill §Acceptance wording); the same lint feeds the
+  triage prompt),
   CI-or-gateCommand present under auto-merge
   (neither = red FAIL, per the gate floor). Exit 1 on
   problems. Run it after ANY infra change (new machine, runtime deploy,

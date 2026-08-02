@@ -42,7 +42,7 @@ Each `.factory/backlog/<epic>.md` holds tasks:
 - Gate: human (<reason>)       # optional: acceptance needs owner judgment —
                                # the merge gate holds green PRs for owner review
 - Acceptance:
-  - <observable criterion, testable>
+  - <observable criterion, exact expectation — §Acceptance wording below>
 - Verify: <command(s) that prove it — §Verify tiers below>
 - Notes: <PR link, blocked reason, decisions>
 - Model: opus                  # required unless done: model for the session
@@ -104,6 +104,30 @@ checkout. Write it at the highest tier the acceptance criteria reach:
 
 Triage copies hints into the day's session plan and corrects them against
 observed usage (a task that keeps turn-capping gets more turns next time).
+
+### Acceptance wording — the strictness dial
+
+The grader judges each criterion AS WRITTEN, so the wording is the
+strictness setting: write each criterion observable and checkable by a
+stranger in a fresh checkout — observable behavior plus the exact
+expectation (the input, the exact output/exit code/error contract, and
+the comparison target): "exit 2 with `error:` on stderr", "byte count
+matches `wc -c` on non-UTF-8 input".
+
+An unmeasurable adjective ("gracefully", "correctly", "robust", "fast")
+delegates strictness to per-run grader mood — the grader battery caught
+borderline PRs graded lenient 2-in-3 until the criterion said "byte
+length" literally. The driver lints for it (tier `vague`, same doctor
+row and triage list as the Verify lint): a criterion with a mood
+adjective and no measurable anchor — no number, no backticked
+command/string, no path, no comparison target — gets flagged; "word
+count matching `wc -w`" passes.
+
+If the expectation can't be written exactly (visual quality, feel), it
+belongs in `Gate: human (<reason>)`, not behind an adjective. A task
+with no criteria at all becomes one synthesized criterion from its
+title, which grades much more loosely than the spec deserves — write
+the real ones.
 
 ## Picking the next task
 
@@ -176,10 +200,8 @@ What to report when:
   not when the code looks done. Run the task's `Verify` commands. Under
   auto-merge they are also EXECUTED: the driver briefs an independent
   grader session from the `Acceptance:`/`Verify:` lines verbatim and the
-  PR merges only on its per-criterion pass — so triage writes each
-  criterion observable and checkable by a stranger in a fresh checkout
-  (a task without any becomes one synthesized criterion from its title,
-  which grades much more loosely than the spec deserves).
+  PR merges only on its per-criterion pass — write each criterion per
+  §Acceptance wording above: it is the strictness dial.
 - Scope creep goes to the backlog via your report, not the diff: mention
   discovered work in your summary and triage turns it into a task.
 - Backlog edits (triage only) are facts, not prose — keep the format

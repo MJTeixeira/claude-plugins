@@ -26,6 +26,7 @@ import { parseMilestones, unparsedMilestoneHeadings, parseBacklogTasks as parseT
 import { jiraTracker } from "./jira.mjs";
 import { jiraBoardInit, syncJiraBoard } from "./jira-board.mjs";
 import { expectedOrigin, sameOrigin } from "./distribution.mjs";
+import { selectStaleRetry, retryOutcome, appendRetryLine, extractTaskBlock } from "./stale-retry.mjs";
 
 // The checkout this driver runs from IS the runtime (deployed machines:
 // ~/.factory/runtime, gated by deploy-runtime.mjs) — session tooling is
@@ -49,6 +50,10 @@ const CONFIG_DEFAULTS = {
   gateSuiteTimeoutMin: 15,
   permissionMode: "dontAsk", // or "bypassPermissions" (sandboxed machines only)
   claudeCmd: "claude",
+  // Stale-parked retry lane (spec factory/specs/stale-parked-retry.md): days
+  // a parked task waits before its ONE escalated look (0 disables the lane).
+  staleRetryDays: 1,
+  staleRetryModel: "fable",
 };
 
 // ---------- helpers ----------
@@ -295,7 +300,14 @@ const parseSessionStream = (sessionLogPath) => {
         });
         if (Array.isArray(e.message.content)) {
           for (const p of e.message.content) {
-            if (p.type === "tool_use" && p.name) tools[p.name] = (tools[p.name] ?? 0) + 1;
+            // Skill invocations key per skill (skill-firing instrument 1):
+            // one "Skill" bucket says nothing about WHICH skill fired, and
+            // per-skill counts are the Retire signal the maintenance
+            // verdicts want. Schema-aligned with hooks/session-metrics.mjs.
+            if (p.type === "tool_use" && p.name) {
+              const key = p.name === "Skill" && typeof p.input?.skill === "string" && p.input.skill ? `Skill:${p.input.skill}` : p.name;
+              tools[key] = (tools[key] ?? 0) + 1;
+            }
           }
           const text = e.message.content.filter((p) => p.type === "text").map((p) => p.text).join("\n");
           if (text) lastAssistantText = text;
@@ -2278,8 +2290,8 @@ const runDoctor = () => {
       const flagged = lintVerify(all, cfg.gateCommand);
       check(flagged.length ? "warn" : "ok", "Verify lines",
         flagged.length
-          ? `${flagged.length} non-done task(s) whose Verify won't prove the task — missing, suite-only, or skipping the engine tests the acceptance names; the grader runs these verbatim, triage should fix them: ${flagged.map((t) => `${t.id}=${t.tier}`).join(", ").slice(0, 120)}`
-          : "none flagged (missing, suite-only, or engine cross-check)");
+          ? `${flagged.length} non-done task(s) whose Verify/acceptance won't hold the grader to the task — missing, suite-only, skipping the engine tests the acceptance names, or vague acceptance wording; triage should fix them: ${flagged.map((t) => `${t.id}=${t.tier}`).join(", ").slice(0, 120)}`
+          : "none flagged (missing, suite-only, engine cross-check, or vague wording)");
     }
   }
 
@@ -3408,11 +3420,12 @@ const runSingle = async (name) => {
     const flagged = lintVerify(effectiveTasks(), cfg.gateCommand);
     if (flagged.length) {
       promptText += `\n\n## Verify-line lint (driver-computed — fix these with your other backlog edits)\n\n` +
-        `These tasks' \`Verify:\` lines won't prove their task. ` +
-        `The acceptance grader executes them verbatim, so rewrite each to DRIVE THE PRODUCT and run the tests the acceptance names (the backlog skill's Verify tiers):\n\n` +
+        `These tasks' \`Verify:\` lines or acceptance wording won't hold the grader to the task. ` +
+        `The grader executes the lines and judges each criterion AS WRITTEN, so rewrite each to DRIVE THE PRODUCT, run the tests the acceptance names, and state exact expectations (the backlog skill's Verify tiers and §Acceptance wording):\n\n` +
         flagged.map((t) => `- ${t.id} (${t.epic}, ${t.status}) — ${
           t.tier === "missing" ? "no Verify line"
           : t.tier === "engine" ? `acceptance names engine-tier tests this line never runs: \`${t.verify}\``
+          : t.tier === "vague" ? `vague acceptance wording (mood adjective, no measurable anchor): "${t.criterion}"`
           : `suite-only: \`${t.verify}\``}`).join("\n") + "\n";
     }
   }
@@ -4248,6 +4261,69 @@ if (mode === "prep") {
   }
 }
 
+// ---------- stale-parked retry lane ----------
+// (spec factory/specs/stale-parked-retry.md) One escalated look per park, on
+// idle window capacity only — fired when a window would otherwise skip or
+// end for lack of eligible work. Selection is pure (stale-retry.mjs); this
+// gathers the driver-side inputs: claims (a human's open PR reserves the
+// task, same reading as the window's claim scan) and question state (an
+// answered question is triage's fold, never a retry's).
+const pickStaleRetry = () => {
+  if (!(Number(cfg.staleRetryDays) > 0)) return null;
+  const claimedIds = new Set();
+  try {
+    for (const p of forge.prListOpen()) {
+      const factoryOwn = !p.isDraft && (p.headRefName.startsWith("factory/") || p.title.startsWith("[factory]"));
+      const id = factoryOwn ? null : p.title.match(/T-[\w-]+/)?.[0];
+      if (id) claimedIds.add(id);
+    }
+  } catch (e) {
+    log(`stale retry: pr list failed (${firstLine(e)}) — proceeding without claim info`);
+  }
+  let openQuestionUrls = null;
+  try {
+    openQuestionUrls = new Set(tracker.issueListOpen().map((i) => i.url).filter(Boolean));
+  } catch (e) {
+    log(`stale retry: tracker list failed (${firstLine(e)}) — proceeding without question state`);
+  }
+  return selectStaleRetry({ tasks: effectiveTasks(), state: readState(), staleRetryDays: cfg.staleRetryDays, claimedIds, openQuestionUrls });
+};
+
+// Stamp a finished retry: state record (what eligibility reads — one retry
+// per park), the durable `- Retried:` backlog marker, and on still-stuck the
+// evidence comment on the task's existing question thread. Deliberately no
+// notify: the thread comment is the only owner-facing echo (spec).
+const finishStaleRetry = (taskId, result, overrides, timedOut) => {
+  const task = effectiveTasks().find((t) => t.id === taskId) ?? null;
+  const outcome = retryOutcome(result, task);
+  const model = overrides?.model ?? cfg.staleRetryModel ?? "fable";
+  const s = readState();
+  s.tasks[taskId] = { ...(s.tasks[taskId] ?? {}), retry: { at: new Date().toISOString(), model, outcome } };
+  writeState(s);
+  const detail = firstLine(result?.summary ?? "") ||
+    (timedOut ? `killed at the ${cfg.sessionTimeoutMin}min timeout` : result ? `session ended ${result.status}` : "session died without reporting");
+  const marked = appendRetryLine(path.join(runtimeFactoryDir(), "backlog"),
+    taskId, `- Retried: ${today()} ${model} — ${outcome}: ${detail.slice(0, 140)}`);
+  if (marked) commitMetadata(`${taskId} retried (${outcome})`);
+  if (outcome === "still-stuck" && task?.question) {
+    // Same url→id mapping the daily-log poster uses: github/bitbucket issue
+    // numbers, jira browse keys, discord thread ids (strings — snowflakes
+    // overflow Number).
+    const u = String(task.question);
+    const gh = u.match(/\/issues\/(\d+)/)?.[1];
+    const id = gh ? Number(gh) : u.match(/\/browse\/([A-Z][A-Z0-9]*-\d+)/)?.[1] ?? u.match(/discord\.com\/channels\/\d+\/(\d+)/)?.[1] ?? null;
+    if (id != null) {
+      try {
+        tracker.issueComment(id, `escalated retry ${today()} (${model}): ${detail}`);
+      } catch (e) {
+        log(`stale retry: evidence comment failed (${firstLine(e)}) — continuing`);
+      }
+    }
+  }
+  journal("stale-retry", "done", `${taskId} → ${outcome}`);
+  log(`stale-parked retry ${taskId} → ${outcome}`);
+};
+
 // dev: the window loop. One call = one window; --until-done loops it (the
 // outer loop is at the bottom of the file). Returns {kind}: how the window
 // ended — "skipped" | "stop" | "time" | "cap" | "no-tasks" | "deaths" |
@@ -4268,6 +4344,11 @@ if (isGitRepo() && fs.existsSync(worktreesRoot())) {
 journalFile = path.join(logDir, `journal-${nowStamp()}.jsonl`);
 journal("window-start", "done", `${cfg.windowHours}h, cap ${cfg.maxSessionsPerWindow}, autonomy ${cfg.autonomy}`);
 let sessions = 0;
+// Stale-parked retry lane: staleRetryId marks the NEXT session as the
+// window's one escalated retry; staleRetryDone caps the lane at one per
+// window (which is also one per until-done cycle).
+let staleRetryId = null;
+let staleRetryDone = false;
 let nextSessionNote = null; // driver-gathered context injected into the next session's prompt
 {
   // Conflict/failing-checks instructions persisted by the previous window's
@@ -4329,10 +4410,19 @@ try {
   const pool = effectiveTasks();
   const derived = pool.length ? deriveFactoryStatus(pool) : { status: "normal" };
   if (derived.status !== "normal") {
-    log(`window skipped: ${derived.detail}`);
-    journal("window-skipped", "done", derived.detail);
-    await finalizeWindow("window skipped", new Set(), `∅ dev window skipped — ${derived.detail}`);
-    return { kind: "skipped" };
+    // The stale-parked lane lives exactly here: a window that would only
+    // skip has idle capacity, and an all-parked backlog is where stale
+    // parks accumulate. One eligible task turns the skip into ONE retry
+    // session; nothing eligible keeps the free skip.
+    const rt = derived.status === "done" ? null : pickStaleRetry();
+    if (!rt) {
+      log(`window skipped: ${derived.detail}`);
+      journal("window-skipped", "done", derived.detail);
+      await finalizeWindow("window skipped", new Set(), `∅ dev window skipped — ${derived.detail}`);
+      return { kind: "skipped" };
+    }
+    log(`window would have skipped (${derived.detail}) — stale-parked retry eligible: ${rt.id}`);
+    staleRetryId = rt.id;
   }
 }
 
@@ -4341,7 +4431,7 @@ try {
 // mode: sessions picked settled tasks or missed unblocked ones). STOP means
 // the owner halted this factory: don't burn a triage (or land its metadata
 // commit) on a window the loop's first STOP check will end anyway.
-if (!planAnswered && !fs.existsSync(stopFile)) {
+if (!planAnswered && !staleRetryId && !fs.existsSync(stopFile)) {
   log(`plan.json ${planRaw ? "stale or malformed" : "missing"} — running triage before the first session`);
   let triageExit = 1;
   try {
@@ -4424,7 +4514,9 @@ while (true) {
   // Unreadable list = no claim info, never a stopped window (the human's
   // draft still protects the task at merge time: the sweep skips drafts).
   const claims = new Map();
-  try {
+  // A retry session's assignment is fixed and claims were consulted at
+  // pick time — skip the per-session forge read for it.
+  if (!staleRetryId) try {
     for (const p of forge.prListOpen()) {
       const factoryOwn = !p.isDraft && (p.headRefName.startsWith("factory/") || p.title.startsWith("[factory]"));
       const id = factoryOwn ? null : p.title.match(/T-[\w-]+/)?.[0];
@@ -4438,7 +4530,7 @@ while (true) {
   // blocked awaiting a human) would each burn a session re-verifying (NOTES
   // item 43). Skip them — and claimed entries — a fully-settled plan falls
   // back to self-selection like an exhausted one.
-  if (plan) {
+  if (plan && !staleRetryId) {
     const settled = new Map(effectiveTasks().map((t) => [t.id, t.status]));
     while (planIdx < plan.length) {
       const st = settled.get(plan[planIdx].taskId);
@@ -4456,7 +4548,7 @@ while (true) {
       break;
     }
   }
-  const entry = plan?.[planIdx] ? { ...plan[planIdx] } : null;
+  const entry = staleRetryId || !plan?.[planIdx] ? null : { ...plan[planIdx] };
   if (entry && (!entry.model || !entry.effort)) {
     log(`plan entry ${entry.taskId} is missing ${!entry.model ? "model" : "effort"} — triage should have assigned it from the spec; falling back to config/machine default`);
   }
@@ -4474,6 +4566,30 @@ while (true) {
       entry.model = pin;
     }
   }
+  // Stale-parked retry session: exit-criteria-only prompt (the task block
+  // verbatim plus contracts, no dev-task coaching) on the escalated model.
+  // Deliberately NO noteRuntimeStatus("in-progress"): a dead retry must
+  // never un-park the task it was probing.
+  const retryingId = staleRetryId;
+  let retryOverrides = null;
+  let retryPromptText = null;
+  let retryParkedStatus = null; // the park class at spawn — guards the downgrade below
+  if (retryingId) {
+    staleRetryId = null;
+    staleRetryDone = true;
+    retryParkedStatus = effectiveTasks().find((t) => t.id === retryingId)?.status ?? null;
+    const block = extractTaskBlock(path.join(runtimeFactoryDir(), "backlog"), retryingId);
+    if (!block) {
+      log(`stale retry: ${retryingId} vanished from the backlog — ending window`);
+      removeWorktree(sessionWt, `session ${sessions} abort`);
+      endReason = "no-tasks";
+      break;
+    }
+    retryOverrides = { model: cfg.staleRetryModel ?? "fable", effort: "high" };
+    retryPromptText = promptFor("retry-task") + configPromptNote() +
+      `\n\n## The task (verbatim from the backlog — your assignment)\n\n${block}\n`;
+    log(`session ${sessions} is a stale-parked retry: ${retryingId} (${retryOverrides.model}, effort ${retryOverrides.effort})`);
+  }
   log(`session ${sessions} starting${entry ? ` (plan: ${entry.taskId}${entry.model ? ", " + entry.model : ""}${entry.effort ? ", effort " + entry.effort : ""})` : ""} — ${sessionLog}`);
   if (entry?.taskId) noteRuntimeStatus(entry.taskId, "in-progress");
   let extra = "";
@@ -4489,16 +4605,16 @@ while (true) {
   if (claims.size) {
     extra += `\n\n## Claimed tasks (a human holds each via an open PR — NOT eligible, even if the backlog says todo)\n\n${[...claims].map(([id, c]) => `- ${id} — ${c.draft ? "draft " : ""}PR #${c.number}`).join("\n")}\n`;
   }
-  nextSessionNote = null;
+  if (!retryingId) nextSessionNote = null; // the retry prompt never carries driver notes — leave them for the sweep
   const { exitCode, timedOut, mcpEventsPath } = await runSession({
     project: sessionCwd,
     cfg,
     env,
-    promptText: extra ? promptText + extra : promptText,
+    promptText: retryPromptText ?? (extra ? promptText + extra : promptText),
     sessionLogPath: sessionLog,
     log,
     mode: "dev",
-    overrides: entry ?? {},
+    overrides: retryOverrides ?? entry ?? {},
   });
 
   // Session result: a settled MCP report (validated, made at the moment of
@@ -4510,13 +4626,13 @@ while (true) {
   removeWorktree(sessionWt, `session ${sessions} end`);
   const end = result ? null : classifySessionEnd(sessionLog);
   const status = result?.status ?? (timedOut ? "timeout" : end.kind === "turn-capped" ? "turn-capped" : "died");
-  const row = recordUsage({ factoryDir: stateD, sessionLogPath: sessionLog, mode: "dev", taskId: result?.taskId, status,
-    model: entry?.model ?? cfg.model, log });
+  const row = recordUsage({ factoryDir: stateD, sessionLogPath: sessionLog, mode: "dev", taskId: result?.taskId ?? retryingId, status,
+    model: retryOverrides?.model ?? entry?.model ?? cfg.model, log });
   journal("session", "done",
-    `${sessions} ${result?.taskId ?? entry?.taskId ?? "?"} → ${status}${row?.costUsd != null ? ` $${row.costUsd.toFixed(2)}` : ""}${result?.pr ? ` ${result.pr}` : ""}`);
+    `${sessions} ${result?.taskId ?? entry?.taskId ?? retryingId ?? "?"} → ${status}${row?.costUsd != null ? ` $${row.costUsd.toFixed(2)}` : ""}${result?.pr ? ` ${result.pr}` : ""}`);
   const alert = ["blocked", "timeout", "died"].includes(status);
   await notify(
-    `${alert ? "⚠" : "✔"} session ${sessions}: ${result?.taskId ?? entry?.taskId ?? "?"} → ${status}` +
+    `${alert ? "⚠" : "✔"} session ${sessions}: ${result?.taskId ?? entry?.taskId ?? retryingId ?? "?"} → ${status}` +
       (row?.costUsd != null ? ` ($${row.costUsd.toFixed(2)})` : "") +
       (result?.pr ? `\n${result.pr}` : "") +
       (status === "blocked" && result?.summary ? `\n${result.summary}` : "")
@@ -4538,7 +4654,14 @@ while (true) {
     endReason = "fatal";
     break;
   }
-  if (result?.taskId && result.status) noteRuntimeStatus(result.taskId, result.status, result.pr ?? null);
+  // A still-stuck retry on a needs-human task reports `blocked` (the retry
+  // prompt's only still-stuck vocabulary) — that report is EVIDENCE, never
+  // a re-park: writing it through would downgrade "only the owner clears
+  // it" to machine-clearable, which the spec forbids (the retry never
+  // hand-flips a parked status) and a later triage could then flip to todo.
+  const retryDowngrade = Boolean(retryingId && result?.taskId === retryingId &&
+    result.status === "blocked" && retryParkedStatus === "needs-human");
+  if (result?.taskId && result.status && !retryDowngrade) noteRuntimeStatus(result.taskId, result.status, result.pr ?? null);
   // Durable flips the driver owns (NOTES item 24): blocked and reconciled-
   // done get their own (rare) metadata commits; done-via-merge rides the
   // gate's merge commit below.
@@ -4547,7 +4670,7 @@ while (true) {
   // overwrite it below.
   const parkedIds = new Set(filedQuestions.filter((q) =>
     q.taskId && !(result?.taskId === q.taskId && ["completed", "review"].includes(result?.status))).map((q) => q.taskId));
-  if (result?.taskId && result.status === "blocked" && !parkedIds.has(result.taskId)) {
+  if (result?.taskId && result.status === "blocked" && !parkedIds.has(result.taskId) && !retryDowngrade) {
     const applied = applyFlips([{ taskId: result.taskId, status: "blocked" }]);
     if (applied.length) commitMetadata(`${result.taskId} blocked: ${(result.summary ?? "").split(/[.\n]/)[0].slice(0, 120)}`);
   }
@@ -4570,6 +4693,18 @@ while (true) {
     );
     if (result.status === "no-tasks") {
       syncBoard(`session ${sessions}`);
+      // Idle capacity confirmed by the session itself — the stale-parked
+      // lane's other trigger. The loop-top time/cap checks still guard the
+      // spawn, so the retry only runs on real remaining budget.
+      if (!retryingId && !staleRetryDone) {
+        const rt = pickStaleRetry();
+        if (rt) {
+          log(`backlog has no eligible tasks — stale-parked retry eligible: ${rt.id}`);
+          staleRetryId = rt.id;
+          continue;
+        }
+      }
+      if (retryingId) finishStaleRetry(retryingId, result, retryOverrides, timedOut);
       log("backlog has no eligible tasks — ending window");
       endReason = "no-tasks";
       break;
@@ -4581,7 +4716,7 @@ while (true) {
       // to skip acceptance grading just by reporting `taskId: null`. The
       // session's explicit id still wins (a HANDOFF override legitimately
       // works a different task than assigned).
-      const gateTaskId = result.taskId ?? entry?.taskId ?? null;
+      const gateTaskId = result.taskId ?? entry?.taskId ?? retryingId ?? null;
       nextSessionNote = await mergeGate({ pr: result.pr, taskId: gateTaskId });
     }
   } else {
@@ -4610,6 +4745,13 @@ while (true) {
         : "") +
       `Repo state right now:\n\n${repoSnapshot({ project: snapProject, env, forge: makeForge(snapProject) })}` +
       (end.finalText ? `\n\nIts final output (may be mid-thought):\n\n${end.finalText.slice(0, 1500)}` : "");
+    // A dead retry still consumed its park's one look — stamp it and end
+    // the window; the lane must never feed the silent-death breaker either.
+    if (retryingId) {
+      finishStaleRetry(retryingId, result, retryOverrides, timedOut);
+      endReason = "no-tasks";
+      break;
+    }
     const realDeath = end.kind !== "turn-capped" || timedOut;
     if (realDeath && exitCode !== 0) {
       const prev = path.join(logDir, `.silent-death`);
@@ -4635,6 +4777,15 @@ while (true) {
   }
   syncBoard(`session ${sessions}`);
   fs.rmSync(path.join(logDir, `.silent-death`), { force: true });
+  // Stale-parked retry: stamp the outcome (after the flips above, so the
+  // retry stamp postdates any re-park and eligibility stays one-per-park),
+  // then end the window as it would have. Placed BEFORE the breaker by
+  // construction — the lane is one-shot and never feeds its counters.
+  if (retryingId) {
+    finishStaleRetry(retryingId, result, retryOverrides, timedOut);
+    endReason = "no-tasks";
+    break;
+  }
   // No-progress breaker (until-done only): a task still unsettled after this
   // boundary — merges and flips above have all had their chance — counts one
   // more burned session; at noProgressSessions (default 3) it parks

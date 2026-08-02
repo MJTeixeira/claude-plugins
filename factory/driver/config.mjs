@@ -59,6 +59,11 @@ export const buildConfig = (a) => ({
   // correlation, so it stays on a strong tier regardless of how cheap the
   // implementing sessions run.
   graderModel: "opus",
+  // Stale-parked retry lane (FACTORY.md §Stale-parked retry): days a parked
+  // task waits before its ONE escalated look on idle window capacity (0
+  // disables), and the retry session's model — escalation is the point.
+  staleRetryDays: 1,
+  staleRetryModel: "fable",
   permissionMode: "dontAsk",
   claudeCmd: "claude",
 });

@@ -86,6 +86,11 @@ branches, no checkouts, no commits, no merges.
   = only the owner clears it (there is an open question or a human gate).
   Never downgrade `needs-human` to `blocked`; flip it to `todo` only when
   the owner's answer/approval is actually in.
+- A `- Retried:` line on a parked task is the driver's stale-parked retry
+  record: an escalated session already re-tested the recorded blocker.
+  "still-stuck" means don't wait for magic — split the task, re-scope it,
+  or surface it to the owner with the evidence. No marker on an old park
+  means the escalated look hasn't happened yet.
 - A proposal that needs changes to the factory's own tooling never becomes
   a backlog task: the driver, prompts, and schedulers run from the machine
   runtime (`~/.factory/runtime/`), outside this repo, and `.factory/hooks/`
