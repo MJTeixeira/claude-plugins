@@ -213,6 +213,25 @@ spawn graders; a prep sweep leaves ungraded PRs for the next window
 (prep spawns no sessions, by contract). Human-gated and risk-parked PRs
 are unchanged: the owner IS their acceptance check.
 
+**The graded-fail breaker (1.20.0):** a plain retry after a graded fail
+rarely recovers — the fleet's own metrics put it at 1 in 6
+(`.docs/context-degradation.md`, 2026-08-02): retry sessions inherit the
+prior session's conclusions and deliver a minimal delta that fails the
+same criteria again. So the fix-note loop has a floor: after
+`gradeFailLimit` (config, default 2) CONSECUTIVE genuine graded fails —
+fresh head each time — the gate stops writing retry notes and parks the
+task `needs-human` with a filed question carrying the failed criteria,
+asking for a re-plan (split the task, rescope its acceptance criteria, or
+clear the obstacle; flip back to `todo` when done). Only genuine fails
+count: short verdicts and no-verdict outcomes are grader capacity, not
+code quality, and a cached SHA re-read never double-counts. A passing
+grade — or the park itself — clears the streak (`state.json`
+`gradeFails`), so re-planned work gets a fresh budget. While parked by
+this breaker the still-open PR's cached fail stays silent on later sweeps
+(no note regrowth); a task parked by an open question is never converted
+(the T-032 invariant — same rule as risk tiers). Works in every mode that
+runs the merge gate, unlike the until-done-only no-progress breaker.
+
 ## Machine setup (once per machine)
 
 1. **The runtime** — every scheduler execs it, every worktree gets its
@@ -361,6 +380,7 @@ without its row.
 | `riskTiers` | `{"high": []}` | path prefixes (end dirs with `/`) whose PRs always park for owner review. A malformed value FAILS doctor rather than silently disabling the floor |
 | `toolchain` | *(unset)* | external tools the window needs, `[{"name": "godot", "check": "godot --version"}]` — one doctor row each, so a missing tool stops the window before it burns sessions. Malformed = doctor fail |
 | `noProgressSessions` | `3` | `dev --until-done` only: sessions a task may burn without settling before it parks `needs-human` |
+| `gradeFailLimit` | `2` | consecutive genuine graded fails (fresh heads) a task may take before the gate parks it `needs-human` for re-planning instead of writing another retry note (§Verification & review contract, graded-fail breaker) |
 | `staleRetryDays` | `1` | days a parked (`blocked`/`needs-human`) task waits before its ONE escalated retry on idle window capacity (§Stale-parked retry); `0` disables the lane |
 | `staleRetryModel` | `"fable"` | the retry session's model — the escalation IS the point: the task's own pin and the factory default already parked it |
 | `permissionMode` | `"dontAsk"` | keep it; `"bypassPermissions"` only inside a container/VM you could afford to lose |

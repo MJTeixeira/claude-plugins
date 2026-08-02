@@ -3827,6 +3827,7 @@ const landMerge = async ({ pr, view, taskId }) => {
       if (taskId) {
         const sha = git(["rev-parse", `origin/${head}`], metaPath());
         let grade = readState().grades?.[sha] ?? null;
+        let freshVerdict = false;
         if (!grade && mode === "dev") {
           const outcome = {
             ...(await runGrader({ pr, taskId, head, sha })),
@@ -3836,6 +3837,7 @@ const landMerge = async ({ pr, view, taskId }) => {
           // outcome still refuses this landing, but stays out of the cache
           // so the next sweep or window re-grades the same SHA.
           grade = outcome.noVerdict ? outcome : recordGrade(sha, outcome);
+          freshVerdict = !outcome.noVerdict;
         }
         if (!grade) {
           try { git(["merge", "--abort"], metaPath()); } catch { /* nothing staged */ }
@@ -3845,9 +3847,75 @@ const landMerge = async ({ pr, view, taskId }) => {
         }
         if (!grade.pass) {
           try { git(["merge", "--abort"], metaPath()); } catch { /* nothing staged */ }
+          // Graded-fail breaker (.docs/context-degradation.md, 2026-08-02): a
+          // plain retry after a graded fail recovers 1 time in 6 — after
+          // `gradeFailLimit` consecutive genuine fails the task needs
+          // re-planning, not another "checkout, fix, push" note. Only fresh
+          // verdicts with genuinely failed criteria count: a cached SHA
+          // re-read never double-counts, and short/no-verdict outcomes are
+          // grader capacity, not code quality.
+          if (readState().tasks[taskId]?.parkedBy === "grade-breaker") {
+            // Already parked by this breaker: the question is filed and the
+            // owner owns the next move — repeat sweeps of the still-open PR
+            // must not regrow the retry note the park exists to stop.
+            journal("gate:grade", "defer", `${pr} (${taskId}) breaker-parked`);
+            return null;
+          }
+          const genuineFail = !grade.noVerdict && !grade.shortfall && (grade.criteria ?? []).some((c) => !c.pass);
+          let fails = readState().gradeFails?.[taskId] ?? 0;
+          if (freshVerdict && genuineFail) {
+            const s = readState();
+            s.gradeFails = { ...(s.gradeFails ?? {}), [taskId]: (s.gradeFails?.[taskId] ?? 0) + 1 };
+            writeState(s);
+            fails = s.gradeFails[taskId];
+          }
+          const limit = Number.isInteger(cfg.gradeFailLimit) && cfg.gradeFailLimit > 0 ? cfg.gradeFailLimit : 2;
+          // `blocked` guard: a task parked by an open question keeps its
+          // status — converting it would let the owner's later merge flip it
+          // done with the question unanswered (the T-032 invariant).
+          if (genuineFail && fails >= limit && !blocked) {
+            log(`merge-gate: grade breaker — ${taskId} failed acceptance grading ${fails} time(s) on fresh heads; parking needs-human instead of another retry`);
+            try {
+              const failLines = (grade.criteria ?? []).filter((c) => !c.pass)
+                .map((c) => `- ${c.criterion}\n  evidence: ${c.evidence}`).join("\n");
+              const filed = await processQuestions([{
+                taskId,
+                title: `grade breaker parked ${taskId} after ${fails} failed acceptance grades`,
+                body:
+                  `The independent grader failed ${pr} on ${fails} consecutive fresh commit(s) — plain retries rarely ` +
+                  `recover a graded fail. Re-plan the task instead of retrying: split it, sharpen or rescope its ` +
+                  `acceptance criteria, or clear the obstacle, then flip it back to todo.` +
+                  (failLines ? `\nLast failed criteria (grader's evidence inline):\n${failLines}` : ""),
+              }], "dev");
+              const applied = applyFlips([{ taskId, status: "needs-human" }]);
+              if (applied.some((a) => a.startsWith(`${taskId} `))) {
+                const s = readState();
+                if (s.tasks[taskId]) s.tasks[taskId].parkedBy = "grade-breaker";
+                // Parking clears the streak — re-planned work gets a fresh budget.
+                if (s.gradeFails) delete s.gradeFails[taskId];
+                writeState(s);
+                for (const q of filed) if (q.taskId === taskId && q.url) addTaskLinkInFiles(taskId, q.url);
+                commitMetadata(`${taskId} needs-human: grade breaker (${fails} failed grades)`);
+                forge.prComment(pr,
+                  `The acceptance grader failed this PR ${fails} time(s) in a row, so the factory stopped retrying and ` +
+                  `parked ${taskId} for re-planning (split the task, rescope its acceptance criteria, or clear the ` +
+                  `obstacle). See the filed question; flip the task back to todo once re-planned.`);
+                journal("gate:grade-breaker", "done", `${pr} (${taskId})`);
+                await notify(`🛑 grade breaker parked ${taskId} after ${fails} failed grades: ${pr}`);
+              }
+              return null;
+            } catch (e) {
+              log(`merge-gate: grade-breaker parking failed (${firstLine(e)}) — falling back to the retry note`);
+            }
+          }
           log(`merge-gate: acceptance grader FAILED ${pr} (${taskId})${grade.noVerdict ? " — no verdict was recorded" : ""} — leaving the fix for the next session`);
           journal("gate:grade", "fail", `${pr} (${taskId})${grade.noVerdict ? " (no verdict)" : ""}`);
           return gradeNote({ pr, taskId, head, grade });
+        }
+        // A pass ends any fail streak — the counter never outlives a green grade.
+        {
+          const s = readState();
+          if (s.gradeFails?.[taskId] != null) { delete s.gradeFails[taskId]; writeState(s); }
         }
         gradePassed = true;
         log(`merge-gate: acceptance grade passed for ${pr}`);
