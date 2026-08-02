@@ -27,7 +27,8 @@ epic, in exactly the format defined in the `code4food-factory:backlog` skill
 2. **Epics**: 3-8 per milestone, one file each (`e<N>-<kebab-name>.md`).
 3. **Tasks**: sized for ONE unattended session each (~a focused hour: one
    feature slice with its tests — not "build the backend"). Every task gets:
-   testable acceptance criteria, a concrete `Verify` command, `Deps`, and the
+   measurable acceptance criteria (exact outputs/contracts, per the backlog
+   skill's §Acceptance wording), a concrete `Verify` command, `Deps`, and the
    `Reqs:` ids it satisfies (if the spec has REQ ids). EVERY task also gets
    `Model:` and `Effort:` (and `Turns:` where warranted), assigned per the
    rubric in the `code4food-factory:backlog` skill by actually judging the task against the

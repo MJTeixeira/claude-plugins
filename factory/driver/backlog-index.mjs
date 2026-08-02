@@ -327,18 +327,39 @@ const invokesEngineTests = (verify) => {
   return segs.some((s) => /^cd[ \t]+\S/.test(s)) && segs.some(hasTest);
 };
 
+// ---------- vague-acceptance check (the strictness dial) ----------
+// The grader judges each criterion AS WRITTEN, so wording is the strictness
+// setting (grader battery 2026-08-01: borderline PRs graded lenient 2-in-3
+// until the criterion said "byte length" literally). A mood adjective with
+// no measurable anchor delegates strictness to per-run grader mood. Same
+// conservatism as the tiers above: flag only when BOTH hold — adjective
+// present AND no anchor. Anchors are generous on purpose: any number, any
+// backticked token, any path, or a comparison verb keeps the benefit of
+// the doubt ("matching `wc -w`" passes; "handles errors gracefully" flags).
+// Hyphenated compounds are not the adjective ("fast-forward" ≠ "fast").
+const VAGUE_ADJ_RE = /(?<!-)\b(?:graceful(?:ly)?|correct(?:ly)?|robust(?:ly)?|proper(?:ly)?|appropriate(?:ly)?|reliab(?:le|ly)|seamless(?:ly)?|smooth(?:ly)?|efficient(?:ly)?|intuitive(?:ly)?|user-friendly|fast|quick(?:ly)?)\b(?!-)/i;
+const MEASURABLE_ANCHOR_RE = /\d|`|\/|\b(?:match(?:es|ing)?|equals?|identical to|same as)\b/i;
+
+// First criterion that flags, or null — the lint reports one per task.
+export const vagueCriterion = (acceptance) =>
+  (acceptance ?? []).find((c) => VAGUE_ADJ_RE.test(c) && !MEASURABLE_ANCHOR_RE.test(c)) ?? null;
+
 // The lint doctor and triage consume: non-done tasks whose Verify line the
 // tier check is sure about. Done tasks already shipped — their weak lines
 // are history, not work. Solo tier first; only lines that pass it get the
-// acceptance cross-check (tier "engine") — one report per task, the more
-// fundamental defect wins.
+// acceptance cross-check (tier "engine"), then the wording check (tier
+// "vague", which alone carries the offending `criterion`) — one report per
+// task, the more fundamental defect wins.
 export const lintVerify = (tasks, gateCommand = null) =>
   tasks
     .filter((t) => t.status !== "done")
     .map((t) => {
       let tier = verifyTier(t.verify, gateCommand);
+      let criterion = null;
       if (tier === "product" && acceptanceNamesEngineTests(t.acceptance) && !invokesEngineTests(t.verify)) tier = "engine";
-      return { id: t.id, epic: t.epic, status: t.status, verify: t.verify ?? null, tier };
+      else if (tier === "product" && (criterion = vagueCriterion(t.acceptance))) tier = "vague";
+      const entry = { id: t.id, epic: t.epic, status: t.status, verify: t.verify ?? null, tier };
+      return criterion ? { ...entry, criterion } : entry;
     })
     .filter((t) => t.tier !== "product");
 

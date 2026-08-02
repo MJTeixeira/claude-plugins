@@ -46,7 +46,13 @@ try {
     if (obj?.type === "assistant" && obj.message) {
       const m = obj.message;
       for (const b of Array.isArray(m.content) ? m.content : []) {
-        if (b?.type === "tool_use" && b.name) tools[b.name] = (tools[b.name] ?? 0) + 1;
+        // Skill invocations key per skill (skill-firing instrument 1) —
+        // schema-aligned with the driver's metrics writer, so fleet and
+        // piloted rows histogram skills the same way.
+        if (b?.type === "tool_use" && b.name) {
+          const key = b.name === "Skill" && typeof b.input?.skill === "string" && b.input.skill ? `Skill:${b.input.skill}` : b.name;
+          tools[key] = (tools[key] ?? 0) + 1;
+        }
       }
       // The CLI writes one transcript line per content block; the lines
       // of one message share its id and usage. Count each message once
