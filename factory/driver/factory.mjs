@@ -4941,6 +4941,11 @@ if (!untilDone) {
     }
     const before = new Map(effectiveTasks().map((t) => [t.id, t.status]));
     try {
+      // The leading triage runs in the meta worktree, which doesn't exist
+      // yet on a fresh factory (standalone triage refreshes; window start
+      // refreshes — this leg sits before both). Without it the spawn dies
+      // on the missing cwd and burns a dead session row every first cycle.
+      refreshMeta();
       await runSingle("triage");
     } catch (e) {
       log(`until-done: triage errored (${firstLine(e)}) — the window will plan for itself`);
