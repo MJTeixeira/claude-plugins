@@ -240,7 +240,10 @@ const runSession = ({ project, cfg, env, promptText, sessionLogPath, log, mode, 
     child.on("error", (err) => {
       clearTimeout(timer);
       log(`failed to spawn ${cfg.claudeCmd}: ${err.message}`);
-      resolve({ exitCode: -1, timedOut, mcpEventsPath });
+      // spawnFailed: the session never ran — a machine problem (binary gone
+      // mid-window, missing cwd, fd exhaustion), not a session crash. Callers
+      // surface it as its own status so the operator doesn't chase task bugs.
+      resolve({ exitCode: -1, timedOut, mcpEventsPath, spawnFailed: true });
     });
     // 'exit', not 'close': a killed child's orphans can hold the stdio pipes
     // open forever, and 'close' would never fire.
@@ -3436,7 +3439,7 @@ const runSingle = async (name) => {
   // exactly where the driver commits it; the owner's checkout stays theirs.
   const cwd = isGitRepo() ? metaPath() : project;
   if (isGitRepo()) trustWorkspace(metaPath());
-  const { exitCode, timedOut, mcpEventsPath } = await runSession({
+  const { exitCode, timedOut, mcpEventsPath, spawnFailed } = await runSession({
     project: cwd,
     cfg,
     env,
@@ -3446,7 +3449,7 @@ const runSingle = async (name) => {
     mode: name,
     overrides: name === "triage" ? { model: cfg.triageModel } : {},
   });
-  const row = recordUsage({ factoryDir: stateD, sessionLogPath: sessionLog, mode: name, status: exitCode === 0 ? "completed" : "failed", log });
+  const row = recordUsage({ factoryDir: stateD, sessionLogPath: sessionLog, mode: name, status: exitCode === 0 ? "completed" : spawnFailed ? "spawn-failed" : "failed", log });
   const mcpEv = readMcpEvents(mcpEventsPath);
   const filedQuestions = await processQuestions(mcpEv.questions, name);
   await postDailyLogs(mcpEv.dailyLogs, name);
@@ -3534,11 +3537,11 @@ const runSingle = async (name) => {
     syncBoard("triage"); // triage rewrites the backlog
   }
   clearLock(stateD);
-  log(`${name} session done (exit ${exitCode}${timedOut ? ", timed out" : ""}) — ${sessionLog}`);
+  log(`${name} session done (exit ${exitCode}${timedOut ? ", timed out" : ""}${spawnFailed ? ", spawn failed" : ""}) — ${sessionLog}`);
   await notify(
     exitCode === 0
       ? `✔ ${name} done${row?.costUsd != null ? ` ($${row.costUsd.toFixed(2)})` : ""}`
-      : `⚠ ${name} FAILED (exit ${exitCode}${timedOut ? ", timed out" : ""})`
+      : `⚠ ${name} FAILED (${spawnFailed ? "spawn failed — a machine problem, check claudeCmd/PATH" : `exit ${exitCode}${timedOut ? ", timed out" : ""}`})`
   );
   return exitCode;
 };
@@ -4674,7 +4677,7 @@ while (true) {
     extra += `\n\n## Claimed tasks (a human holds each via an open PR — NOT eligible, even if the backlog says todo)\n\n${[...claims].map(([id, c]) => `- ${id} — ${c.draft ? "draft " : ""}PR #${c.number}`).join("\n")}\n`;
   }
   if (!retryingId) nextSessionNote = null; // the retry prompt never carries driver notes — leave them for the sweep
-  const { exitCode, timedOut, mcpEventsPath } = await runSession({
+  const { exitCode, timedOut, mcpEventsPath, spawnFailed } = await runSession({
     project: sessionCwd,
     cfg,
     env,
@@ -4693,7 +4696,7 @@ while (true) {
   const result = mcp.report ?? readSessionResult(path.join(sessionCwd, ".factory"));
   removeWorktree(sessionWt, `session ${sessions} end`);
   const end = result ? null : classifySessionEnd(sessionLog);
-  const status = result?.status ?? (timedOut ? "timeout" : end.kind === "turn-capped" ? "turn-capped" : "died");
+  const status = result?.status ?? (spawnFailed ? "spawn-failed" : timedOut ? "timeout" : end.kind === "turn-capped" ? "turn-capped" : "died");
   // Task attribution: a settled report is trusted as-is — a null taskId
   // there means no-tasks, the one status where null is truthful. Reportless
   // deaths (runaways, instant kills) recover the id from what the driver
@@ -4706,7 +4709,7 @@ while (true) {
     model: retryOverrides?.model ?? entry?.model ?? cfg.model, log });
   journal("session", "done",
     `${sessions} ${taskId ?? "?"} → ${status}${row?.costUsd != null ? ` $${row.costUsd.toFixed(2)}` : ""}${result?.pr ? ` ${result.pr}` : ""}`);
-  const alert = ["blocked", "timeout", "died"].includes(status);
+  const alert = ["blocked", "timeout", "died", "spawn-failed"].includes(status);
   await notify(
     `${alert ? "⚠" : "✔"} session ${sessions}: ${taskId ?? "?"} → ${status}` +
       (row?.costUsd != null ? ` ($${row.costUsd.toFixed(2)})` : "") +
@@ -4805,11 +4808,13 @@ while (true) {
         `without writing last-session.json` +
         (end.kind === "turn-capped" ? " (turn cap — treating as unfinished wrap-up, not a death)" : "")
     );
-    const reason = timedOut
-      ? `was killed at the ${cfg.sessionTimeoutMin}min timeout`
-      : end.kind === "turn-capped"
-        ? "hit the max-turns cap during wrap-up"
-        : "died before finishing";
+    const reason = spawnFailed
+      ? "never started (spawn failed — a machine problem, not this task)"
+      : timedOut
+        ? `was killed at the ${cfg.sessionTimeoutMin}min timeout`
+        : end.kind === "turn-capped"
+          ? "hit the max-turns cap during wrap-up"
+          : "died before finishing";
     const snapProject = isGitRepo() ? metaPath() : project;
     nextSessionNote =
       `The previous session ${reason} and never reported a settled status. ` +

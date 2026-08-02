@@ -152,7 +152,7 @@ const usageSummary = (factoryDir) => {
       sum.todayTokens += tokens;
       sum.todaySessions += 1;
       if (r.status === "turn-capped") sum.todayTurnCapped += 1;
-      if (r.status === "died" || r.status === "timeout") sum.todayDied += 1;
+      if (r.status === "died" || r.status === "timeout" || r.status === "spawn-failed") sum.todayDied += 1;
       if (r.model) sum.todayModels[r.model] = (sum.todayModels[r.model] ?? 0) + 1;
     }
   }
