@@ -536,7 +536,11 @@ display on 4 of 6 fleet factories (2026-07-19).
   (null there means no-tasks); a reportless death (runaway, kill, timeout)
   recovers it from the retry assignment, then the session's last mid-run
   `report_status` breadcrumb, then the plan entry — so every session the
-  driver could attribute joins to its task.
+  driver could attribute joins to its task. A session whose spawn itself
+  failed after preflight passed (binary gone mid-window, missing cwd)
+  records status `spawn-failed`, not `died` — a machine problem, never
+  the task's; notify says so and such sessions never feed the
+  no-progress breaker.
 
 ## Per-task model & effort routing
 
