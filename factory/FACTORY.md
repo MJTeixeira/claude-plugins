@@ -44,7 +44,16 @@ factory repos as live sessions — see "Windows" at the end of this file).
 - **Humans are async**: the agent never waits. Sessions ask questions via the
   `open_question` MCP tool; the DRIVER dedupes them and files/updates the
   `needs-human` items on the configured tracker itself (forge issues, Jira,
-  or Discord threads); answers get folded in by the next triage.
+  or Discord threads); answers get folded in by the next triage. Dedupe is
+  by normalized title AND — for a question carrying a `taskId` — by the open
+  thread already filed for that task (recorded in `state.questionThreads`,
+  keyed by thread url): **one task, one open thread**, because each session
+  inheriting a stuck task re-states the same blocker in new wording that no
+  title match can catch. A later question about that task comments on its
+  thread instead of opening another — led by its own ask, since on that
+  lane the wording differs from the thread's title by construction. A
+  CLOSED/answered thread suppresses nothing — the question recurred, or
+  the answer didn't take.
 
 ## Architecture & contracts
 
@@ -183,6 +192,24 @@ parked, and a blocked task's risky PR is refused with no status change —
 a merge doesn't answer a question). Prefixes are literal path matches
 (end directories with `/`); a malformed `riskTiers` — wrong shape or a
 misspelled key — fails doctor rather than silently disabling the floor.
+
+**Parked means parked (backlog T-003, 2026-08-03):** a task parked
+`needs-human` or `blocked` on a question earns no fix note, so nothing
+sends a session to its branch — waiting must cost nothing (owner rule,
+2026-08-01). Two of the notes are worse than idle work: the conflict and
+gate-suite notes say "merge `<base>` into it … push", which moves the head
+SHA without changing the branch-vs-base diff, so CI restarts, the next
+sweep sees non-green checks and re-emits the same note — three consecutive
+windows of one fleet PR (2026-08-01) were that treadmill. The gate itself
+still runs (a green parked PR still lands, without a status flip — a merge
+doesn't answer an open question); only the session-facing instruction is
+dropped, and the driver logs which park dropped it. The exception is a park
+that awaits the owner's review OF THAT PR — `Gate: human` or a risk-tier
+park — which keeps its notes: the machine-clearable half (resolve the
+conflict, fix red checks) is a session's job there, the owner cannot merge
+a CONFLICTING PR without it, and a real fix changes the diff, so it cannot
+treadmill. The stale-parked retry lane below is the ONE sanctioned
+re-engagement of a question-parked task.
 
 **The acceptance grader (autonomy epic, 1.12.0):** before the gate may
 merge a task PR, an INDEPENDENT grader session must record a passing
@@ -560,11 +587,19 @@ display on 4 of 6 fleet factories (2026-07-19).
   the autonomy level.
 - **Every window keeps a journal** (`<state>/log/journal-<window-ts>.jsonl`):
   one line per driver step, and window-end finalization (sweep, repo, scratch,
-  board sync, notify, lock release) runs as idempotent journaled steps. If a
+  board sync, notify) runs as idempotent journaled steps. If a
   window dies mid-finalization, the next `dev` or `prep` run completes
   exactly the missing steps. Killed sessions still land in `usage.jsonl`
   with real token counts summed from their streamed events (`partial: true`
   rows are lower bounds).
+- **One driver per project, for the whole process.** `<state>/log/window.lock`
+  is claimed atomically at startup by `dev`/`triage`/`report`/`prep` (other
+  modes only check it) and released in exactly one place: a pid-checked exit
+  handler. Every leg runs INSIDE that claim — the auto-triage before a
+  window, each `--until-done` cycle's triage and report legs, a replay of an
+  older window's finalization — and none of them release, so no gap opens
+  mid-run for a second driver to start in (NOTES item 76). A lock left by a
+  crash carries a dead pid, which every reader treats as stale.
 - **Every session leaves a metrics row** (`<state>/log/metrics.jsonl`,
   autonomy epic chunk 5), extracted from the session's own stream log:
   `endReason` (the result event's verdict — `success`, `error_max_turns`,
@@ -1030,7 +1065,15 @@ service, `factory-onfailure@.service`) live in `factory/schedulers/`.
   disabled, missing), declared state chips (schedule kind + a ⚠ chip if
   `enabled` is missing/non-boolean), config, backlog task table with PR/issue
   links, last-session summary, driver log tail, and cost/token spend (today +
-  all-time, from `<state>/log/usage.jsonl`). The UI is a code4food-branded
+  all-time, from `<state>/log/usage.jsonl`). While a window RUNS, rows are
+  live in-window (spec `factory/specs/dashboard-liveness.md`): a **component
+  chip** names the active driver phase now (triage / session N / grading /
+  sweep / prep — derived from the daily log; a dead lock pid reads idle), and
+  the detail panel's **now line** shows the running session's turn count and
+  last transcript event with its age, from an incremental background tail of
+  the session jsonl (own interval, `LIVE_REFRESH_MS` env override; the 5s UI
+  tick never parses). Parse trouble degrades to a ⚠ badge — boundary-written
+  state files stay authoritative wherever they disagree at rest. The UI is a code4food-branded
   admin console: a left sidebar (fleet filters — all / running / needs-human /
   paused), a KPI row (factories · running · needs-human · spend-today with a
   sparkline), and a factory **table** whose rows expand to a detail panel

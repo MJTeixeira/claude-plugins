@@ -12,9 +12,13 @@ engine-test command for anything touching Godot types.
 - GdUnit4 versions couple to the engine minor version — pin the addon to the
   engine, never track its main branch.
 - Headless run (as a script, not a flag):
-  `timeout 120 godot --headless --path . -s res://addons/gdUnit4/bin/GdUnitCmdTool.gd --run-tests --continue-on-failure --report-directory ./reports`
+  `godot --headless --quit-after 50000 --path . -s res://addons/gdUnit4/bin/GdUnitCmdTool.gd --run-tests --continue-on-failure --report-directory ./reports`
   → JUnit XML. Read the XML totals (or a small parse script), not the raw
   engine spew — pre-digesting output is much cheaper than rereading it.
+  `--quit-after <frames>` is the hang-stop, engine-side and portable —
+  coreutils `timeout` does not exist on macOS and fails silently inside a
+  pipe. Size it generously (it bounds a hung run, it does not time the
+  suite; headless frames are cheap).
 - Wrap every constructed Object in `auto_free()`; create `scene_runner()` in
   `before_test`, free it in `after_test` — otherwise orphan-node reports.
 

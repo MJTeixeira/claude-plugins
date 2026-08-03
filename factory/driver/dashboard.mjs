@@ -33,6 +33,7 @@ import { normalizeSchedule, nextFire } from "./schedule.mjs";
 import { deriveFactoryStatus } from "./status.mjs";
 import { createForge, createTracker } from "./forge.mjs";
 import { parseMilestones, parseBacklogTasks } from "./backlog-index.mjs";
+import { tailFile, parseSessionEvents, deriveComponent } from "./live-tail.mjs";
 
 // ---------- config: file < flags, each setting tracks its source ----------
 const CONFIG_PATH = path.join(os.homedir(), ".factory", "dashboard.json");
@@ -324,6 +325,53 @@ const refreshVersion = async () => {
   versionCache = { ...base, behind, current: behind === 0 };
 };
 
+// ---------- liveness (spec dashboard-liveness.md, background-cached) ----------
+// The driver writes its state files at session boundaries, so mid-window the
+// only things moving are the session transcript and the daily log. This tail
+// runs on its OWN interval (REQ-3: the UI tick never parses); factoryState
+// only reads the cache. All reads are local fs; offsets make the per-round
+// cost proportional to NEW bytes (REQ-2).
+const LIVE_REFRESH_MS = Number(process.env.LIVE_REFRESH_MS ?? 4000);
+const liveCache = new Map(); // project -> { file, tail:{offset}, sess:{turns,…}, at }
+
+const activeTranscript = (logLines) => {
+  // The daily log names each dev transcript as it starts — with the plan
+  // segment when triage queued the task (the primary shape) and without it
+  // for fell-through work. Triage sessions log no path, so component shows
+  // "triage" without a step line. Scanning BACKWARD, a window/triage start
+  // marker before any session line means THIS window has no session yet —
+  // returning the previous window's finished transcript would render its
+  // stale events as seconds-old (the daily 11:30 second-window shape).
+  for (let i = logLines.length - 1; i >= 0; i--) {
+    const m = logLines[i].match(/session \d+ starting(?: \(plan: ([^,)]+)[^)]*\))? — (.+)$/u);
+    if (m) return { file: m[2].trim(), taskId: m[1] ?? null };
+    if (/dev window starting:|triage session starting/.test(logLines[i])) return null;
+  }
+  return null;
+};
+
+const refreshLive = (project) => {
+  const S = stateDir(project);
+  const lock = readJson(path.join(S, "log", "window.lock"));
+  if (!lock || !pidAlive(lock.pid)) { liveCache.delete(project); return; }
+  const logFile = path.join(S, "log", `factory-${new Date().toISOString().slice(0, 10)}.log`);
+  let logLines = [];
+  try { logLines = fs.readFileSync(logFile, "utf8").trim().split("\n"); } catch { /* window may predate today's log */ }
+  const active = activeTranscript(logLines);
+  const entry = liveCache.get(project) ?? {};
+  if (entry.file !== (active?.file ?? null)) { entry.file = active?.file ?? null; entry.tail = {}; entry.sess = {}; } // new session = fresh counters
+  entry.taskId = active?.taskId ?? null;
+  if (entry.file) parseSessionEvents(tailFile(entry.file, entry.tail), entry.sess);
+  entry.at = Date.now();
+  liveCache.set(project, entry);
+};
+
+const refreshAllLive = () => {
+  for (const p of Object.keys(registry().factories)) {
+    try { refreshLive(p); } catch { /* one factory's bad state never mutes the rest */ }
+  }
+};
+
 const factoryState = (project, meta) => {
   const F = path.join(project, ".factory"); // work data (backlog) in the repo
   const S = stateDir(project); // machine-side state (config, log, STOP, …)
@@ -356,11 +404,27 @@ const factoryState = (project, meta) => {
     left: gateLines.filter((l) => /leaving|still pending/.test(l)).length,
     last: gateLines.at(-1) ?? null,
   };
+  // Liveness (spec REQ-4/5): component from the log just read; the step line
+  // from the background tail cache. A DEAD lock still yields { phase: "idle" }
+  // so the card can say so explicitly; no lock file at all means no live block.
+  const liveEntry = liveCache.get(project);
+  const live = lock ? {
+    component: deriveComponent(logLines, running),
+    step: running && liveEntry?.file && liveEntry?.sess?.turns !== undefined ? {
+      taskId: liveEntry.taskId ?? null,
+      turns: liveEntry.sess.turns,
+      lastEvent: liveEntry.sess.lastEvent ?? null,
+      ageSec: liveEntry.sess.lastEventAt ? Math.round((Date.now() - liveEntry.sess.lastEventAt) / 1000) : null,
+    } : null,
+    degraded: (liveEntry?.sess?.parseErrors ?? 0) > 0,
+    freshAgeSec: liveEntry?.at ? Math.round((Date.now() - liveEntry.at) / 1000) : null,
+  } : null;
   return {
     path: project,
     name: meta?.name ?? path.basename(project),
     status: running ? "running" : stopped ? "stopped" : config?.enabled === false ? "disabled" : "idle",
     lock: running ? lock : null,
+    live,
     config,
     // Declared operational state (NOTES item 47), surfaced for chips + the
     // enable/disable control. `enabled` passes through raw so a missing or
@@ -892,6 +956,20 @@ function row(f, s){
   var left = leftMs > 0 ? (leftMs >= 3600000 ? Math.floor(leftMs/3600000)+"h "+Math.floor((leftMs%3600000)/60000)+"m left" : Math.floor(leftMs/60000)+"m left") : "past window end";
   var runbit = f.lock ? '<span class="sub">'+esc(f.lock.mode)+' \\u00b7 session '+(f.lock.currentSession||"?")+(maxS?"/"+maxS:"")+' \\u00b7 '+left+'</span>' : "";
   var last = f.lastSession ? '<div class="last"><span class="mute">last session</span> '+esc(f.lastSession.taskId||"\\u2014")+' '+esc(f.lastSession.status||"")+' \\u2014 '+esc(f.lastSession.summary||"")+(f.lastSession.pr?' \\u00b7 <a href="'+esc(f.lastSession.pr)+'" target="_blank">PR \\u2197</a>':"")+'</div>' : "";
+  // Liveness (spec dashboard-liveness.md): component chip in the summary row,
+  // current-step line in the detail, staleness/degraded badges — two lines
+  // added, nothing moves.
+  var liveTag = "", liveLine = "";
+  if(f.live && f.live.component && f.status==="running"){
+    var comp = f.live.component.phase==="session" ? "session "+(f.live.component.session||"?") : f.live.component.phase;
+    liveTag = '<span class="tag good" title="component in use now">\\u25b8 '+esc(comp)+'</span>';
+    var st = f.live.step;
+    liveLine = '<div class="last"><span class="mute">now</span> '+esc(comp)
+      + (st ? (st.taskId?' \\u00b7 '+esc(st.taskId):"")+' \\u00b7 turn '+st.turns+(st.lastEvent?' \\u00b7 '+esc(st.lastEvent):"")+(st.ageSec!=null?' <span class="mute">'+st.ageSec+'s ago</span>':"") : "")
+      + (f.live.degraded ? ' <span class="tag warn" title="transcript parse errors \\u2014 the live view may lag; state files stay authoritative">\\u26a0 degraded</span>' : "")
+      + (f.live.freshAgeSec!=null && f.live.freshAgeSec>30 ? ' <span class="tag warn">live data '+f.live.freshAgeSec+'s old</span>' : "")
+      + '</div>';
+  }
   var rk = f.path+":row", uk = f.path+":usage", tk = f.path+":tasks", lk = f.path+":log";
   var subs = '<div class="subs">'
     + '<details data-k="'+esc(uk)+'"'+(tOpen(uk,false)?" open":"")+'><summary>usage &amp; spend</summary><div class="tiles">'+usageTiles(f)+'</div></details>'
@@ -907,13 +985,13 @@ function row(f, s){
     + '<span class="c-pr">'+pbar(done,total)+'<span class="mono">'+done+'/'+total+'</span></span>'
     + '<span class="c-se mono">'+(u.todaySessions||0)+'</span>'
     + '<span class="c-td mono">$'+(u.todayCost||0).toFixed(2)+'</span>'
-    + '<span class="c-he">'+derTag+cloneTag+docTag+nhTag+enWarn+scaf+'</span>'
+    + '<span class="c-he">'+liveTag+derTag+cloneTag+docTag+nhTag+enWarn+scaf+'</span>'
     + '<span class="c-ex">'+CHEV+'</span>'
     + '</summary>'
     + '<div class="detail">'
     + '<div class="dtop"><div class="dmeta"><span class="mono mute">'+esc(f.path)+'</span> <span class="dot2">\\u00b7</span> '+esc(cfg)+' <span class="dot2">\\u00b7</span> '+(active?esc(active.id)+" "+esc(active.name):"no active milestone")+' '+runbit+'</div>'
     + '<div class="ctl">'+controls(f,s.canRun)+links(f)+'</div></div>'
-    + attention(f) + ghErr + last + subs
+    + attention(f) + ghErr + liveLine + last + subs
     + '</div></details>';
 }
 
@@ -1090,6 +1168,8 @@ server.listen(port, listen, () => {
   setInterval(refreshAllGh, GH_REFRESH_MS).unref();
   refreshVersion();
   setInterval(refreshVersion, VERSION_REFRESH_MS).unref();
+  refreshAllLive();
+  setInterval(refreshAllLive, LIVE_REFRESH_MS).unref();
   const real = server.address().port; // resolves --port 0 to the real port
   process.stdout.write(`Factory dashboard: http://${listen}:${real}${token ? "/?token=***" : ""}\n` +
     `(factories from ~/.factory/registry.json — mutations ${token ? "enabled (token required)" : "DISABLED (no token)"})\n`);
