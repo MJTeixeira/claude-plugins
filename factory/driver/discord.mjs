@@ -49,6 +49,10 @@ const sleepMs = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0
 // Mirrors factory.mjs's QUESTION_PREFIX — the one title convention the
 // tracker must recognize to classify answer state.
 const QUESTION_PREFIX = "[factory] question:";
+// Mirrors factory.mjs's DAILY_LOG_TITLE — the other title convention this
+// tracker must recognize, to route the daily log to the digests channel
+// under the per-type split (spec: factory/specs/owner-message-format.md).
+const DAILY_LOG_TITLE = "[factory] daily log";
 const ACK_MARK = "✔";
 const ACK_TEXT = "✔ folded into the backlog — reply here to reopen.";
 
@@ -77,10 +81,21 @@ export const discordTracker = ({ cfg = {}, env = {} }) => {
     if (missing.length) throw new Error(`${missing.join(" and ")} not set in .factory/.env`);
     return `header = "Authorization: Bot ${key("DISCORD_BOT_TOKEN")}"\n`;
   };
-  const channel = () => {
-    if (!cfg.discordChannel) throw new Error(`config.json → discordChannel not set — tracker "discord" needs the channel id`);
-    return String(cfg.discordChannel);
+  // Per-type channels (owner-message-format spec): questions carries the
+  // question threads, digests the daily log; activity is the FYI stream
+  // (plain messages, no threads). Any kind unset in discordChannels falls
+  // back to the legacy single discordChannel, so a single-channel factory
+  // behaves exactly as before the split.
+  const chan = (kind) => {
+    const id = cfg.discordChannels?.[kind] ?? cfg.discordChannel;
+    if (!id) throw new Error(`config.json → discordChannels.${kind} (or legacy discordChannel) not set — tracker "discord" needs the channel id`);
+    return String(id);
   };
+  const channel = () => chan("questions");
+  // Every channel this tracker opens threads in — what reads must span: a
+  // daily log living in digests must not vanish from issueListOpen, or
+  // postDailyLogs would file a duplicate every window.
+  const threadChannels = () => [...new Set([chan("questions"), chan("digests")])];
   const prefix = () => {
     if (!cfg.discordTag) throw new Error(`config.json → discordTag not set — tracker "discord" needs the thread-name tag that scopes this factory in a shared channel`);
     return `[${cfg.discordTag}] `;
@@ -147,18 +162,25 @@ export const discordTracker = ({ cfg = {}, env = {} }) => {
   };
 
   // Walk chronologically: this bot's ✔ marker resets the answered flag, a
-  // later message FROM THE OWNER sets it. answered → issueListClosed;
-  // marker-and-quiet → resolved (listed nowhere); neither → still open.
-  // Owner-only on purpose: the channel is shared, and a teammate's comment
-  // is context, never the answer — counting it would flip the thread
-  // "answered", triage would refuse the untrusted content, and the ack
-  // would archive the question unanswered.
+  // later message FROM AN ANSWERING IDENTITY sets it. answered →
+  // issueListClosed; marker-and-quiet → resolved (listed nowhere);
+  // neither → still open. Two identities answer, never more (the
+  // two-identity rule, delegation.md seam 2): the OWNER always; the
+  // RESOLVER (cfg.discordResolverId) only after the owner flips
+  // `resolverTrust: "answer"` — tier 2 of the trust ramp. The default
+  // ("draft"/unset) keeps tier 1: resolver posts are drafts, and only an
+  // owner reply — their "ok" included — closes the thread. Anyone else
+  // in the shared channel is context, never the answer: counting a
+  // teammate would flip the thread "answered", triage would refuse the
+  // untrusted content, and the ack would archive the question unanswered.
+  const resolverId = () =>
+    cfg.resolverTrust === "answer" && cfg.discordResolverId ? String(cfg.discordResolverId) : null;
   const classifyQuestion = (threadId) => {
-    const bot = botId(), owner = ownerId();
+    const bot = botId(), owner = ownerId(), resolver = resolverId();
     let sawMark = false, answered = false;
     for (const m of fetchMessages(threadId)) {
       if (m.author?.id === bot && String(m.content ?? "").startsWith(ACK_MARK)) { sawMark = true; answered = false; }
-      else if (m.author?.id === owner) answered = true;
+      else if (m.author?.id === owner || (resolver && m.author?.id === resolver)) answered = true;
     }
     return { answered, resolved: sawMark && !answered };
   };
@@ -167,11 +189,12 @@ export const discordTracker = ({ cfg = {}, env = {} }) => {
   // the channel) plus the first archived page (the auto-archive rescue).
   const listThreads = () => {
     const pre = prefix();
+    const channels = threadChannels();
     const active = json(`${API}/guilds/${guildId()}/threads/active`).threads ?? [];
-    const archived = json(`${API}/channels/${channel()}/threads/archived/public?limit=50`).threads ?? [];
+    const archived = channels.flatMap((c) => json(`${API}/channels/${c}/threads/archived/public?limit=50`).threads ?? []);
     const seen = new Map();
     for (const t of [...active, ...archived]) {
-      if (t.parent_id !== channel() || !String(t.name ?? "").startsWith(pre)) continue;
+      if (!channels.includes(t.parent_id) || !String(t.name ?? "").startsWith(pre)) continue;
       if (!seen.has(t.id)) seen.set(t.id, t);
     }
     return [...seen.values()];
@@ -265,13 +288,46 @@ export const discordTracker = ({ cfg = {}, env = {} }) => {
     // bare question after "[<tag>] [factory] question: " spends its share.
     titleKey: (title) => String(title).slice(0, Math.max(20, NAME_MAX - prefix().length - QUESTION_PREFIX.length - 1)),
     issueCreate: ({ title, body }) => {
-      const t = json(`${API}/channels/${channel()}/threads`, { method: "POST", body: {
+      const t = json(`${API}/channels/${title === DAILY_LOG_TITLE ? chan("digests") : chan("questions")}/threads`, { method: "POST", body: {
         name: `${prefix()}${title}`.slice(0, NAME_MAX), type: 11, auto_archive_duration: 10080,
       } });
-      postChunks(t.id, body || " ");
+      if (isQuestion(title)) {
+        // Ask-first opener (owner-message-format spec): the notification
+        // preview shows the thread's first message, so message 1 is the
+        // bare ask + how to answer, and the session's evidence lands as
+        // message 2 — reading it becomes optional.
+        postMessage(t.id, `❓ ${title.slice(QUESTION_PREFIX.length).trim()}\nReply here with the answer — one line is enough. The factory folds replies in at its next triage.`);
+        if (String(body ?? "").trim()) { sleepMs(PACE_MS); postChunks(t.id, body); }
+      } else {
+        postChunks(t.id, body || " ");
+      }
       return threadUrl(t.id);
     },
     issueComment: (threadId, body) => postChunks(threadId, body),
+    // Plain channel message — the notification router's Discord leg
+    // (notify-route.mjs): activity/digest one-liners, never threads.
+    // Tag-prefixed like thread names, so a shared channel still says
+    // which factory is talking.
+    post: (kind, text) => postChunks(chan(kind), `${prefix()}${text}`),
+    // Machine threads (delegation.md seam 1): `[<machine>] <fact>` threads
+    // in the questions channel, opened and ✔-closed by the doctor sensor.
+    // RAW titles — no factory tag: the fact belongs to the BOX, and every
+    // factory on it must converge on the same thread, so these threads
+    // deliberately live outside the tag-scoped issue reads.
+    machineThreads: {
+      open: (title, opener) => {
+        const t = json(`${API}/channels/${chan("questions")}/threads`, { method: "POST", body: {
+          name: String(title).slice(0, NAME_MAX), type: 11, auto_archive_duration: 10080,
+        } });
+        postMessage(t.id, opener);
+        return t.id;
+      },
+      comment: (id, body) => postChunks(id, body),
+      close: (id, evidence) => {
+        postMessage(id, `${ACK_MARK} ${evidence}`);
+        req(`${API}/channels/${id}`, { method: "PATCH", body: { archived: true } });
+      },
+    },
     issueComments: (threadId) => fetchMessages(threadId).map((m) => ({
       author: m.author?.username ?? null, authorId: m.author?.id ?? null,
       body: m.content ?? "", createdAt: m.timestamp ?? null,
@@ -293,8 +349,8 @@ export const discordTracker = ({ cfg = {}, env = {} }) => {
       if (missing.length) {
         return [{ level: "fail", name: "discord auth", detail: `set ${missing.join(" and ")} in .factory/.env (bot token; enable the Message Content intent on the app)` }];
       }
-      if (!cfg.discordChannel) {
-        return [{ level: "fail", name: "discord tracker", detail: `config.json → discordChannel not set — tracker "discord" needs the channel id` }];
+      if (!(cfg.discordChannels?.questions ?? cfg.discordChannel)) {
+        return [{ level: "fail", name: "discord tracker", detail: `config.json → discordChannels.questions (or legacy discordChannel) not set — tracker "discord" needs the channel id` }];
       }
       if (!cfg.discordTag) {
         return [{ level: "fail", name: "discord tracker", detail: `config.json → discordTag not set — the thread-name tag scoping this factory in a shared channel` }];
@@ -302,10 +358,31 @@ export const discordTracker = ({ cfg = {}, env = {} }) => {
       if (!cfg.discordOwnerId) {
         return [{ level: "fail", name: "discord tracker", detail: `config.json → discordOwnerId not set — the owner's Discord user id; without it every owner reply reads UNTRUSTED and answers cannot fold` }];
       }
+      // Tier-2 misconfig fails preflight, not the first classified thread:
+      // an unset resolver id makes "answer" a no-op the owner believes is
+      // on; a resolver id equal to the owner's silently collapses the two
+      // trust tiers into one identity.
+      if (cfg.resolverTrust != null && !["draft", "answer"].includes(cfg.resolverTrust)) {
+        return [{ level: "fail", name: "discord tracker", detail: `config.json → resolverTrust "${cfg.resolverTrust}" is not "draft" | "answer"` }];
+      }
+      if (cfg.resolverTrust === "answer") {
+        if (!cfg.discordResolverId) {
+          return [{ level: "fail", name: "discord tracker", detail: `config.json → resolverTrust "answer" needs discordResolverId — without it tier 2 is a silent no-op` }];
+        }
+        if (String(cfg.discordResolverId) === String(cfg.discordOwnerId)) {
+          return [{ level: "fail", name: "discord tracker", detail: `config.json → discordResolverId equals discordOwnerId — the two trust tiers would collapse into one identity` }];
+        }
+      }
       try {
         const u = JSON.parse(execFileSync("curl", curlArgs(`${API}/users/@me`), { input: cred(), timeout: 15_000, encoding: "utf8" }));
-        const c = JSON.parse(execFileSync("curl", curlArgs(`${API}/channels/${cfg.discordChannel}`), { input: cred(), timeout: 15_000, encoding: "utf8" }));
-        return [{ level: "ok", name: "discord auth", detail: `authenticated as ${u.username ?? "?"} — channel #${c.name ?? cfg.discordChannel} reachable (tag [${cfg.discordTag}], owner ${cfg.discordOwnerId})` }];
+        // Probe every distinct configured channel — a typo'd id must fail
+        // preflight, not the first mid-window post to that channel.
+        const ids = [...new Set(["questions", "activity", "digests"].map((k) => cfg.discordChannels?.[k] ?? cfg.discordChannel).filter(Boolean).map(String))];
+        const names = ids.map((id) => {
+          const c = JSON.parse(execFileSync("curl", curlArgs(`${API}/channels/${id}`), { input: cred(), timeout: 15_000, encoding: "utf8" }));
+          return `#${c.name ?? id}`;
+        });
+        return [{ level: "ok", name: "discord auth", detail: `authenticated as ${u.username ?? "?"} — channel${names.length > 1 ? "s" : ""} ${names.join(", ")} reachable (tag [${cfg.discordTag}], owner ${cfg.discordOwnerId})` }];
       } catch (e) {
         return [{ level: "fail", name: "discord auth", detail: (String(e.stderr ?? "").trim() || e.message).split("\n")[0].slice(0, 160) }];
       }
@@ -324,8 +401,10 @@ export const discordTracker = ({ cfg = {}, env = {} }) => {
         const r = await reqAsync(() => `${API}/guilds/${g}/threads/active`);
         if (r.error) return r;
         const pre = prefix();
+        // Questions channel only: the pill is the needs-owner surface —
+        // the daily log (digests) and activity FYIs stay off it.
         return { data: (r.data.threads ?? [])
-          .filter((t) => t.parent_id === String(cfg.discordChannel) && String(t.name ?? "").startsWith(pre))
+          .filter((t) => t.parent_id === chan("questions") && String(t.name ?? "").startsWith(pre))
           .map((t) => ({
             number: t.id, title: String(t.name).slice(pre.length),
             url: `https://discord.com/channels/${g}/${t.id}`,

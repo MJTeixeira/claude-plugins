@@ -17,6 +17,8 @@ import * as os from "node:os";
 import { fileURLToPath } from "node:url";
 import { factoryKey, stateDir, writeJsonAtomic, readEnvFile, readJson, execGit, pidAlive, TRUST_FLAGS } from "./paths.mjs";
 import { sendTelegram } from "./notify.mjs";
+import { makeNotifiers } from "./notify-route.mjs";
+import { senseMachineFacts, recordOutcome, threadTitle } from "./machine-threads.mjs";
 import { materializeWorkspace, isInjectedPath, factorySkillNames, stripFactorySettings, buildSessionSettings, detectStack, detectEngines, missingGitignoreEntries, stampFactoryGitignore, stampFactoryReadme } from "./workspace.mjs";
 import { healConfigSchema } from "./config.mjs";
 import { SCHEDULE_KINDS, SCHEDULE_MODES, normalizeSchedule, validateDeclaration, generateUnits, parseInstalled, compareInstalled, defaultPathLine } from "./schedule.mjs";
@@ -1438,8 +1440,8 @@ if (mode === "mcp-server") {
       inputSchema: {
         type: "object",
         properties: {
-          title: { type: "string", description: "one-line question (issue title)" },
-          body: { type: "string", description: "context: what you found, what you tried, why it needs a human" },
+          title: { type: "string", description: "THE ASK in one sentence, answerable in one reply — the owner sees this line first (it is the notification preview); never a topic label like 'question about auth'" },
+          body: { type: "string", description: "evidence below the ask: what you found, what you tried, why it needs a human. If the answer is a choice, enumerate tap-reply options (1/2/3) at the top" },
           taskId: { type: ["string", "null"], description: "backlog task this blocks, if any" },
         },
         required: ["title"],
@@ -2809,14 +2811,18 @@ if (mode === "schedule") {
 preflight({ project, cfg, log });
 
 // ---------- notifications (NOTES item 18) ----------
-// Telegram push for the events a human wants on their phone. Opt-in:
-// `"notify": {"telegram": true}` in config.json + TELEGRAM_BOT_TOKEN /
-// TELEGRAM_CHAT_ID in .factory/.env. One bot serves all factories — every
-// message is prefixed with the factory name. Failures log and never
+// Telegram push for errors and emergencies — the events a human wants on
+// their phone. Opt-in: `"notify": {"telegram": true}` in config.json +
+// TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID in .factory/.env. One bot serves
+// all factories — every message is prefixed with the factory name.
+// Routine owner traffic (merges, review requests, cycle digests) rides
+// the Discord tracker's per-type channels instead, falling back to this
+// Telegram lane when no posting tracker is configured (notify-route.mjs;
+// spec factory/specs/owner-message-format.md). Failures log and never
 // affect the run: the factory must behave identically with this broken.
 const factoryName = path.basename(project);
 let notifyWarned = false;
-const notify = async (text) => {
+const telegramLane = async (text) => {
   if (!cfg.notify?.telegram) return;
   const token = env.TELEGRAM_BOT_TOKEN ?? process.env.TELEGRAM_BOT_TOKEN;
   const chatId = env.TELEGRAM_CHAT_ID ?? process.env.TELEGRAM_CHAT_ID;
@@ -2828,6 +2834,45 @@ const notify = async (text) => {
   await sendTelegram({ token, chatId }, `[${factoryName}] ${text}`,
     { timeoutMs: 5_000, log: (m) => log(`notify: ${m} — continuing`) });
 };
+const { notify, notifyActivity, notifyDigest } = makeNotifiers({
+  telegram: telegramLane, tracker, log: (m) => log(m) });
+
+// ---------- machine-thread sensor (delegation.md seam 1) ----------
+// A machine-scoped red doctor fact (auth, tools, scheduler PATH, peer
+// client) gets ONE tracker thread per (machine, fact) instead of N task
+// parks: red opens or day-refreshes it, and the sensor that opened it
+// closes it — the next green run for that fact ✔-archives the thread
+// with the probe as machine-verified evidence. State is MACHINE-level
+// (~/.factory/machine-threads.json) so every factory on the box
+// converges on one thread. Best-effort like every notification path:
+// failures log, mark nothing handled, and retry at the next doctor run.
+const senseMachine = (results) => {
+  try {
+    if (!tracker.machineThreads) return;
+    const file = path.join(os.homedir(), ".factory", "machine-threads.json");
+    const machine = cfg.machineLabel ?? os.hostname();
+    let map = readJson(file) ?? {};
+    const { actions } = senseMachineFacts({ machine, results, map, today: today() });
+    for (const a of actions) {
+      try {
+        if (a.kind === "open") {
+          const id = tracker.machineThreads.open(threadTitle(machine, a.row),
+            `❓ ${machine}: ${a.row.name} is red — fix it on the box; the doctor closes this thread itself on the next green run.\nProbe: ${a.row.detail || "(no detail)"}`);
+          map = recordOutcome(map, a, { threadId: id, today: today() });
+          log(`machine thread opened: ${threadTitle(machine, a.row)}`);
+        } else if (a.kind === "comment") {
+          tracker.machineThreads.comment(a.threadId, `still red ${today()}: ${a.row.detail || a.row.name}`);
+          map = recordOutcome(map, a, { today: today() });
+        } else {
+          tracker.machineThreads.close(a.threadId, `doctor green: ${a.row?.name ?? a.key} — machine-verified ${today()}`);
+          map = recordOutcome(map, a, { today: today() });
+          log(`machine thread closed: ${a.key}`);
+        }
+      } catch (e) { log(`machine thread ${a.kind} failed (${firstLine(e)}) — will retry next doctor run`); }
+    }
+    fs.writeFileSync(file, JSON.stringify(map, null, 2) + "\n");
+  } catch (e) { log(`machine sensor failed (${firstLine(e)}) — continuing`); }
+};
 
 // ---------- --scheduled preflight (NOTES item 25) ----------
 // Timer/cron-fired runs pass --scheduled: a misconfigured factory must
@@ -2835,6 +2880,7 @@ const notify = async (text) => {
 // runs skip this — a human is present to read the doctor output.
 if (scheduled) {
   const results = runDoctor();
+  senseMachine(results);
   const fails = results.filter((r) => r.level === "fail");
   fs.writeFileSync(path.join(logDir, "doctor.json"), JSON.stringify({
     ts: new Date().toISOString(), ok: !fails.length, source: "scheduled-preflight",
@@ -3208,7 +3254,8 @@ const processQuestions = async (newQuestions, context) => {
         journal("question:filed", "done", q.title.slice(0, 80));
         log(`question: filed — ${q.title}`);
         filed.push({ taskId: q.taskId ?? null, url: /^https?:\/\//.test(url) ? url : null });
-        await notify(`❓ needs-human: ${q.title}${url ? `\n${url}` : ""}`);
+        // No push here (owner channel policy): the tracker thread/issue IS
+        // the owner's surface for a question — a Telegram ping duplicated it.
       }
     } catch (e) {
       openByTitle = null; // the list itself may have failed — refetch next time
@@ -3538,11 +3585,11 @@ const runSingle = async (name) => {
   }
   clearLock(stateD);
   log(`${name} session done (exit ${exitCode}${timedOut ? ", timed out" : ""}${spawnFailed ? ", spawn failed" : ""}) — ${sessionLog}`);
-  await notify(
-    exitCode === 0
-      ? `✔ ${name} done${row?.costUsd != null ? ` ($${row.costUsd.toFixed(2)})` : ""}`
-      : `⚠ ${name} FAILED (${spawnFailed ? "spawn failed — a machine problem, check claudeCmd/PATH" : `exit ${exitCode}${timedOut ? ", timed out" : ""}`})`
-  );
+  // Failure = Telegram's error class; a clean single-run done is routine
+  // and pushes nowhere (owner channel policy).
+  if (exitCode !== 0) {
+    await notify(`⚠ ${name} FAILED (${spawnFailed ? "spawn failed — a machine problem, check claudeCmd/PATH" : `exit ${exitCode}${timedOut ? ", timed out" : ""}`})`);
+  }
   return exitCode;
 };
 
@@ -3850,7 +3897,7 @@ const landMerge = async ({ pr, view, taskId }) => {
               `(${shown}) — the factory will not auto-merge. Review and merge it yourself ` +
               `(your merge marks the task done), or comment what to change.`);
             journal("gate:risk", "done", `${pr} (${taskId})`);
-            await notify(`🛑 owner review required (high-risk paths): ${pr} (${taskId})`);
+            await notifyActivity(`🛑 owner review required (high-risk paths): ${pr} (${taskId})`);
           }
         } catch (e) {
           log(`merge-gate: risk-tier parking failed (${firstLine(e)}) — ${pr} stays open`);
@@ -3960,7 +4007,7 @@ const landMerge = async ({ pr, view, taskId }) => {
                   `parked ${taskId} for re-planning (split the task, rescope its acceptance criteria, or clear the ` +
                   `obstacle). See the filed question; flip the task back to todo once re-planned.`);
                 journal("gate:grade-breaker", "done", `${pr} (${taskId})`);
-                await notify(`🛑 grade breaker parked ${taskId} after ${fails} failed grades: ${pr}`);
+                await notifyActivity(`🛑 grade breaker parked ${taskId} after ${fails} failed grades: ${pr}`);
               }
               return null;
             } catch (e) {
@@ -3992,7 +4039,7 @@ const landMerge = async ({ pr, view, taskId }) => {
       log(`merge-gate: checks green — merged ${pr}${applied.length ? ` (${applied.join(", ")})` : ""}`);
       journal("gate:merge", "done", `${pr}${applied.length ? ` (${applied.join(", ")})` : ""}`);
       pruneLocalBranch(view.headRefName, "merge-gate");
-      await notify(`✚ merged ${pr}${taskId ? ` (${taskId})` : ""}`);
+      await notifyActivity(`✚ merged ${pr}${taskId ? ` (${taskId})` : ""}`);
       return null; // status handled — nothing for the next session
     } catch (e) {
       // git prints "CONFLICT (content): …" on STDOUT — stderr alone misses
@@ -4037,7 +4084,7 @@ const landMerge = async ({ pr, view, taskId }) => {
     }
     log(`merge-gate: merged ${pr} via gh fallback${flips.length ? ` (${taskId} flip pending)` : ""}`);
     pruneLocalBranch(view.headRefName, "merge-gate");
-    await notify(`✚ merged ${pr}${taskId ? ` (${taskId})` : ""} (gh fallback)`);
+    await notifyActivity(`✚ merged ${pr}${taskId ? ` (${taskId})` : ""} (gh fallback)`);
     return null;
   } catch (e) {
     log(`merge-gate: gh pr merge fallback also failed (${firstLine(e)}) — leaving ${pr} for the next session`);
@@ -4136,7 +4183,7 @@ const mergeGate = async ({ pr, taskId }, budgetMs = cfg.mergeGateMinutes * 60 * 
             `Checks are green, but ${taskId} is marked \`Gate: human\` — the factory will not auto-merge. ` +
             `Review and merge it yourself (your merge marks the task done), or comment what to change.`);
           journal("gate:human", "done", `${pr} (${taskId})`);
-          await notify(`👀 owner review requested: ${pr} (${taskId} is human-gated)`);
+          await notifyActivity(`👀 owner review requested: ${pr} (${taskId} is human-gated)`);
         }
       } catch (e) {
         log(`merge-gate: human-gate handling failed (${firstLine(e)}) — ${pr} stays open`);
@@ -4166,7 +4213,7 @@ const mergeGate = async ({ pr, taskId }, budgetMs = cfg.mergeGateMinutes * 60 * 
             `(e.g. \`T-012: …\`) and the next window will grade and merge it.`);
           s.ungradeablePrs = { ...(s.ungradeablePrs ?? {}), [pr]: new Date().toISOString() };
           writeState(s);
-          await notify(`🛑 ungradeable factory PR (no task id): ${pr} — review and merge it yourself`);
+          await notifyActivity(`🛑 ungradeable factory PR (no task id): ${pr} — review and merge it yourself`);
         }
       } catch (e) {
         log(`merge-gate: ungradeable-PR notice failed (${firstLine(e)}) — ${pr} stays open`);
@@ -4545,7 +4592,7 @@ try {
     if (!rt) {
       log(`window skipped: ${derived.detail}`);
       journal("window-skipped", "done", derived.detail);
-      await finalizeWindow("window skipped", new Set(), `∅ dev window skipped — ${derived.detail}`);
+      await finalizeWindow("window skipped", new Set()); // no skip push — window pings dropped (owner channel policy)
       return { kind: "skipped" };
     }
     log(`window would have skipped (${derived.detail}) — stale-parked retry eligible: ${rt.id}`);
@@ -4577,7 +4624,8 @@ log(
   `dev window starting: ${cfg.windowHours}h, cap ${cfg.maxSessionsPerWindow} sessions, ` +
     `timeout ${cfg.sessionTimeoutMin}min/session, autonomy ${cfg.autonomy}`
 );
-await notify(`▶ dev window starting (${cfg.windowHours}h, ≤${cfg.maxSessionsPerWindow} sessions${plan ? `, plan: ${plan.map((e) => e.taskId).join(" ")}` : ""})`);
+// No window-start push (owner channel policy): "i dont really need to know
+// when a window start/end; the digest in discord is for that".
 syncBoard("window start");
 
 let endReason = "time";
@@ -4766,12 +4814,16 @@ while (true) {
   journal("session", "done",
     `${sessions} ${taskId ?? "?"} → ${status}${row?.costUsd != null ? ` $${row.costUsd.toFixed(2)}` : ""}${result?.pr ? ` ${result.pr}` : ""}`);
   const alert = ["blocked", "timeout", "died", "spawn-failed"].includes(status);
-  await notify(
-    `${alert ? "⚠" : "✔"} session ${sessions}: ${taskId ?? "?"} → ${status}` +
-      (row?.costUsd != null ? ` ($${row.costUsd.toFixed(2)})` : "") +
-      (result?.pr ? `\n${result.pr}` : "") +
-      (status === "blocked" && result?.summary ? `\n${result.summary}` : "")
-  );
+  // Only the alert statuses push (Telegram's error class); a routine ✔
+  // session ping duplicated what the merge post and digest already carry.
+  if (alert) {
+    await notify(
+      `⚠ session ${sessions}: ${taskId ?? "?"} → ${status}` +
+        (row?.costUsd != null ? ` ($${row.costUsd.toFixed(2)})` : "") +
+        (result?.pr ? `\n${result.pr}` : "") +
+        (status === "blocked" && result?.summary ? `\n${result.summary}` : "")
+    );
+  }
   // Questions before any repo work: filing needs only gh, and a repo
   // failure below must not swallow a session's needs-human asks.
   const filedQuestions = await processQuestions(mcp.questions, "dev");
@@ -4978,7 +5030,7 @@ while (true) {
 // Window-end finalization: sweep (NOTES item 27), repo restore (item 23),
 // scratch, board sync, notify, lock — as journaled idempotent steps, so a
 // crash here is completed by the next run (O4).
-await finalizeWindow("window end", new Set(), `■ dev window finished: ${sessions} session(s)`);
+await finalizeWindow("window end", new Set()); // no window-end push — the digest carries it (owner channel policy)
 log(`dev window finished: ${sessions} session(s)`);
 return { kind: endReason };
 };
@@ -5031,7 +5083,7 @@ if (!untilDone) {
         : "landed nothing") +
       (derived.detail ? ` — ${derived.detail}` : "");
     log(summary);
-    await notify(`↻ ${summary}`);
+    await notifyDigest(`↻ ${summary}`);
     if (end.kind === "stop") {
       log("STOP file present — until-done ending");
       break;

@@ -428,12 +428,16 @@ without its row.
 | `tracker` | *(the forge's own)* | where needs-human questions + the daily log land: the forge's tracker (legacy value `"github"`), `"jira"`, or `"discord"` |
 | `jiraProject` | *(unset)* | Jira project key (e.g. `"FACT"`), required by `tracker: "jira"` and `board: {"jira": true}` |
 | `jiraEpic` | *(unset)* | anchor epic key in a SHARED Jira project — everything is created under it and scans never leave it |
-| `discordChannel` | *(unset)* | channel id for `tracker: "discord"`; the bot must be invited with Message Content intent ON |
+| `discordChannel` | *(unset)* | legacy single channel id for `tracker: "discord"`; serves any kind unset in `discordChannels`. The bot must be invited with Message Content intent ON |
+| `discordChannels` | *(unset)* | per-type channel ids `{"questions", "activity", "digests"}`: question threads open in `questions`, the daily log in `digests`, FYI notifications post to `activity`. Any unset kind falls back to `discordChannel`, so single-channel configs keep working unchanged |
 | `discordTag` | *(unset)* | short factory name prefixed on every thread (`[<tag>] …`) so one channel serves many factories. Hand-set — it is identity, never derived from a path |
 | `discordOwnerId` | *(unset)* | the owner's Discord user id — the trust anchor: only this user's replies count as owner answers |
+| `discordResolverId` | *(unset)* | the resolver's Discord user id (delegation trust ramp). Inert until `resolverTrust` is `"answer"` |
+| `resolverTrust` | `"draft"` | trust tier for resolver replies on question threads: `"draft"` = only owner replies answer (the resolver's post is a proposal the owner oks); `"answer"` = `discordResolverId` replies count as answers. The owner flips this manually; doctor fails a tier-2 config whose resolver id is unset or equals the owner's |
 | `board` | *(unset)* | `{"github": true}` for a GitHub Projects board, or `{"jira": true}` for the two-way Jira board |
 | `mirrors` | `[]` | `["notion"]` and/or `["jira"]` read-mostly status mirroring — needs tokens in `.env` |
-| `notify` | *(unset)* | `{"telegram": true}` for phone notifications (§Monitoring & control) |
+| `notify` | *(unset)* | `{"telegram": true}` for phone notifications — errors/emergencies only; routine traffic rides the Discord tracker's channels (§Monitoring & control) |
+| `machineLabel` | `os.hostname()` | short machine name on doctor machine threads (`[zeroone] gh auth — …`); set it where the hostname is not the fleet name |
 | `peer` | *(unset)* | peer-channel client for the `ask_peer` tool (§Peer questions); absent = the tool is never registered |
 
 There is no per-dollar cap in Claude Code — `windowHours`,
@@ -931,7 +935,11 @@ service, `factory-onfailure@.service`) live in `factory/schedulers/`.
   `factory/specs/discord-tracker.md`): questions and the daily log land
   as THREADS in a Discord channel — for owners who answer in chat, not
   in any issue tracker (born 2026-07-27, when Jira was ruled out for a
-  client's scrum-shared projects). Needs `"discordChannel": "<id>"` +
+  client's scrum-shared projects). Needs a channel (`"discordChannel":
+  "<id>"`, or the per-type split `"discordChannels": {"questions",
+  "activity", "digests"}` — question threads in `questions`, the daily
+  log in `digests`, FYI posts to `activity`; unset kinds fall back to
+  `discordChannel`) +
   `"discordTag": "<short-name>"` + `"discordOwnerId": "<user id>"` in
   `config.json` and `DISCORD_BOT_TOKEN` in `<state>/.env` (bot invited
   with View Channel / Send Messages / Send Messages in Threads / Create
@@ -947,14 +955,18 @@ service, `factory-onfailure@.service`) live in `factory/schedulers/`.
   The answer flow has NO owner ceremony: the owner just replies in the
   question thread. A reply FROM THE OWNER after the bot's last `✔`
   marker makes the thread ANSWERED (surfaces to triage as a closed
-  tracker issue; teammates' comments are context, never the answer);
+  tracker issue; teammates' comments are context, never the answer —
+  and a resolver's reply counts only under `resolverTrust: "answer"`,
+  the delegation trust ramp's tier 2, spec
+  `factory/specs/delegation.md`);
   after that triage succeeds the driver posts `✔ folded into the
   backlog` and archives the thread — only threads whose owner answer
   actually rendered in the triage prompt are acked, so a failed comment
   fetch can never archive an unread answer. Replying to an archived
   thread reopens it. An unanswered question that hit Discord's
   auto-archive timer still counts as OPEN.
-  Doctor checks the token, the config keys, and live-probes bot + channel.
+  Doctor checks the token, the config keys, and live-probes the bot plus
+  every distinct configured channel.
   Human-initiated threads are NOT captured as work input (the channel is
   shared; inbox/backlog stay the input paths). PRs stay on the forge.
 
@@ -1078,7 +1090,15 @@ service, `factory-onfailure@.service`) live in `factory/schedulers/`.
   token rotation, scheduler edit, feature enable) — it is cheaper than
   losing a window. Scheduler entries pass `--scheduled`, which runs these
   same checks as a preflight and aborts + Telegrams instead of
-  half-running.
+  half-running. On Discord-tracker factories the preflight also runs the
+  **machine-thread sensor** (spec `factory/specs/delegation.md` seam 1):
+  each machine-scoped red row (auth, tools, scheduler PATH, peer client)
+  files or day-refreshes ONE `[<machine>] <fact>` thread in the questions
+  channel — instead of N tasks parking on the same dead token — and the
+  next green run for that fact ✔-closes the thread itself with the probe
+  as evidence. State: `~/.factory/machine-threads.json` (machine-level:
+  all factories on a box converge on one thread per fact). Machine
+  threads carry no factory tag and are invisible to issue reads.
 - **Deploy** — `node ~/.factory/runtime/factory/driver/deploy-runtime.mjs`
   after merging driver/prompt changes: one command per machine advances the
   fleet, gated on syntax + every factory's doctor (see "Setup: the
@@ -1138,9 +1158,18 @@ service, `factory-onfailure@.service`) live in `factory/schedulers/`.
   the driver never touches your checkout on its own (see Architecture &
   contracts), so you only need prep when you've left the checkout dirty or
   diverged and want it back to a known-good base.
-- **Telegram notifications** (opt-in) — the driver pushes window start/end,
-  per-session results (task, status, cost, PR link), merge-gate merges, and
-  breaker trips to a Telegram chat. Setup:
+- **Owner notifications** — two lanes (spec
+  `factory/specs/owner-message-format.md`): **Telegram carries errors and
+  emergencies only** — aborts, dirty-tree quarantines, base divergence,
+  doctor-red refusals, alert-status sessions (blocked/timeout/died/
+  spawn-failed), unpostable questions/daily-logs, unrecoverable repos,
+  until-done stuck. Routine owner traffic posts to the Discord tracker's
+  per-type channels instead: merges, review requests, and parks to the
+  `activity` channel, the until-done cycle digest to `digests`
+  (tag-prefixed plain messages; falls back to the Telegram lane when no
+  posting tracker is configured, so nothing goes silent). Window
+  start/end/skip pings and routine ✔ session pings are GONE — the daily
+  log and cycle digest carry that. Telegram setup (opt-in):
   1. Create a bot: message [@BotFather](https://t.me/BotFather) → `/newbot`
      → copy the token.
   2. Get your chat id: send the bot any message, then open
