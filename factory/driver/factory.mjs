@@ -2505,6 +2505,19 @@ if (cfg.enabled === false && ["dev", "triage", "report"].includes(mode)) {
   }
 }
 
+// ...and the claim lives exactly as long as the PROCESS that made it. Every
+// leg runs INSIDE that claim — auto-triage before the dev loop, the
+// --until-done cycles' triage/report legs, a finalize replay of an earlier
+// crashed window — so no leg may release it: each release that did opened a
+// mid-run gap the guard above then waved a second driver through (T-006;
+// the auto-triage and between-cycles gaps are pinned in lock-guard.test.mjs).
+// Releasing here instead of in those legs also covers every early exit path.
+// The pid check keeps a refused run from clearing the lock it just lost to.
+process.on("exit", () => {
+  try { if (readJson(lockPath(stateD))?.pid === process.pid) clearLock(stateD); }
+  catch { /* best effort — a leftover lock with a dead pid reads stale everywhere */ }
+});
+
 // ---------- schedule (P3, machine-product refactor) ----------
 // The schedule lives in machine config; installed units are a projection of
 // it. --declare/--adopt write the declaration, --install/--uninstall project
@@ -3207,9 +3220,32 @@ if (mode === "promote") {
 // closed question asked again is a new issue on purpose (the answer didn't
 // take, or it recurred). Filing failures queue in state.json and retry at
 // the next session end.
+//
+// Title dedupe alone is not enough: a stuck task is re-asked in NEW WORDING
+// by each session that inherits it, and every re-statement missed the title
+// match and opened its own thread (one fleet task, six threads, one
+// blocker). So a question carrying a taskId also dedupes on the TASK — the
+// thread filed for that task, recorded in state, as long as it is still
+// open. One task, one open thread; a closed/answered thread suppresses
+// nothing (the question recurred, or the answer didn't take).
 
 const QUESTION_PREFIX = "[factory] question: ";
 const normTitle = (s) => String(s).toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+// The tracker seam answers issueCreate with a url; this reads back the id
+// that tracker's issueComment takes, so an issue created earlier in the same
+// batch can be commented on without a second list round-trip. github and
+// bitbucket urls end /issues/<n> (bitbucket may append a title slug); jira's
+// /browse/<KEY> — the KEY is jira's id; discord's /channels/<guild>/<thread>
+// — the thread id stays a STRING, snowflakes overflow Number. Unrecognized
+// shape → null, and the caller re-lists rather than guessing.
+const issueIdFromUrl = (url) => {
+  const s = String(url ?? "");
+  const gh = s.match(/\/issues\/(\d+)/)?.[1];
+  if (gh) return Number(gh);
+  return s.match(/\/browse\/([A-Z][A-Z0-9]*-\d+)/)?.[1]
+    ?? s.match(/discord\.com\/channels\/\d+\/(\d+)/)?.[1]
+    ?? null;
+};
 
 // Returns the questions that reached GitHub (with their issue url) — a
 // question tied to a taskId is the session saying it cannot proceed without
@@ -3225,7 +3261,11 @@ const processQuestions = async (newQuestions, context) => {
   const answerHint = tracker.answerHint ?? "Close this issue with an answer; triage reads closed answers daily.";
   const attribution = (q) => `— asked by a factory ${context} session${q.taskId ? ` working ${q.taskId}` : ""} on ${today()}. ${answerHint}`;
   let openByTitle = null; // one tracker round-trip, only when there is a queue
+  let openByUrl = null; // the same open questions, keyed for the per-task lookup
   const seen = new Set(); // same title twice in one batch = a session retrying itself
+  // taskId -> url of the open thread already filed for that task. Survives
+  // across sessions and windows, which is where the re-statements come from.
+  const threads = { ...(s.questionThreads ?? {}) };
   // Trackers that truncate titles on storage (discord: the 100-char thread
   // name) expose titleKey — dedupe must compare the truncated form on BOTH
   // sides or a long-titled question re-asked never matches its own thread.
@@ -3234,35 +3274,72 @@ const processQuestions = async (newQuestions, context) => {
     const key = qKey(q.title);
     if (!key || seen.has(key)) continue;
     seen.add(key);
+    const taskKey = q.taskId ? String(q.taskId) : null;
     try {
       if (!openByTitle) {
         openByTitle = new Map();
+        openByUrl = new Map();
         for (const i of tracker.issueListOpen()) {
-          if (i.title.startsWith(QUESTION_PREFIX)) openByTitle.set(qKey(i.title.slice(QUESTION_PREFIX.length)), { number: i.number, url: i.url ?? null });
+          if (!i.title.startsWith(QUESTION_PREFIX)) continue;
+          const titleKey = qKey(i.title.slice(QUESTION_PREFIX.length));
+          const row = { number: i.number, url: i.url ?? null, key: titleKey };
+          openByTitle.set(titleKey, row);
+          if (row.url) openByUrl.set(row.url, row);
         }
       }
-      const existing = openByTitle.get(key);
+      // The task's own open thread outranks a title match: it is the thread
+      // the owner is already reading about this task.
+      const recorded = taskKey ? threads[taskKey] : null;
+      const existing = (recorded ? openByUrl.get(recorded) : null) ?? openByTitle.get(key);
       if (existing) {
-        tracker.issueComment(existing.number, `${q.body || "(same question, no new context)"}\n\n${attribution(q)}`);
+        // On a title match the thread's own title IS the ask, so the comment
+        // is pure new evidence. The per-task lane matches DIFFERENT wording
+        // by design, and there the title is the whole new question — dropping
+        // it would leave the owner an evidence dump with nothing to answer
+        // (the ask-first rule the thread's opener already follows).
+        const ask = existing.key === key ? "" : `❓ ${q.title}\n\n`;
+        const body = q.body || (ask ? "(no additional context provided)" : "(same question, no new context)");
+        tracker.issueComment(existing.number, `${ask}${body}\n\n${attribution(q)}`);
         journal("question:comment", "done", `#${existing.number} ${q.title.slice(0, 80)}`);
-        log(`question: commented on open #${existing.number} — ${q.title}`);
+        log(`question: ${taskKey ? `${taskKey} already has an open thread — ` : ""}commented on open #${existing.number} — ${q.title}`);
+        if (taskKey && existing.url) threads[taskKey] = existing.url;
         filed.push({ taskId: q.taskId ?? null, url: existing.url });
       } else {
         const url = tracker.issueCreate({ title: `${QUESTION_PREFIX}${q.title}`, body: `${q.body || "(no additional context provided)"}\n\n${attribution(q)}` });
-        const num = Number(url.match(/\/issues\/(\d+)/)?.[1]);
-        if (num) openByTitle.set(key, { number: num, url });
+        const isUrl = /^https?:\/\//.test(url);
+        const id = isUrl ? issueIdFromUrl(url) : null;
+        if (id !== null) {
+          // Commentable for the rest of this batch, and the task's thread
+          // from here on. A url this driver cannot read an id out of just
+          // means the next question re-reads the open list and dedupes by
+          // title, as it always did.
+          const row = { number: id, url, key };
+          openByTitle.set(key, row);
+          openByUrl.set(url, row);
+          if (taskKey) threads[taskKey] = url;
+        }
         journal("question:filed", "done", q.title.slice(0, 80));
         log(`question: filed — ${q.title}`);
-        filed.push({ taskId: q.taskId ?? null, url: /^https?:\/\//.test(url) ? url : null });
+        filed.push({ taskId: q.taskId ?? null, url: isUrl ? url : null });
         // No push here (owner channel policy): the tracker thread/issue IS
         // the owner's surface for a question — a Telegram ping duplicated it.
       }
     } catch (e) {
       openByTitle = null; // the list itself may have failed — refetch next time
+      openByUrl = null;
       s.pendingQuestions.push(q);
       log(`question: filing failed (${firstLine(e)}) — kept pending: ${q.title}`);
     }
   }
+  // Threads the owner has answered or closed drop out of the map, so a task
+  // that gets stuck again asks fresh instead of commenting into a dead thread.
+  // Only prunable against a list we actually fetched.
+  if (openByUrl) {
+    for (const [taskKey, url] of Object.entries(threads)) {
+      if (!openByUrl.has(url)) delete threads[taskKey];
+    }
+  }
+  s.questionThreads = threads;
   // The tracker is the channel that just failed, so say it somewhere else.
   // Without this the only trace is the per-question line above, which scrolls
   // past inside a window and appears on no dashboard — that is how the first
@@ -3302,15 +3379,10 @@ const postDailyLogs = async (newLogs, context) => {
         log(`daily log posted (${context}): comment on #${dailyIssue.number}`);
       } else {
         const url = tracker.issueCreate({ title: DAILY_LOG_TITLE, body: entry.body });
-        // Remember the new issue for the rest of the batch (github/bitbucket
-        // urls end /issues/<n>, jira's /browse/<KEY> — the KEY is the id
-        // jira's issueComment takes; discord's /channels/<guild>/<thread> —
-        // the thread id stays a STRING, snowflakes overflow Number).
-        // Unparseable → next entry re-lists.
-        const s = String(url ?? "");
-        const gh = s.match(/\/issues\/(\d+)/)?.[1];
-        const id = gh ?? s.match(/\/browse\/([A-Z][A-Z0-9]*-\d+)/)?.[1] ?? s.match(/discord\.com\/channels\/\d+\/(\d+)/)?.[1];
-        dailyIssue = id ? { number: gh ? Number(gh) : id } : undefined;
+        // Remember the new issue for the rest of the batch; unreadable url →
+        // next entry re-lists.
+        const id = issueIdFromUrl(url);
+        dailyIssue = id === null ? undefined : { number: id };
         journal("daily-log:filed", "done", DAILY_LOG_TITLE);
         log(`daily log posted (${context}): created "${DAILY_LOG_TITLE}"`);
       }
@@ -3583,7 +3655,9 @@ const runSingle = async (name) => {
     }
     syncBoard("triage"); // triage rewrites the backlog
   }
-  clearLock(stateD);
+  // No release here: this leg may be running inside a dev window (auto-triage)
+  // or an --until-done cycle, which own the lock. The process exit handler
+  // releases — see the guard block.
   log(`${name} session done (exit ${exitCode}${timedOut ? ", timed out" : ""}${spawnFailed ? ", spawn failed" : ""}) — ${sessionLog}`);
   // Failure = Telegram's error class; a clean single-run done is routine
   // and pushes nowhere (owner channel policy).
@@ -4110,7 +4184,7 @@ const rollupState = (checks) => {
   return pending ? "pending" : "pass";
 };
 
-const mergeGate = async ({ pr, taskId }, budgetMs = cfg.mergeGateMinutes * 60 * 1000) => {
+const gatePass = async ({ pr, taskId }, budgetMs) => {
   const deadline = Date.now() + budgetMs;
   while (true) { // always at least one pass — zero-budget callers (no-wait sweeps) still get a verdict
     let view;
@@ -4231,6 +4305,41 @@ const mergeGate = async ({ pr, taskId }, budgetMs = cfg.mergeGateMinutes * 60 * 
     }
     return await landMerge({ pr, view, taskId }); // checks pass, or gateCommand stands in for absent CI
   }
+};
+
+// Parked means parked: a task waiting on the owner earns no fix note, so
+// nothing sends a session to its branch (owner rule 2026-08-01 — waiting
+// must cost nothing). Two of the notes make it worse than idle work: the
+// conflict and gate-suite notes literally say "merge <base> into it … push",
+// which moves the head SHA without changing the branch-vs-base diff and
+// restarts CI, so the next window finds non-green checks and re-emits the
+// same note — one godot project's parked PR rode that treadmill for three
+// consecutive windows (2026-08-01). The gate itself is unchanged: a green
+// parked PR still lands (without a status flip — the T-032 invariant), only the
+// session-facing instruction is dropped. The stale-parked retry lane is the
+// ONE sanctioned re-engagement (factory/specs/stale-parked-retry.md).
+//
+// A park that awaits the owner's REVIEW OF THIS PR — `Gate: human`, or a
+// risk-tier park — is not a question park and keeps its notes: the
+// machine-clearable half (resolve the conflict, fix the red checks) is
+// explicitly a session's job there (prompts/retry-task.md), the owner cannot
+// merge a CONFLICTING PR without it, and fixing a real conflict changes the
+// diff, so it cannot treadmill.
+const parkedStatusOf = (taskId) => {
+  if (!taskId) return null;
+  const task = effectiveTasks().find((t) => t.id === taskId);
+  if (task?.status !== "blocked" && task?.status !== "needs-human") return null;
+  if (task.gate === "human" || readState().tasks[taskId]?.parkedBy === "risk") return null;
+  return task.status;
+};
+
+const mergeGate = async (args, budgetMs = cfg.mergeGateMinutes * 60 * 1000) => {
+  const note = await gatePass(args, budgetMs);
+  if (!note) return null;
+  const park = parkedStatusOf(args.taskId);
+  if (!park) return note;
+  log(`merge-gate: ${args.taskId} is parked (${park}) — dropping the fix note for ${args.pr}; a parked task's branch is never refreshed`);
+  return null;
 };
 
 // PR sweep (NOTES item 27): a green factory PR must not sit orphaned — not
@@ -4367,7 +4476,12 @@ const finalizeWindow = async (context, doneSteps = new Set(), notifyText = null)
     ["scratch", () => rmScratch(context)],
     ["board-sync", () => syncBoard(context)],
     ["notify", async () => { if (notifyText) await notify(notifyText); }],
-    ["lock", () => clearLock(stateD)],
+    // No lock step: finalization is not the end of the PROCESS. Under
+    // --until-done the next cycle starts milliseconds later, and a REPLAY of
+    // an older window's finalization runs inside a live dev/prep run — both
+    // released a lock they didn't own (T-006). A crashed window's own lock
+    // needs no journaled release: its pid is dead, which every reader
+    // (guard, supervisor, dashboard, deploy-runtime) already treats as stale.
   ];
   for (const [name, fn] of steps) {
     if (doneSteps.has(name)) continue;
@@ -4409,7 +4523,7 @@ const replayUnfinishedFinalization = async () => {
 // status flips + give leftover green factory PRs one gate pass, then a
 // doctor summary. Safe to run anytime the driver isn't (lock guard above).
 if (mode === "prep") {
-  await replayUnfinishedFinalization(); // may clear a stale lock — before taking our own
+  await replayUnfinishedFinalization(); // an older window's tail, under our own claim
   writeLock(stateD, { mode: "prep", startedAt: new Date().toISOString() });
   try {
     log("prep: making the repo safe for the next factory window");
@@ -4426,11 +4540,9 @@ if (mode === "prep") {
     const fails = results.filter((r) => r.level === "fail");
     log(`prep: done — tree clean on ${cfg.baseBranch} at origin tip; doctor: ${
       fails.length ? `${fails.length} problem(s) — ${fails.map((r) => r.name).join("; ")}` : "no problems"}`);
-    clearLock(stateD);
-    process.exit(fails.length ? 1 : 0);
+    process.exit(fails.length ? 1 : 0); // the exit handler releases the lock
   } catch (e) {
     log(`prep: FAILED (${firstLine(e)}) — fix manually before the next window`);
-    clearLock(stateD);
     process.exit(1);
   }
 }
@@ -4503,9 +4615,24 @@ const finishStaleRetry = (taskId, result, overrides, timedOut) => {
 // ended — "skipped" | "stop" | "time" | "cap" | "no-tasks" | "deaths" |
 // "breaker" | "fatal" — so the until-done loop can decide without parsing logs.
 const runDevWindow = async () => {
-await replayUnfinishedFinalization(); // a crashed window's tail lands before a new one starts
 const windowMs = cfg.windowHours * 60 * 60 * 1000;
 const windowEnd = Date.now() + windowMs;
+// Claim the lock WINDOW-shaped before the window does anything, and again
+// after any leg that re-shapes it (below). Since the lock now survives every
+// leg (T-006), a leg's single-session stamp would otherwise bound this whole
+// window at that leg's `startedAt + sessionTimeoutMin` in the supervisor's
+// hangBound — and the legs right here are the long ones: a finalize replay
+// or the skip path can run a sweep with a full grader session inside it.
+// Under --until-done the arriving stamp is always a leg's: the cycle's
+// leading triage. `hangBound` also ignores graderStartedAt without
+// windowEndsAt, so a live grader could not push the horizon out either.
+const stampWindowLock = () => writeLock(stateD, {
+  mode: "dev",
+  startedAt: new Date(windowEnd - windowMs).toISOString(),
+  windowEndsAt: new Date(windowEnd).toISOString(),
+});
+stampWindowLock();
+await replayUnfinishedFinalization(); // a crashed window's tail lands before a new one starts
 const promptText = promptFor("dev-task") + configPromptNote();
 rmScratch("window start"); // leftovers from a killed window
 // A killed driver strands its session (or grader) worktree — sweep old ones
@@ -4620,6 +4747,7 @@ if (!planAnswered && !staleRetryId && !fs.existsSync(stopFile)) {
 if (plan) log(`plan: ${plan.length} task(s) queued by triage — ${plan.map((e) => e.taskId).join(", ")}`);
 else if (planAnswered) log("plan: triage queued 0 tasks (backlog blocked or empty) — one probe session will confirm");
 
+stampWindowLock(); // the auto-triage above re-shaped it single-session
 log(
   `dev window starting: ${cfg.windowHours}h, cap ${cfg.maxSessionsPerWindow} sessions, ` +
     `timeout ${cfg.sessionTimeoutMin}min/session, autonomy ${cfg.autonomy}`
@@ -5028,8 +5156,9 @@ while (true) {
 }
 
 // Window-end finalization: sweep (NOTES item 27), repo restore (item 23),
-// scratch, board sync, notify, lock — as journaled idempotent steps, so a
-// crash here is completed by the next run (O4).
+// scratch, board sync, notify — as journaled idempotent steps, so a
+// crash here is completed by the next run (O4). The lock is NOT one of them:
+// it belongs to the process (T-006).
 await finalizeWindow("window end", new Set()); // no window-end push — the digest carries it (owner channel policy)
 log(`dev window finished: ${sessions} session(s)`);
 return { kind: endReason };
