@@ -55,6 +55,12 @@ Honesty rules: a task is "shipped" only if its acceptance criteria and Verify
 commands pass. Report timeouts and thrash as failures, not progress. Numbers
 come from the backlog files, not memory.
 
+Ask-first rule (the owner reads this on a phone): every **Waiting on
+owner** line LEADS with the action — "merge #12", "reply 1/2 on
+<thread>" — one line each, never the history behind it. Evidence goes
+after the action or not at all; anything that needs no owner action is a
+count, not a list.
+
 ## 3. Mirror (per config `mirrors`)
 
 - Notion: append the report to the status page via the project's Notion MCP
