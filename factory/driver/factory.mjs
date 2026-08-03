@@ -3616,19 +3616,35 @@ const suiteNote = ({ pr, taskId, head, suite }) =>
 // the task's own Acceptance:/Verify: lines, never by the implementer — must
 // record a passing grade_verdict for the PR's exact head SHA. The session
 // that wrote the code briefing its own reviewer was the correlation this
-// breaks. Real verdicts are cached in state.json by SHA (a push re-triggers,
+// breaks. Real verdicts are cached in state.json (a changed diff re-triggers,
 // a retry or later sweep never pays twice) and fail closed: a grader that
 // dies or never calls the tool refuses THIS landing — but that verdict-less
 // outcome is never cached, because a transient death (rate limit, killed
-// session, worktree failure) cached as a fail blocks the SHA until someone
+// session, worktree failure) cached as a fail blocks the head until someone
 // pushes a new commit (fleet incident 2026-07-25). taskId-less PRs
 // (live/piloting) are the owner's own work and merge ungraded. Only the dev
 // window may spawn graders — prep stays session-free by contract, so its
 // sweep defers ungraded PRs to the next window.
-const recordGrade = (sha, verdict) => {
+//
+// Cache identity is the DIFF, not the commit that carries it: the grader
+// grades `base...head`, so a base-merge refresh that moves the head SHA
+// without changing that diff must reuse the verdict (fleet incident
+// 2026-08-01: eight ~$1.76 grades of one unchanged diff, eight refresh SHAs).
+// `git patch-id --verbatim` is the identity — it ignores the line numbers and
+// blob SHAs a moved base shifts, so a refresh that leaves the branch's own
+// change untouched keys the same. It errs toward paying, never toward false
+// reuse: base work inside a branch hunk's CONTEXT window is part of the diff
+// and re-grades (nearer than that, the merge conflicts and there is no
+// refresh at all). Keys are `<taskId>@pid:<patch-id>`: the
+// verdict answers for one task's acceptance criteria, never for another
+// task that happens to carry the same diff.
+const recordGrade = (key, verdict) => {
   const s = readState();
-  s.grades = { ...(s.grades ?? {}), [sha]: verdict };
-  // Verdicts die with their SHAs — cap the map so state.json never grows
+  // Legacy head-SHA keys (pre-1.21.0 cache) can never be hit again — drop
+  // them on the first write rather than let them hold cap slots hostage.
+  const live = Object.entries(s.grades ?? {}).filter(([k]) => k.includes("@"));
+  s.grades = { ...Object.fromEntries(live), [key]: verdict };
+  // Verdicts die with their diffs — cap the map so state.json never grows
   // unbounded across months of PRs.
   const keys = Object.keys(s.grades);
   if (keys.length > 20) {
@@ -3638,6 +3654,40 @@ const recordGrade = (sha, verdict) => {
   }
   writeState(s);
   return verdict;
+};
+
+// The branch-vs-base diff's patch-id, computed in the meta worktree (whose
+// HEAD is origin/<base>; a merge held open there does not move it). Null
+// when there is nothing to hash or git cannot answer — an empty diff has no
+// identity of its own, and one shared key would let unrelated PRs answer
+// for each other.
+const patchIdOf = (head) => {
+  const cwd = metaPath(), maxBuffer = 64 * 1024 * 1024;
+  // The diff stays a BUFFER: decoding it as utf8 first would fold every
+  // invalid byte into U+FFFD, and two diffs differing only in non-utf8 bytes
+  // (latin-1 sources, byte fixtures) would key identically — false reuse in
+  // the one place we refuse it.
+  const diff = spawnSync("git", ["diff", `HEAD...origin/${head}`], { cwd, maxBuffer });
+  if (diff.status !== 0 || !diff.stdout?.length) return null;
+  // `--verbatim`, not `--stable`: both ignore hunk line numbers (what a moved
+  // base shifts) and both are file-order stable, but --stable also strips
+  // WHITESPACE — and whitespace is semantics in Python, GDScript, YAML and
+  // Makefiles, so a reindenting push would have reused its verdict. The two
+  // flags are mutually exclusive; on a git too old for --verbatim (<2.39) the
+  // call fails and the key falls back to the head SHA, i.e. to paying.
+  const out = spawnSync("git", ["patch-id", "--verbatim"], { cwd, maxBuffer, input: diff.stdout, encoding: "utf8" });
+  const id = out.status === 0 ? (out.stdout ?? "").trim().split(/\s+/)[0] : "";
+  return /^[0-9a-f]{40,}$/.test(id) ? id : null;
+};
+
+// Cache key for a task's grade. Falls back to the head SHA when the diff has
+// no patch-id: fail toward paying for a re-grade, never toward reusing a
+// verdict the identity cannot vouch for.
+const gradeKey = ({ taskId, head, sha }) => {
+  const pid = patchIdOf(head);
+  if (pid) return `${taskId}@pid:${pid}`;
+  log(`grader: no patch-id for ${head} (empty diff or git refused) — caching this grade by head SHA instead`);
+  return `${taskId}@sha:${sha}`;
 };
 
 const runGrader = async ({ pr, taskId, head, sha }) => {
@@ -3709,7 +3759,8 @@ const gradeNote = ({ pr, taskId, head, grade }) =>
     : grade.shortfall
       ? `graded only ${grade.shortfall.covered} of ${grade.shortfall.total} of the task's acceptance criteria — a partial grade is not a pass on the criteria it never examined. `
       : `FAILED it against the task's acceptance criteria. `) +
-  `Your first job: checkout ${head}, make the acceptance criteria genuinely pass, and push — the new commit re-triggers grading. ` +
+  `Your first job: checkout ${head}, make the acceptance criteria genuinely pass, and push — a push that CHANGES ` +
+  `the branch's diff re-triggers grading (an empty or no-op commit reuses the verdict you already have). ` +
   `The driver merges once checks and the grade are green — do NOT merge yourself.` +
   ((grade.criteria ?? []).some((c) => !c.pass)
     ? `\nFailed criteria (grader's evidence inline):\n` +
@@ -3822,14 +3873,19 @@ const landMerge = async ({ pr, view, taskId }) => {
         journal("gate:suite", "done", pr);
       }
       // Acceptance grading: an independent grader must have passed this
-      // exact head SHA (see runGrader). Runs with the merge held open — the
+      // exact diff (see runGrader — the grade is keyed by patch-id, so a
+      // base-merge refresh reuses it and a content change never does; the
+      // grader itself always runs at the real head SHA). The gate suite
+      // above is what covers the MERGED tree either way. Runs with the
+      // merge held open — the
       // grader works in its own worktree, the meta worktree is driver-
       // exclusive, and refreshMeta recovers a crash mid-grade. taskId-less
       // PRs never reach here — mergeGate parks them for the owner (the
       // guard stays as a belt for future callers).
       if (taskId) {
         const sha = git(["rev-parse", `origin/${head}`], metaPath());
-        let grade = readState().grades?.[sha] ?? null;
+        const key = gradeKey({ taskId, head, sha });
+        let grade = readState().grades?.[key] ?? null;
         let freshVerdict = false;
         if (!grade && mode === "dev") {
           const outcome = {
@@ -3838,8 +3894,8 @@ const landMerge = async ({ pr, view, taskId }) => {
           };
           // Cache only real verdicts (pass, fail, short). A verdict-less
           // outcome still refuses this landing, but stays out of the cache
-          // so the next sweep or window re-grades the same SHA.
-          grade = outcome.noVerdict ? outcome : recordGrade(sha, outcome);
+          // so the next sweep or window re-grades the same diff.
+          grade = outcome.noVerdict ? outcome : recordGrade(key, outcome);
           freshVerdict = !outcome.noVerdict;
         }
         if (!grade) {
@@ -3854,7 +3910,7 @@ const landMerge = async ({ pr, view, taskId }) => {
           // plain retry after a graded fail recovers 1 time in 6 — after
           // `gradeFailLimit` consecutive genuine fails the task needs
           // re-planning, not another "checkout, fix, push" note. Only fresh
-          // verdicts with genuinely failed criteria count: a cached SHA
+          // verdicts with genuinely failed criteria count: a cached verdict
           // re-read never double-counts, and short/no-verdict outcomes are
           // grader capacity, not code quality.
           if (readState().tasks[taskId]?.parkedBy === "grade-breaker") {

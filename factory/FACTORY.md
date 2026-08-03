@@ -193,8 +193,9 @@ itself from the task's `Acceptance:`/`Verify:` lines — never from the
 implementer's PR body or commits; a task with no `Acceptance:` lines is
 graded against one criterion synthesized from its title. The grader reads
 and runs but never edits; its verdict rides the `grade_verdict` MCP tool,
-per criterion with evidence, and is cached in state.json by head SHA (a
-push re-triggers grading; retries and sweeps never pay twice). Coverage is
+per criterion with evidence, and is cached in state.json by the DIFF it
+graded (see the grade cache below; retries and sweeps never pay twice).
+Coverage is
 mechanical, not trusted to the grader: the driver briefed N numbered
 criteria and requires a verdict entry for each — a short or empty list
 (a grader low on turns, or a forged events-file write) fails closed,
@@ -213,6 +214,43 @@ spawn graders; a prep sweep leaves ungraded PRs for the next window
 (prep spawns no sessions, by contract). Human-gated and risk-parked PRs
 are unchanged: the owner IS their acceptance check.
 
+**The grade cache — identity is the diff, not the commit (1.21.0):**
+verdicts cache under `<taskId>@pid:<patch-id>`, where the patch-id is
+`git patch-id --verbatim` over the branch-vs-base diff (`base...head`) —
+`--verbatim` rather than `--stable` because both ignore the hunk line
+numbers a moved base shifts, but `--stable` also strips WHITESPACE, and
+whitespace is semantics in Python, GDScript, YAML and Makefiles. So a
+push that CHANGES the branch's content pays for a fresh grade, and a
+base-merge refresh that moves the head SHA without changing that diff
+reuses the verdict — deliberately. The boundary is the diff itself, and
+it errs toward paying (measured 2026-08-02): base work in another file,
+or elsewhere in a file the branch touched, keys the same and reuses; base
+work INSIDE a branch hunk's context window changes the diff and re-grades
+(closer still and the merge conflicts, so there is no refresh to reuse);
+any content change on the branch re-grades, whitespace-only ones included.
+An EMPTY commit reuses — it changes nothing to grade, so a session cannot
+buy a fresh verdict (or advance the graded-fail counter) by pushing one.
+On a git older than 2.39 `--verbatim` does not exist, the key falls back
+to the head SHA, and the factory simply keeps paying as it did before. **Decision (2026-08-02, owner-approved
+task T-002): a same-patch-id diff on a MOVED base may reuse its verdict.**
+The grader grades the diff, never the merged tree — proving the
+combination with base is the gate suite's job, and the suite runs against
+the freshly merged tree on every gate pass, refresh or not. Paying an
+~$1.76 grader to re-read an unchanged diff bought nothing: one fleet task
+did it eight times on eight refresh SHAs of one diff (fleet incident
+2026-08-01) while the task sat parked. Two consequences to know: an
+acceptance criterion
+EDITED in the backlog after a PR was graded does not by itself invalidate
+the cached verdict (the graded-fail breaker's park and the owner's own
+merge remain the escape hatches — flip the task back to `todo` to re-open
+it for a fresh implementation and grade); and the task id is part of the
+key, so two PRs carrying an identical diff never answer for each other.
+When a diff has no patch-id (an empty diff, or git refusing), the key
+falls back to the head SHA — fail toward paying, never toward reusing an
+identity that cannot be vouched for. Legacy head-SHA-keyed entries from
+before 1.21.0 are read harmlessly, miss once, and are dropped on the next
+write.
+
 **The graded-fail breaker (1.20.0):** a plain retry after a graded fail
 rarely recovers — the fleet's own metrics put it at 1 in 6
 (`.docs/context-degradation.md`, 2026-08-02): retry sessions inherit the
@@ -224,7 +262,8 @@ task `needs-human` with a filed question carrying the failed criteria,
 asking for a re-plan (split the task, rescope its acceptance criteria, or
 clear the obstacle; flip back to `todo` when done). Only genuine fails
 count: short verdicts and no-verdict outcomes are grader capacity, not
-code quality, and a cached SHA re-read never double-counts. A passing
+code quality, and a cached verdict re-read never double-counts (nor does
+a base-merge refresh, which no longer re-grades at all). A passing
 grade — or the park itself — clears the streak (`state.json`
 `gradeFails`), so re-planned work gets a fresh budget. While parked by
 this breaker the still-open PR's cached fail stays silent on later sweeps
@@ -642,9 +681,11 @@ suite, the driver spawns an independent grader session (`config.json →
 graderModel`, default `opus`; usage rows log as mode `grade`) against the
 task's `Acceptance:`/`Verify:` lines and merges only on a recorded
 per-criterion pass — fail or no verdict leaves the failed criteria and
-evidence as the next session's fix note. Verdicts cache by head SHA in
-`<state>/log/state.json`, so only a new push costs another grader
-session; grader session output lands in `<state>/log/grade-*.out`. See
+evidence as the next session's fix note. Verdicts cache by the graded
+diff's patch-id in `<state>/log/state.json`, so only a push that changes
+the branch-vs-base diff costs another grader session — a base-merge
+refresh reuses the verdict; grader session output lands in
+`<state>/log/grade-*.out`. See
 §Verification & review contract for the full contract.
 
 PRs merged OUTSIDE the gate (the owner, any human) close their tasks
