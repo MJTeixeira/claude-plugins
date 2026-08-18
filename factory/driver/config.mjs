@@ -43,6 +43,11 @@ export const buildConfig = (a) => ({
   schedule: declarationFromAnswers(a),
   maxTurnsPerSession: 80,
   sessionTimeoutMin: 45,
+  // Ceiling a plan entry's per-task `timeoutMin` (submit_plan) may raise a
+  // session to — triage gets a time lever without being able to spawn an
+  // unbounded session. A value above it is clamped and logged, never
+  // silently honored.
+  maxSessionTimeoutMin: 90,
   maxSessionsPerWindow: 12,
   // The gate floor: command the merge gate runs on the MERGED tree before
   // pushing under auto-merge (e.g. "npm ci --silent && npm test"). null =

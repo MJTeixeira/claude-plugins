@@ -139,6 +139,9 @@ export const bitbucketForge = ({ project, env = {} }) => {
       } });
       return r.links?.html?.href ?? `https://bitbucket.org/${repo()}/pull-requests/${r.id}`;
     },
+    // PUT gotcha: Bitbucket clears reviewers omitted from the payload —
+    // acceptable, factory PRs never carry reviewers.
+    prUpdate: (pr, { title, body }) => { req(`${base()}/pullrequests/${prId(pr)}`, { method: "PUT", body: { title, description: body } }); },
     prComment: (pr, body) => { req(`${base()}/pullrequests/${prId(pr)}/comments`, { method: "POST", body: { content: { raw: body } } }); },
     prComments: (pr) => (json(`${base()}/pullrequests/${prId(pr)}/comments?pagelen=100`).values ?? [])
       .map((c) => ({ author: c.user?.display_name ?? null, authorId: c.user?.uuid ?? null, body: c.content?.raw ?? "", createdAt: c.created_on ?? null })),

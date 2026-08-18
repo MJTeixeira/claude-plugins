@@ -8,20 +8,20 @@
   "plugins": [
     {
       "name": "code4food-skillset",
-      "description": "Attention-lean dev workflow, injected at session start into opted-in projects: task sizing, explore/plan/TDD/verify/finishing discipline, debugging, worktrees, handoff \u2014 plus a code-reviewer agent, /commit, and a protected-branch guard hook.",
-      "version": "1.11.1",
+      "description": "Live sessions with a human in the room. A typed flow — chart, grill, spec, tickets, implement — that terminates in factory-runnable backlog tasks, plus the method skills the flow names at its seams. Skills only: no injected contract, no hooks, no agents.",
+      "version": "2.0.0",
       "license": "MIT",
       "keywords": [
         "workflow",
-        "tdd",
+        "backlog",
         "skills"
       ],
       "source": "./"
     },
     {
       "name": "code4food-factory",
-      "description": "Factory \u2014 autonomous spec-driven development. Claude Code develops a fully-specced product alone in daily windows; skills cover speccing (multi-sitting interview + red-team pass, no factory machine required), setup (interview wizard), the backlog vocabulary, and headless verification for unattended sessions.",
-      "version": "1.23.0",
+      "description": "The skillset a Factory window loads, plus the attended-side factory skills (spec interview, setup wizard). Unattended sessions with no human in the room: how to pick a backlog task, implement it, verify it headlessly, and review it before the PR. The driver, prompts, and schedulers ship in this plugin's factory/ tree and run from a per-machine runtime clone (see FACTORY.md).",
+      "version": "2.0.0",
       "license": "MIT",
       "keywords": [
         "autonomous",

@@ -58,24 +58,36 @@ export const ALLOW_ENGINE = {
 export const FACTORY_GITIGNORE = [".env", "log", "tmp/", "plan.json", "board.json", "STOP"];
 
 // Entry comparison ignores a trailing slash: `log/` in a live fleet file
-// counts as covering `log` for drift purposes — commitMetadata's reset belt
-// handles the symlink case, and healing must not nag every healthy project.
+// counts as covering `log` for PRESENCE purposes — appending a second log
+// entry would duplicate, and the exposed-state fail must not fire on a
+// directory `log/` genuinely covers. The spelling itself is a separate
+// drift (misspelledGitignoreEntries below).
 const ignoreKey = (l) => l.trim().replace(/\/$/, "");
 export const missingGitignoreEntries = (text) => {
   const have = new Set(String(text ?? "").split("\n").map(ignoreKey).filter(Boolean));
   return FACTORY_GITIGNORE.filter((e) => !have.has(ignoreKey(e)));
 };
 
+// The old scaffold stamped `log/`, which matches only directories — never
+// the meta worktree's log SYMLINK, so the symlink can slip back into git
+// (fleet regression 2026-08-17). Any repo still carrying the slashed
+// spelling is drift: doctor warns, migrate respells in place.
+export const misspelledGitignoreEntries = (text) =>
+  String(text ?? "").split("\n").some((l) => l.trim() === "log/") ? ["log/ → log"] : [];
+
 // Create or heal .factory/.gitignore in place; owner lines are never touched,
-// missing canonical entries are appended. Returns what was added.
+// missing canonical entries are appended and the legacy `log/` spelling is
+// respelled to `log`. Returns what was added/respelled.
 export const stampFactoryGitignore = (projectDir) => {
   const p = path.join(projectDir, ".factory", ".gitignore");
   const cur = fs.existsSync(p) ? fs.readFileSync(p, "utf8") : "";
   const missing = missingGitignoreEntries(cur);
-  if (!missing.length) return [];
+  const respell = misspelledGitignoreEntries(cur);
+  if (!missing.length && !respell.length) return [];
+  const healed = respell.length ? cur.split("\n").map((l) => (l.trim() === "log/" ? "log" : l)).join("\n") : cur;
   fs.mkdirSync(path.dirname(p), { recursive: true });
-  fs.writeFileSync(p, cur.replace(/\n*$/, cur ? "\n" : "") + missing.join("\n") + "\n");
-  return missing;
+  fs.writeFileSync(p, healed.replace(/\n*$/, healed ? "\n" : "") + missing.join("\n") + (missing.length ? "\n" : ""));
+  return [...missing, ...respell];
 };
 
 // Create .factory/README.md — the in-repo contract for teammates who don't

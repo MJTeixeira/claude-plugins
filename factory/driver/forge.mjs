@@ -26,6 +26,9 @@
 //                           login, Bitbucket uuid) — display names are
 //                           user-settable and spoofable, never compare them
 //   prCreate({title, body, head, base}) -> new PR url (trimmed)
+//   prUpdate(pr, {title, body}) edit an open PR's title/body in place —
+//                           create_pr's already-open path (a rework must
+//                           not leave the pre-rework text standing)
 //   prListMerged()          [{number, url, title, headRefName}] — the
 //                           triage safety net's merged-but-status-lags check
 //   whoami()                {id, name} — the authenticated account (= the
@@ -90,6 +93,7 @@ const githubForge = ({ project, env = {} }) => {
     prComments: (pr) => (jsonOut(["pr", "view", pr, "--json", "comments"]).comments ?? [])
       .map((c) => ({ author: c.author?.login ?? null, authorId: c.author?.login ?? null, body: c.body ?? "", createdAt: c.createdAt ?? null })),
     prCreate: ({ title, body, head, base }) => out(["pr", "create", "--head", head, "--base", base, "--title", title, "--body", body]).trim(),
+    prUpdate: (pr, { title, body }) => { out(["pr", "edit", String(pr), "--title", title, "--body", body]); },
     prListMerged: () => jsonOut(["pr", "list", "--state", "merged", "--json", "number,url,title,headRefName", "--limit", "30"]),
 
     // GitHub logins are unique and stable enough to BE the authorId (renames
