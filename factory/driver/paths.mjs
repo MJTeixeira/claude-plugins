@@ -31,7 +31,7 @@ export const readJson = (p) => {
 };
 
 // KEY=VALUE lines, # comments. No expansion. One parser for every env-shaped
-// file (<state>/.env, ~/.factory/telegram.env) so the format can't fork.
+// file (<state>/.env, ~/secrets/factory-shared.env) so the format can't fork.
 export const readEnvLines = (file) => {
   const env = {};
   if (!fs.existsSync(file)) return env;
@@ -44,9 +44,19 @@ export const readEnvLines = (file) => {
   return env;
 };
 
-// <state>/.env. Shared by the driver (session env, forge credentials) and
-// the dashboard (per-project forge credentials) so the parse can't drift.
-export const readEnvFile = (stateRoot) => readEnvLines(path.join(stateRoot, ".env"));
+// Machine-shared credentials (spec: machine-credentials, 2026-08-18): creds
+// every factory on the box uses live in ONE file inside the owner's
+// ~/secrets pattern, so rotation edits one file, not one per project. ONLY
+// this file auto-loads — other ~/secrets/*.env are service creds a factory
+// session must never see unless the project opts in explicitly.
+export const machineEnvFile = (home = os.homedir()) =>
+  path.join(home, "secrets", "factory-shared.env");
+
+// Machine file under <state>/.env, project wins per key; a missing machine
+// file reads exactly as before. Shared by the driver (session env, forge
+// credentials), the dashboard, and bb so credential resolution can't fork.
+export const readEnvFile = (stateRoot, home = os.homedir()) =>
+  ({ ...readEnvLines(machineEnvFile(home)), ...readEnvLines(path.join(stateRoot, ".env")) });
 
 // Is this pid a RUNNING process? Zombies count as dead (owner decision
 // 2026-07-31): a zombie can do no work, so a lock or dashboard tile backed
