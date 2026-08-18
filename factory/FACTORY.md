@@ -20,8 +20,16 @@ factory repos as live sessions — see "Windows" at the end of this file).
 ```
 
 - **State lives in files**, not conversations: `.factory/backlog/` (what to
-  do), `.docs/` (what's known), `.docs/HANDOFF.md` (mid-task state). Every
-  session starts cold and reads them — no compaction roulette.
+  do, and — on a task's `Notes:` — where the last session stopped), plus the
+  project's own `CONTEXT.md` and `docs/adr/` for what the code cannot tell you.
+  `CONTEXT.md`'s glossary entries carry the synonyms to avoid (`_Avoid_: …`)
+  so agent-written text converges on one vocabulary instead of drifting; a
+  change that contradicts an ADR says so explicitly rather than silently
+  overriding.
+  Every session starts cold and reads them — no compaction roulette. A task and
+  a handoff are one object at two stages of its life, so mid-task state is
+  written back onto the task rather than into a file beside it: a separate file
+  forks the state, and only one fork is pickable by the next window.
 - **The factory is a MACHINE product.** A project repo carries only work
   data — `.factory/{spec,backlog,inbox}`, the collaboration surface the
   driver commits to. Everything else about a factory — `config.json`
@@ -53,7 +61,13 @@ factory repos as live sessions — see "Windows" at the end of this file).
   thread instead of opening another — led by its own ask, since on that
   lane the wording differs from the thread's title by construction. A
   CLOSED/answered thread suppresses nothing — the question recurred, or
-  the answer didn't take.
+  the answer didn't take. A question a session filed WITHOUT a `taskId`
+  while reporting `blocked` is attributed to the task it reported blocked
+  on: the tool's field is optional and sessions drop it, and an untied
+  question parks nothing — the task would land at `blocked`, which triage
+  re-opens, while the owner's answer sits on a thread no task links to.
+  Only `blocked` triggers the attribution; a question from a session that
+  settled its task stays as general as the session left it.
 
 ## Architecture & contracts
 
@@ -159,13 +173,21 @@ session context — never merge them, never cross-load them:
 
 - **Factory windows** verify via `code4food-factory:verify` (headless
   recipes, factory escalation vocabulary: `open_question`, `Gate: human`)
-  and then run ONE mandatory `code-reviewer` agent pass before opening the
-  PR — the only code review a factory PR gets before auto-merge (the
-  acceptance grader below judges criteria, not code quality). Factory
-  sessions never load the skillset's `finishing`.
-- **Live sessions** verify via `code4food-skillset:verify` (attended:
-  watched browser, simulator screenshots, `screencapture`), loaded by
-  `finishing` step 2.
+  and then run ONE mandatory `code4food-factory:code-review` pass before
+  opening the PR — two parallel sub-agents, Standards and Spec — which is the
+  only code review a factory PR gets before auto-merge (the acceptance grader
+  below judges criteria, not code quality). Factory sessions have no finishing
+  step: verify plus that review pass ARE the pre-PR checks.
+- **Live sessions** verify via `code4food-skillset:verify` (attended: watched
+  browser, simulator screenshots, `screencapture`).
+
+The two skillsets are separate, DIFFERENTLY-NAMED plugins and coexist on one
+machine — same-named skills across them stay reachable under their own
+namespaces (the shipped pair ran two `verify` skills that way for months).
+What must never happen is two installed plugins sharing one PLUGIN name:
+measured 2026-08-17 on Claude Code 2.1.233, that silently drops skills with
+no error — which is why the unattended skillset ships INSIDE
+`code4food-factory` rather than as a second plugin reusing its name.
 
 Both honor the same two invariants, each in its own words: claim done only
 on fresh evidence produced in THIS session, and scratch probes never in the
@@ -209,7 +231,54 @@ park — which keeps its notes: the machine-clearable half (resolve the
 conflict, fix red checks) is a session's job there, the owner cannot merge
 a CONFLICTING PR without it, and a real fix changes the diff, so it cannot
 treadmill. The stale-parked retry lane below is the ONE sanctioned
-re-engagement of a question-parked task.
+re-engagement of a question-parked task. The drop covers the grader's
+fix note like every other (a parked task's acceptance criteria cannot
+pass until the owner answers), and the plan lane skips a parked entry
+rather than assigning it — the two lanes T-005 (2026-08-04) confirmed in
+source and locked with regression fixtures.
+
+**Review means the gate has it (backlog T-012, 2026-08-03):** a task at
+`review` holds an open PR the merge gate is already watching, so no session
+is sent to it — the plan lane skips it exactly as it skips done/blocked/
+needs-human, and self-selection already excluded it. That lane was the last
+leg of the same treadmill: every window re-assigned the review task, every
+assigned session pushes (the dev prompt requires commit+push at each green
+step and a HANDOFF refresh), every push restarted CI, and the window-end
+sweep then found non-green checks and left the PR for the next window to
+repeat — three windows, three pushes, on a diff that never changed. A
+`review` record with no PR, or one whose PR has left the open list (closed
+unmerged — a merged one is already flipped `done`), still goes to a session:
+only a session can recover those. An unreadable PR list means we know
+nothing and the task is left alone.
+
+Review branches still track a moved base, but only when the move MATTERS.
+Of the two fix shapes the known-issues entry offered, this takes the second
+— skipping the base-merge when it cannot change the branch-vs-base diff —
+because the first, a bounded wait on pending checks at window end, cannot
+reach zero: CI that outlasts the wait leaves the PR in flight, the next
+window re-engages, and the treadmill resumes one window later having also
+spent window time waiting. The identity question is the same one T-002
+answered for the grade cache: the driver merges base into the branch in the
+object database (`merge-tree --write-tree` — no worktree, no checkout), takes
+the patch-id of what the branch would then contribute, and pushes ONLY if it
+differs from what it contributes today. A base-merge almost never changes
+that (the base's own commits cancel on both sides); the case that does is
+base work inside a branch hunk's context window. Note what this test does
+and does not answer: it answers "did the branch's own diff change", NOT
+"would CI now answer differently" — a base commit that renames a helper the
+branch calls, or bumps a dependency it uses, leaves the branch's patch-id
+byte-identical and still breaks the combination. Proving the COMBINATION is
+the gate suite's job (`gateCommand`, the merge floor, run on the merged tree
+before any merge exists anywhere), not the refresh's; a factory with CI but
+no `gateCommand` has no such proof, and its stale-green risk is the reason
+to set one. Unlike every other branch refresh, the driver does
+this itself instead of instructing a session (see NOTES item 73): a
+diff-identity comparison is mechanical, and a paid session sent to a branch
+it has nothing to add to is the cost being removed. It fails toward NOT
+pushing at every uncertainty — unreadable patch-id, a git without
+`merge-tree --write-tree`, or a conflicting merge (the conflict note owns
+that case, and resolving a real conflict changes the diff anyway) — and it
+never touches a parked task's branch.
 
 **The acceptance grader (autonomy epic, 1.12.0):** before the gate may
 merge a task PR, an INDEPENDENT grader session must record a passing
@@ -345,6 +414,17 @@ network). Log: `~/.factory/deploy.log`. **This is the ONLY update verb** —
 there is no per-project tooling refresh anymore (`init.mjs --update` died
 with the machine-product refactor).
 
+An **unattended machine** (one running the unattended skillset) declares
+itself in `~/.factory/unattended.json`: the plugin + marketplace its
+sessions load skills from (instead of the shipped `code4food` pair) and a
+sha256 manifest of the runtime files overlaid by hand. `deploy-runtime`
+REFUSES on such a machine — a deploy would clobber the overlays and
+reinstall the shipped pair. Doctor verifies the declaration instead of
+failing red: dirty runtime files must exactly match the manifest, the
+declared plugin must be installed at its source's version, and a shipped
+`*@code4food` plugin still present fails as a same-name collision. Remove
+the declaration to return the machine to the shipped runtime.
+
 ## Setup (once per project and machine) — two ways, friendliest first
 
 **Spec first, install later (works on any machine, any OS):** the `spec`
@@ -434,6 +514,7 @@ without its row.
 | `maxSessionsPerWindow` | `12` | hard cap on sessions per window |
 | `maxTurnsPerSession` | `80` | hard cap on agent turns per session |
 | `sessionTimeoutMin` | `45` | wall-clock kill for a hung session |
+| `maxSessionTimeoutMin` | `90` | ceiling a plan entry's per-task `timeoutMin` (§Per-task model & effort routing) may raise a session's timeout to; a higher value is clamped and logged |
 | `autonomy` | `"pr-only"` | who merges PRs — `pr-only`, `auto-merge-dev`, `milestone-gates` (§Autonomy levels) |
 | `baseBranch` | `"dev"` | branch the agent's PRs target — never your `main` |
 | `model` | `"sonnet"` | default session model (also seeds `triageModel`); backlog tasks override via `Model:`/`Effort:`/`Turns:` |
@@ -441,7 +522,7 @@ without its row.
 | `triageModel` | *(= `model`)* | triage-only model. Planning gates everything downstream, so cheap dev sessions can pair with strong triage |
 | `graderModel` | `"opus"` | the acceptance grader's model — deliberately NOT `model` (§Verification & review contract) |
 | `mergeGateMinutes` | `10` | how long the gate polls CI before leaving a PR for the sweep (auto-merge only) |
-| `gateCommand` | `null` | repo suite the gate runs on the MERGED tree before pushing (e.g. `"npm ci --silent && npm test"`); `null` = rely on CI. With NEITHER, the gate refuses to auto-merge and doctor goes red. It is the merge FLOOR, not verification: a task `Verify:` line that only repeats it proves nothing the gate didn't — doctor's `Verify lines` row and the triage lint flag those (backlog skill, Verify tiers) |
+| `gateCommand` | `null` | repo suite the gate runs on the MERGED tree before pushing (e.g. `"npm ci --silent && npm test"`); `null` = rely on CI. With NEITHER, the gate refuses to auto-merge and doctor goes red. It is the merge FLOOR, not verification: a task `Verify:` line that only repeats it proves nothing the gate didn't — doctor's `Verify lines` row and the triage lint flag those (§Backlog authoring, Verify tiers) |
 | `gateSuiteTimeoutMin` | `15` | wall-clock bound on `gateCommand`; a timeout counts as a failed suite |
 | `riskTiers` | `{"high": []}` | path prefixes (end dirs with `/`) whose PRs always park for owner review. A malformed value FAILS doctor rather than silently disabling the floor |
 | `toolchain` | *(unset)* | external tools the window needs, `[{"name": "godot", "check": "godot --version"}]` — one doctor row each, so a missing tool stops the window before it burns sessions. Malformed = doctor fail |
@@ -505,8 +586,8 @@ foundation tasks) — marking one `done` stays an explicit human/triage
 edit. Idempotent; refuses `done`/unknown milestones and a live window.
 
 Milestone headings are machine-read, and the canonical shape is
-`## M<n>: <title> — <status>` (status LAST on the line; documented in the
-`code4food-factory:backlog` skill). The index format went unspecified for a
+`## M<n>: <title> — <status>` (status LAST on the line; §Backlog authoring
+below is the one home for the format). The index format went unspecified for a
 long time, so older factories carry other dialects (`### M1: …`,
 `## Milestone 1 — … (active)`) — the parser reads all of them, and
 `promote` flips the status in whichever dialect the heading uses, so
@@ -514,6 +595,59 @@ nothing gets rewritten under the owner. A heading NO dialect covers is a
 doctor warn (`milestone headings`): before that row existed, an unreadable
 heading silently took out both promote and the dashboard's active-milestone
 display on 4 of 6 fleet factories (2026-07-19).
+
+## Backlog authoring: Verify tiers & acceptance wording
+
+Tasks are authored in live sessions and by compile-spec/triage — never by a
+factory window (the `code4food-factory:backlog` skill covers the window's
+reading half). This section is the one home for the two authoring rules;
+other docs and the lints point here.
+
+### Verify tiers
+
+The acceptance grader executes the `Verify:` line VERBATIM in a fresh
+checkout. Write it at the highest tier the acceptance criteria reach:
+
+1. **Suite-only — weak.** `npm test`, `dotnet test`, or a repeat of the
+   config's `gateCommand`: the merge gate already runs these on the merged
+   tree, so this line grades the diff, never the task. The driver lints
+   for it — doctor's `Verify lines` row, and the triage prompt lists the
+   hits to fix.
+2. **Drive the product — the bar.** A curl against the changed endpoint
+   (status AND body), the CLI with real arguments, a headless engine run —
+   and assert on output, not just exit codes (exit-0 proves almost
+   nothing). On engine projects, a game-touching task's Verify includes
+   the pinned engine-test command (godot/unity skill): engine-free unit
+   tests alone skip the engine. The lint cross-checks this edge too —
+   acceptance naming engine-tier tests with a Verify that never runs
+   them is flagged even when the line otherwise drives the product.
+3. **Human eyes.** Visual quality, game feel, aesthetics — that is
+   `Gate: human (<reason>)`, never a Verify command; a headless session
+   cannot self-judge it.
+
+### Acceptance wording — the strictness dial
+
+The grader judges each criterion AS WRITTEN, so the wording is the
+strictness setting: write each criterion observable and checkable by a
+stranger in a fresh checkout — observable behavior plus the exact
+expectation (the input, the exact output/exit code/error contract, and
+the comparison target): "exit 2 with `error:` on stderr", "byte count
+matches `wc -c` on non-UTF-8 input".
+
+An unmeasurable adjective ("gracefully", "correctly", "robust", "fast")
+delegates strictness to per-run grader mood — the grader battery caught
+borderline PRs graded lenient 2-in-3 until the criterion said "byte
+length" literally. The driver lints for it (tier `vague`, same doctor
+row and triage list as the Verify lint): a criterion with a mood
+adjective and no measurable anchor — no number, no backticked
+command/string, no path, no comparison target — gets flagged; "word
+count matching `wc -w`" passes.
+
+If the expectation can't be written exactly (visual quality, feel), it
+belongs in `Gate: human (<reason>)`, not behind an adjective. A task
+with no criteria at all becomes one synthesized criterion from its
+title, which grades much more loosely than the spec deserves — write
+the real ones.
 
 ## Git & status ownership (NOTES items 23–24, 39–41)
 
@@ -638,6 +772,16 @@ to sessions self-selecting with factory defaults (`config.json → model`,
 older CLIs the driver logs a warning and omits it. Every spawn execs
 `config.json → claudeCmd` (default `"claude"`) — set it when the CLI lives
 off PATH for the scheduler's environment.
+
+A plan entry may also carry `timeoutMin` — triage's time lever, for a task
+whose turn budget legitimately won't fit the default `sessionTimeoutMin`
+(a big-turns/opus task the wall clock would otherwise cut off mid-work; the
+turn cap and the wall clock are independent limits). At ingestion (when the
+driver writes `plan.json` from triage's `submit_plan` event) a `timeoutMin`
+above `maxSessionTimeoutMin` is clamped to it and logged — never silently
+honored, same validate-then-cap discipline as `maxTurns`. An entry without
+the field spawns with `sessionTimeoutMin` unchanged, and a plan.json written
+before this field existed loads without error.
 
 A task's `Model:` pin is a floor at launch: the driver raises a plan/config
 model BELOW the pin to the pin (haiku < sonnet < opus < fable) and logs it —
@@ -925,7 +1069,9 @@ service, `factory-onfailure@.service`) live in `factory/schedulers/`.
   verify, review, session pushes, the turn-cap resume chain and the merge
   all proven against the real API. Sessions open PRs through the
   `create_pr` MCP tool (factory 1.7.0) — the driver makes the forge call
-  with its own credentials. Every shell-side credential recipe was
+  with its own credentials; called for a branch whose PR is already open
+  (a rework), it updates that PR's title/body instead of leaving the
+  pre-rework text standing. Every shell-side credential recipe was
   live-disproven 2026-07-20 (all command forms denied in real worktrees
   under `dontAsk`), which is why ALL session forge access is driver-side
   by contract since 1.8.0: PR creation via `create_pr`, the daily log
@@ -1125,7 +1271,7 @@ service, `factory-onfailure@.service`) live in `factory/schedulers/`.
   engine-tier tests its own acceptance names, or carries vague
   acceptance wording — a mood adjective with no measurable anchor; the
   grader executes the line verbatim and judges each criterion as
-  written (backlog skill §Acceptance wording); the same lint feeds the
+  written (§Backlog authoring, Acceptance wording); the same lint feeds the
   triage prompt),
   CI-or-gateCommand present under auto-merge
   (neither = red FAIL, per the gate floor). Exit 1 on
@@ -1229,7 +1375,10 @@ service, `factory-onfailure@.service`) live in `factory/schedulers/`.
   A session that hits the turn cap mid-wrap-up is logged `turn-capped`, not
   `died` — it doesn't arm the two-deaths breaker, and the driver injects a
   repo snapshot into the next session's prompt so it lands the leftovers
-  instead of re-discovering them.
+  instead of re-discovering them. The capped task is also stamped
+  `in-progress` in the runtime state, so even when the window ends right
+  there (the prompt note is in-memory) the next window's state overlay
+  still names the unfinished task.
 
 ## Piloting gotchas (learned the hard way — don't relearn)
 

@@ -1,8 +1,10 @@
 # Factory triage session (unattended)
 
 You are the triage pass before a dev window. No human is present. Your job:
-fold every new external input into the backlog, then post the plan of day.
-You do NOT implement anything.
+read what arrived, keep the existing backlog healthy, and post the plan of day.
+You do NOT implement anything, and you do NOT create tasks — new work is
+authored in live sessions, so anything that arrives without a task becomes a
+line in the daily log for the owner, never a new task block.
 
 **You edit files but never run git.** Leave every change uncommitted in the
 working tree — the driver commits your output to the base branch when you
@@ -47,50 +49,47 @@ branches, no checkouts, no commits, no merges.
   (`echo "user = \"$JIRA_EMAIL:$JIRA_API_TOKEN\"" | curl -sS -K -
   "$JIRA_BASE_URL/rest/api/3/search/jql?jql=<urlencoded>&fields=summary"`)
   for new/updated issues labeled `factory`.
-- **Inbox**: every file in `.factory/inbox/` is a note from a human. Process
-  each, then delete it (its content must land in the backlog or a decision
-  record, never be silently dropped). `rm` is not allowlisted — delete via
-  `node -e 'require("fs").rmSync(".factory/inbox/<file>")'` (`node` is),
-  and never leave a processed note behind with just a marker comment.
-  - `board-delta.md` is generated: human edits on the project board
-    (GitHub Projects or Jira, per config `board`). New cards → new backlog
-    tasks (or reject with a reason in the daily log); a captured JIRA
-    issue additionally gets closed by you with a comment naming the new
-    task id (read its description via REST first — the delta only carries
-    its key and summary; the issue keeps its `factory-captured` label
-    either way). Human status moves → judge the intent — the factory
-    already restored its own status on the board, so a done task dragged
-    back to todo usually means a re-open request (new bug task); when in
-    doubt, ask via the `open_question` MCP tool instead of guessing — the
-    driver dedupes it and files/updates the tracker issue itself.
+- **Board delta**: `.factory/inbox/board-delta.md`, when present, is generated
+  from human edits on the project board (GitHub Projects or Jira, per config
+  `board`). Read it; do not act on it beyond the backlog you already have. New
+  cards are new work — list them in the daily log so a live session tickets
+  them, and leave the card alone. Human status moves → judge the intent against
+  the tasks that exist: the factory already restored its own status on the
+  board, so a done task dragged back to todo is usually a re-open request, which
+  is the owner's to confirm — say so in the daily log rather than guessing, or
+  ask via `open_question` if it blocks the plan.
 
-## 2. Fold into the backlog (per the `code4food-factory:backlog` skill format)
+## 2. Keep the existing backlog healthy (per the `code4food-factory:backlog` skill)
 
-- New requirement/request → new task(s) in the right epic with acceptance
-  criteria + Verify; note the source (issue #, inbox file, Jira key). If it
-  contradicts the spec, don't guess: ask via `open_question` instead.
-- Write each `Verify:` line at the highest tier the criteria reach — the
-  grader executes it verbatim (the backlog skill's §Verify tiers is the
-  one home for what that means). When your prompt carries a
-  **Verify-line lint** section, each entry says what its line fails to
-  prove — nothing beyond the suite/gate, or the engine-tier tests its
-  own acceptance names: fix them along with your other backlog edits.
-- **Stamp `- Gate: human (<reason>)`** on any task whose acceptance criteria
-  need owner judgment a headless session cannot make (visual/aesthetic
-  review, playtest feel, product sign-off). The merge gate then holds its
-  green PR for owner review instead of auto-merging. When the machine part
-  of a human-gated task is already done (PR open, waiting on the owner),
-  do NOT plan it again — it is waiting, not stuck.
+You maintain tasks; you never create them. A new requirement, request or bug
+report that has no task yet is daily-log content — name it, name where it came
+from (issue #, Jira key, board card), and a live session tickets it.
+
+- When your prompt carries a **Verify-line lint** section, each entry names a
+  task whose `Verify:` line or acceptance wording won't hold the grader to the
+  task. Do not rewrite them — `Verify:` lines are authored where tasks are
+  authored. List the flagged tasks in the daily log so they get fixed in a live
+  session, and leave the files alone.
+- **Stamp `- Gate: human (<reason>)`** on any existing task whose acceptance
+  criteria need owner judgment a headless session cannot make (visual/aesthetic
+  review, playtest feel, product sign-off). The merge gate then holds its green
+  PR for owner review instead of auto-merging. When the machine part of a
+  human-gated task is already done (PR open, waiting on the owner), do NOT plan
+  it again — it is waiting, not stuck.
 - Two parking statuses, keep them distinct: `blocked` = dependency/technical,
   machine-clearable (you re-open it when the dependency lands); `needs-human`
   = only the owner clears it (there is an open question or a human gate).
   Never downgrade `needs-human` to `blocked`; flip it to `todo` only when
   the owner's answer/approval is actually in.
 - A `- Retried:` line on a parked task is the driver's stale-parked retry
-  record: an escalated session already re-tested the recorded blocker.
-  "still-stuck" means don't wait for magic — split the task, re-scope it,
-  or surface it to the owner with the evidence. No marker on an old park
-  means the escalated look hasn't happened yet.
+  record: an escalated session already re-tested the recorded blocker, once and
+  only once per park. `recovered` means the task is back in the working pool;
+  `gate-held` means its machine half shipped and the PR waits at the owner's
+  gate — waiting, not stuck; `still-stuck` means the blocker was confirmed real
+  or the owner's input is genuinely required. Splitting or re-scoping a
+  still-stuck task is authoring, so it is not yours: surface it to the owner in
+  the daily log with the retry's evidence. No marker on an old park means the
+  escalated look hasn't happened yet — leave it.
 - A proposal that needs changes to the factory's own tooling never becomes
   a backlog task: the driver, prompts, and schedulers run from the machine
   runtime (`~/.factory/runtime/`), outside this repo, and `.factory/hooks/`
@@ -99,12 +98,11 @@ branches, no checkouts, no commits, no merges.
   (`.factory/hooks/`, plus legacy `.factory/driver.mjs`,
   `.factory/prompts/`, `.factory/schedulers/` copies in unmigrated
   projects). Call `open_question` quoting the proposal so the owner routes
-  it upstream; fold any in-repo parts (scripts, docs, CI) into tasks as
-  normal.
-- Bug report → a task with a repro-based acceptance criterion; priority: bugs
-  in shipped work go before new tasks (place them at the top of the epic).
+  it upstream, and name any in-repo parts (scripts, docs, CI) in the daily log
+  so a live session tickets them.
 - Answered questions → unblock tasks (`blocked → todo`, or
-  `needs-human → todo` once the owner's answer is in), record decisions.
+  `needs-human → todo` once the owner's answer is in), record decisions in the
+  task's `Notes:`.
 - Safety net: a task whose PR is **merged** but whose file status lags
   (check the merged-PR list — `gh pr list --state merged`, or on Bitbucket
   `.../pullrequests?state=MERGED` — and the **Driver state overlay** in
@@ -129,6 +127,18 @@ next window will likely work on (first 2-3 eligible tasks), open
 `needs-human` questions. If any tasks sit at `needs-human`, add explicit
 "waiting on owner: T-…" lines — the owner reads this digest to find what
 only they can clear.
+
+This digest is also the only route out for everything you were not allowed to
+act on, so it carries three standing sections when they have content, each one
+naming what a live session should do:
+
+- **Needs ticketing** — inbound work with no task yet: tracker issues, board
+  cards, bug reports, the in-repo half of a tooling proposal. Name the source.
+- **Needs rewriting** — the tasks the Verify-line lint flagged, with what each
+  line fails to prove.
+- **Needs re-planning** — parked tasks whose `- Retried:` line reads
+  `still-stuck`, with the retry's evidence, so the owner can split, re-scope, or
+  clear the obstacle.
 
 ## 4. Session plan for the next window
 
@@ -171,6 +181,15 @@ the higher one — wasted sessions cost more than tokens. Turn budgets must
 also cover the mandatory pre-PR `code-reviewer` pass every dev session runs
 (spawn + finding triage — roughly 10-20 turns on top of implementation).
 Note corrections in the `why`.
+
+If a big turn grant plausibly won't fit inside `sessionTimeoutMin` (the
+wall clock is a SEPARATE limit from the turn cap — a session can still be
+mid-work, well under its turns, when the clock kills it), set the entry's
+`timeoutMin` too. Evidence: a task or epic whose sessions keep dying at
+exactly the config timeout with turns to spare. The driver clamps it to
+`maxSessionTimeoutMin` and logs the clamp — never assume an unbounded ask
+lands as asked. Leave it unset for anything that fits the default; most
+tasks do.
 The driver spawns one session per entry with these settings and assigns it
 the task — a wrong plan wastes a session, so when unsure use `null`.
 

@@ -11,6 +11,7 @@
 // session<->driver contract is .factory/log/last-session.json.
 
 import { spawn, spawnSync, execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
@@ -19,7 +20,7 @@ import { factoryKey, stateDir, writeJsonAtomic, readEnvFile, readJson, execGit, 
 import { sendTelegram } from "./notify.mjs";
 import { makeNotifiers } from "./notify-route.mjs";
 import { senseMachineFacts, recordOutcome, threadTitle } from "./machine-threads.mjs";
-import { materializeWorkspace, isInjectedPath, factorySkillNames, stripFactorySettings, buildSessionSettings, detectStack, detectEngines, missingGitignoreEntries, stampFactoryGitignore, stampFactoryReadme } from "./workspace.mjs";
+import { materializeWorkspace, isInjectedPath, factorySkillNames, stripFactorySettings, buildSessionSettings, detectStack, detectEngines, missingGitignoreEntries, misspelledGitignoreEntries, stampFactoryGitignore, stampFactoryReadme } from "./workspace.mjs";
 import { healConfigSchema } from "./config.mjs";
 import { SCHEDULE_KINDS, SCHEDULE_MODES, normalizeSchedule, validateDeclaration, generateUnits, parseInstalled, compareInstalled, defaultPathLine } from "./schedule.mjs";
 import { deriveFactoryStatus } from "./status.mjs";
@@ -46,6 +47,7 @@ const CONFIG_DEFAULTS = {
   baseBranch: "dev",
   maxTurnsPerSession: 80,
   sessionTimeoutMin: 45,
+  maxSessionTimeoutMin: 90, // ceiling a plan entry's timeoutMin (submit_plan) may raise a session to
   maxSessionsPerWindow: 12,
   mergeGateMinutes: 10,
   gateCommand: null, // repo suite the gate runs on the MERGED tree before pushing (null = rely on CI checks)
@@ -148,8 +150,8 @@ const cliSupports = (claudeCmd, flag) => {
   return cliFlags.get(flag);
 };
 
-// overrides: per-session {model, effort, maxTurns} from the triage plan;
-// anything unset falls back to config, then the machine default.
+// overrides: per-session {model, effort, maxTurns, timeoutMin} from the
+// triage plan; anything unset falls back to config, then the machine default.
 // mode (dev|triage|report) reaches the session env as FACTORY_MODE — the
 // PreToolUse guard hook is a no-op without it (interactive sessions).
 const runSession = ({ project, cfg, env, promptText, sessionLogPath, log, mode, overrides = {} }) =>
@@ -231,10 +233,15 @@ const runSession = ({ project, cfg, env, promptText, sessionLogPath, log, mode, 
     };
 
     let timedOut = false;
-    const timeoutMs = cfg.sessionTimeoutMin * 60 * 1000;
+    // overrides.timeoutMin: triage's per-task time lever (submit_plan),
+    // already clamped to maxSessionTimeoutMin and logged at ingestion — a
+    // plan entry without it, or a non-dev session, keeps today's config
+    // constant.
+    const effectiveTimeoutMin = overrides.timeoutMin ?? cfg.sessionTimeoutMin;
+    const timeoutMs = effectiveTimeoutMin * 60 * 1000;
     const timer = setTimeout(() => {
       timedOut = true;
-      log(`session timeout (${cfg.sessionTimeoutMin}min) — terminating`);
+      log(`session timeout (${effectiveTimeoutMin}min) — terminating`);
       killTree("SIGTERM");
       setTimeout(() => killTree("SIGKILL"), 15_000).unref();
     }, timeoutMs);
@@ -1472,6 +1479,7 @@ if (mode === "mcp-server") {
                 model: { type: ["string", "null"], description: "model for the session, per the task's Model: hint" },
                 effort: { type: ["string", "null"], description: "effort for the session, per the task's Effort: hint" },
                 maxTurns: { type: ["number", "null"], description: "turn cap override, if the task warrants one" },
+                timeoutMin: { type: ["number", "null"], description: "session wall-clock timeout override in minutes, if the task's turn budget won't fit the default — clamped to the config ceiling and logged if capped" },
                 why: { type: ["string", "null"], description: "one line: why this task, this order" },
               },
               required: ["taskId"],
@@ -1488,7 +1496,8 @@ if (mode === "mcp-server") {
           const taskId = e && typeof e === "object" ? str(e.taskId, 80) : null;
           if (!taskId) return { error: "every queue entry needs a taskId (non-empty string)" };
           const maxTurns = Number.isInteger(e.maxTurns) && e.maxTurns > 0 ? e.maxTurns : null;
-          queue.push({ taskId, model: str(e.model, 40), effort: str(e.effort, 20), maxTurns, why: str(e.why, 300) });
+          const timeoutMin = Number.isInteger(e.timeoutMin) && e.timeoutMin > 0 ? e.timeoutMin : null;
+          queue.push({ taskId, model: str(e.model, 40), effort: str(e.effort, 20), maxTurns, timeoutMin, why: str(e.why, 300) });
         }
         record("submit_plan", { queue });
         return { text: `plan recorded (${queue.length} task(s)) — the driver writes plan.json at session end` };
@@ -1498,7 +1507,8 @@ if (mode === "mcp-server") {
       description:
         "Open the pull request for your pushed branch. The DRIVER makes the forge call with its own " +
         "credentials — never shell out with credentials yourself (on Bitbucket every credential command " +
-        "form is denied in this context). Targets the factory's configured base branch. Returns the PR " +
+        "form is denied in this context). Targets the factory's configured base branch. If a PR for the " +
+        "branch is already open (a rework), its title/body are updated with what you send. Returns the PR " +
         "url — pass it to report_status (status review) immediately.",
       inputSchema: {
         type: "object",
@@ -1522,18 +1532,23 @@ if (mode === "mcp-server") {
         }
         const cfg = loadConfig(stateD);
         const forge = createForge({ kind: cfg.forge ?? "github", project, env: readEnvFile(stateD) });
+        const body = str(a.body, 10000) ?? "";
         try {
-          const url = forge.prCreate({ title, body: str(a.body, 10000) ?? "", head: branch, base: cfg.baseBranch });
+          const url = forge.prCreate({ title, body, head: branch, base: cfg.baseBranch });
           record("create_pr", { taskId, branch, url });
           return { text: `PR opened: ${url} — now call report_status (status review) with this url` };
         } catch (e) {
           // Idempotent under retries: a turn-capped session may have already
-          // created it — an open PR for this head branch is the answer.
+          // created it — an open PR for this head branch is the answer. A
+          // REWORK lands here too, so refresh title/body: leaving the
+          // pre-rework text standing is a measured live failure (2026-08-17).
           try {
             const existing = forge.prListOpen().find((p) => p.headRefName === branch);
             if (existing?.url) {
-              record("create_pr", { taskId, branch, url: existing.url, existing: true });
-              return { text: `a PR for ${branch} is already open: ${existing.url} — now call report_status (status review) with this url` };
+              let updated = false;
+              try { forge.prUpdate(existing.number, { title, body }); updated = true; } catch { /* a stale body beats blocking report_status */ }
+              record("create_pr", { taskId, branch, url: existing.url, existing: true, updated });
+              return { text: `a PR for ${branch} is already open: ${existing.url} — its title/body ${updated ? "were updated with what you sent" : "could NOT be updated (they keep their previous text)"}; now call report_status (status review) with this url` };
             }
           } catch { /* the create failure below is the real story */ }
           const error = firstLine(e);
@@ -1981,6 +1996,13 @@ const runDoctor = () => {
     else check("ok", "peer client", `ask_peer on — ${peer.bin}`);
   }
 
+  // Unattended machine declaration (unattended-skillset GA): a machine whose
+  // runtime carries deliberate overlays and whose sessions load skills from a
+  // declared plugin instead of the shipped code4food pair. Written by hand at
+  // install time; checks 5 and 5b verify against it instead of failing red.
+  const unattendedPath = path.join(os.homedir(), ".factory", "unattended.json");
+  const unattended = readJson(unattendedPath);
+
   // 5. machine runtime (O6, NOTES item 46) — schedulers, watchdog, and
   //    dashboard all run ~/.factory/runtime, advanced only through
   //    deploy-runtime's gates. The per-project driver copies and their
@@ -1990,10 +2012,27 @@ const runDoctor = () => {
     if (!fs.existsSync(path.join(RUNTIME, ".git"))) {
       check("skip", "machine runtime", `none at ${RUNTIME} (dev-checkout run) — bootstrap: git clone <repo-url> ${RUNTIME}`);
     } else {
-      const dirty = (sh("git", ["-C", RUNTIME, "status", "--porcelain"]).out ?? "").trim();
+      const porcelain = sh("git", ["-C", RUNTIME, "status", "--porcelain"]).out ?? "";
+      const dirty = porcelain.trim();
       const sha = (sh("git", ["-C", RUNTIME, "rev-parse", "--short", "HEAD"]).out ?? "?").trim();
-      check(dirty ? "fail" : "ok", "machine runtime",
-        dirty ? `${RUNTIME} tree is dirty — the runtime only ever advances via deploy-runtime.mjs; restore it (git -C ${RUNTIME} status)` : `clean at ${sha}`);
+      const overlays = unattended?.overlays;
+      if (dirty && overlays && typeof overlays === "object") {
+        // Declared unattended machine: the runtime is deliberately overlaid.
+        // Green means EXACTLY the declared files differ and each matches its
+        // declared checksum — anything else is still ordinary drift.
+        const dirtyFiles = porcelain.split("\n").map((l) => l.slice(3)).filter(Boolean);
+        const extra = dirtyFiles.filter((f) => !(f in overlays));
+        const bad = Object.entries(overlays).filter(([f, want]) => {
+          try { return createHash("sha256").update(fs.readFileSync(path.join(RUNTIME, f))).digest("hex") !== want; }
+          catch { return true; /* declared file missing */ }
+        }).map(([f]) => f);
+        if (extra.length) check("fail", "machine runtime", `dirty outside the overlay manifest: ${extra.join(", ")} — restore them or re-declare in ${unattendedPath}`);
+        else if (bad.length) check("fail", "machine runtime", `overlay checksum mismatch: ${bad.join(", ")} — re-overlay from the branch and update ${unattendedPath}`);
+        else check("ok", "machine runtime", `overlaid for the unattended skillset at ${sha} — ${Object.keys(overlays).length} file(s) checksum-verified`);
+      } else {
+        check(dirty ? "fail" : "ok", "machine runtime",
+          dirty ? `${RUNTIME} tree is dirty — the runtime only ever advances via deploy-runtime.mjs; restore it (git -C ${RUNTIME} status)` : `clean at ${sha}`);
+      }
       // 5a. runtime origin (migration runbook Phase 0) — a wrong or retired
       //     remote fetches fine and deploys report "up to date" forever: a
       //     silently frozen machine. URL comparison only, no network —
@@ -2020,6 +2059,25 @@ const runDoctor = () => {
     const RUNTIME = path.join(os.homedir(), ".factory", "runtime");
     if (!fs.existsSync(path.join(RUNTIME, ".git"))) {
       check("skip", "code4food plugins", "no machine runtime (dev-checkout run)");
+    } else if (unattended?.plugin && unattended?.marketplace) {
+      // Declared unattended machine: the shipped pair must be ABSENT (the
+      // unattended plugin reuses the name — duplicates silently lose skills)
+      // and the declared plugin installed at the source's version.
+      const installed = readJson(path.join(os.homedir(), ".claude", "plugins", "installed_plugins.json"))?.plugins;
+      const shipped = ["code4food-skillset@code4food", "code4food-factory@code4food"].filter((k) => installed?.[k]?.length);
+      if (shipped.length) check("fail", "code4food plugins", `unattended machine still has shipped plugin(s) ${shipped.join(", ")} — same-name collision silently loses skills; claude plugin uninstall them`);
+      else check("skip", "code4food plugins", `unattended machine (${unattendedPath}) — shipped pair deliberately absent`);
+      const { plugin: pname, marketplace: mname, source } = unattended;
+      const mkt = readJson(path.join(os.homedir(), ".claude", "plugins", "known_marketplaces.json"))?.[mname];
+      const mktPath = mkt?.source?.path ?? mkt?.installLocation;
+      const want = readJson(path.join(String(source ?? ""), ".claude-plugin", "plugin.json"))?.version;
+      const rec = installed?.[`${pname}@${mname}`]?.[0];
+      const provision = `claude plugin marketplace add ${source} && claude plugin install ${pname}@${mname}`;
+      if (!mkt) check("fail", `unattended plugin ${pname}`, `marketplace ${mname} not registered — provision: ${provision}`);
+      else if (path.resolve(String(mktPath ?? "")) !== path.resolve(String(source ?? ""))) check("fail", `unattended plugin ${pname}`, `marketplace ${mname} points at ${mktPath ?? "?"}, not the declared source ${source}`);
+      else if (!rec) check("fail", `unattended plugin ${pname}`, `not installed — ${provision}`);
+      else if (want && rec.version !== want) check("fail", `unattended plugin ${pname}`, `installed ${rec.version}, source ships ${want} — claude plugin update ${pname}@${mname}`);
+      else check("ok", `unattended plugin ${pname}`, String(rec.version ?? ""));
     } else if (!fs.existsSync(path.join(RUNTIME, ".claude-plugin", "marketplace.json"))) {
       check("skip", "code4food plugins", "runtime ships no plugin marketplace (pre-G3)");
     } else if (process.env.FACTORY_DEPLOY_GATE) {
@@ -2232,13 +2290,18 @@ const runDoctor = () => {
     }
     {
       const fgi = path.join(dataDir, ".gitignore");
-      const missing = missingGitignoreEntries(fs.existsSync(fgi) ? fs.readFileSync(fgi, "utf8") : "");
+      const fgiText = fs.existsSync(fgi) ? fs.readFileSync(fgi, "utf8") : "";
+      const missing = missingGitignoreEntries(fgiText);
+      // The legacy log/ spelling covers directories but not the meta log
+      // SYMLINK — drift the same as a missing entry, migrate respells it.
+      const misspelled = misspelledGitignoreEntries(fgiText);
       // Legacy transition: state still on disk repo-side with nothing keeping
       // it out of `git add -A` is one command from a leak — that stays a fail.
       const exposed = [".env", "log"].filter((e) => fs.existsSync(path.join(dataDir, e)) && missing.includes(e === "log" ? "log" : ".env"));
-      check(exposed.length ? "fail" : missing.length ? "warn" : "ok", ".factory/.gitignore",
+      const drift = [...(missing.length ? [`missing ${missing.join(", ")}`] : []), ...(misspelled.length ? [`respell ${misspelled.join(", ")}`] : [])];
+      check(exposed.length ? "fail" : drift.length ? "warn" : "ok", ".factory/.gitignore",
         exposed.length ? `repo-side ${exposed.join(", ")} not ignored — one \`git add -A\` from a leak; run migrate`
-          : missing.length ? `scaffold drift — missing ${missing.join(", ")}; run factory.mjs migrate to stamp it`
+          : drift.length ? `scaffold drift — ${drift.join("; ")}; run factory.mjs migrate to stamp it`
             : "covers the runtime state");
     }
     // The teammate contract file (team affordances): its absence only costs
@@ -3416,6 +3479,22 @@ const parkNeedsHuman = (filed, result = null) => {
   return { applied, touched: applied.length > 0 || linked };
 };
 
+// A blocked session's question is about the task it is blocked on, whether or
+// not it said so. The tool's taskId is optional and sessions drop it — and an
+// untied question parks nothing, so all that lands is the session's own
+// `blocked`, which is triage-clearable: every following cycle re-opens a task
+// whose answer sits on a thread no task links to. That lane burned 5+ sessions
+// and 8 grades on one fleet task in a day (2026-08-01). The driver
+// knows what the session was working, so it attributes the question here —
+// only for `blocked` (the one status that means "I could not finish this"),
+// never widening a question the session deliberately left general.
+const attributeQuestions = (questions, result) => {
+  const taskId = result?.status === "blocked" ? result.taskId : null;
+  if (!taskId || !(questions ?? []).some((q) => !q.taskId)) return questions;
+  log(`question: attributing the blocked session's untied question(s) to ${taskId} — a blocked session's ask is about its own task`);
+  return questions.map((q) => (q.taskId ? q : { ...q, taskId }));
+};
+
 // ---------- session prompt assembly ----------
 // Prompts ship with the driver (O6): one source in the machine runtime,
 // nothing per-project to drift, and worktree sessions can't even see them.
@@ -3591,11 +3670,21 @@ const runSingle = async (name) => {
             log(`plan: dropping queued entry ${taskId ?? "(no taskId)"} — not in the backlog`);
             continue;
           }
+          // timeoutMin is triage's time lever — validated like maxTurns,
+          // then clamped to the config ceiling so a session can never
+          // outrun the machine's budget; a clamp is logged, never silently
+          // honored.
+          let timeoutMin = Number.isInteger(e.timeoutMin) && e.timeoutMin > 0 ? e.timeoutMin : null;
+          if (timeoutMin && timeoutMin > cfg.maxSessionTimeoutMin) {
+            log(`plan: ${taskId} timeoutMin ${timeoutMin} exceeds the config ceiling (${cfg.maxSessionTimeoutMin}) — clamping`);
+            timeoutMin = cfg.maxSessionTimeoutMin;
+          }
           queue.push({
             taskId,
             model: typeof e.model === "string" ? e.model : null,
             effort: typeof e.effort === "string" ? e.effort : null,
             maxTurns: Number.isInteger(e.maxTurns) && e.maxTurns > 0 ? e.maxTurns : null,
+            timeoutMin,
             why: typeof e.why === "string" ? e.why : null,
           });
         }
@@ -3782,13 +3871,13 @@ const recordGrade = (key, verdict) => {
 // when there is nothing to hash or git cannot answer — an empty diff has no
 // identity of its own, and one shared key would let unrelated PRs answer
 // for each other.
-const patchIdOf = (head) => {
+const patchIdOfDiff = (...revs) => {
   const cwd = metaPath(), maxBuffer = 64 * 1024 * 1024;
   // The diff stays a BUFFER: decoding it as utf8 first would fold every
   // invalid byte into U+FFFD, and two diffs differing only in non-utf8 bytes
   // (latin-1 sources, byte fixtures) would key identically — false reuse in
   // the one place we refuse it.
-  const diff = spawnSync("git", ["diff", `HEAD...origin/${head}`], { cwd, maxBuffer });
+  const diff = spawnSync("git", ["diff", ...revs], { cwd, maxBuffer });
   if (diff.status !== 0 || !diff.stdout?.length) return null;
   // `--verbatim`, not `--stable`: both ignore hunk line numbers (what a moved
   // base shifts) and both are file-order stable, but --stable also strips
@@ -3800,6 +3889,8 @@ const patchIdOf = (head) => {
   const id = out.status === 0 ? (out.stdout ?? "").trim().split(/\s+/)[0] : "";
   return /^[0-9a-f]{40,}$/.test(id) ? id : null;
 };
+
+const patchIdOf = (head) => patchIdOfDiff(`HEAD...origin/${head}`);
 
 // Cache key for a task's grade. Falls back to the head SHA when the diff has
 // no patch-id: fail toward paying for a re-grade, never toward reusing a
@@ -4333,6 +4424,31 @@ const parkedStatusOf = (taskId) => {
   return task.status;
 };
 
+// Review means the gate has it: a task at `review` holds an open PR the merge
+// gate is already watching, so a session sent there has nothing to add — and
+// costs. The plan lane's settled-skip dropped done/blocked/needs-human but not
+// review, so every window re-assigned the task, and every assigned session
+// pushes (the dev prompt requires commit+push at each green step and a HANDOFF
+// refresh). Each push restarts CI, the window-end sweep then finds non-green
+// checks and leaves the PR, and the next window repeats it — three windows,
+// three pushes, on a diff that never changed (one fleet PR, 2026-08-01).
+// Self-selection already excluded review tasks (backlog skill
+// step 3); this closes the one lane that didn't.
+//
+// Returns the held PR's url, or null when a session IS still the answer:
+// a `review` record with no PR (local-only repos report review with pr: null),
+// or a PR that has left the open list — closed unmerged, which only a session
+// can recover (a merged one was already flipped done by closeOwnerMergedGates).
+// An unreadable PR list means we know nothing, so it fails toward leaving the
+// branch alone: a waiting task costs nothing, a wrong re-assignment costs a
+// paid session and a CI restart.
+const gateHeldPr = (taskId, status, openFactoryPrs) => {
+  if (status !== "review") return null;
+  const pr = readState().tasks[taskId]?.pr;
+  if (!pr) return null;
+  return !openFactoryPrs || openFactoryPrs.has(pr) ? pr : null;
+};
+
 const mergeGate = async (args, budgetMs = cfg.mergeGateMinutes * 60 * 1000) => {
   const note = await gatePass(args, budgetMs);
   if (!note) return null;
@@ -4391,6 +4507,58 @@ const closeOwnerMergedGates = () => {
   }
 };
 
+// Keeping a review branch on a moved base — the other half of the treadmill
+// fix (T-012). A review PR's CI tests the branch, so when the base moves under
+// it the PR's green is about a combination that no longer exists, and the
+// branch has to re-merge base for CI to say anything true. The cost of doing
+// that on every base move is the treadmill itself: a base-merge almost never
+// changes what the branch CONTRIBUTES (the base's own commits cancel on both
+// sides), so the head SHA moves, CI restarts, and nothing was learned — the
+// same identity question T-002 answered for the grade cache. So the refresh is
+// gated on that identity: merge base into the branch in the object database
+// (`merge-tree --write-tree` — no worktree, no checkout), take the patch-id of
+// what the branch would then contribute, and push ONLY if it differs from what
+// it contributes today. Base work inside a branch hunk's context window is the
+// case that differs. What this test does NOT answer is whether CI would now
+// answer differently — a base commit that renames a helper the branch calls
+// leaves the branch's patch-id byte-identical and still breaks the
+// combination. Proving the COMBINATION is the gate suite's job (`gateCommand`,
+// the merge floor, run on the merged tree), not the refresh's.
+//
+// The driver does this itself rather than instructing a session (the channel
+// every other branch refresh uses — NOTES item 73): a diff-identity comparison
+// is mechanical, and a paid session sent to a branch it has nothing to add to
+// is the cost this task exists to remove.
+//
+// Fails toward NOT pushing at every uncertainty — an unreadable patch-id, a
+// git without `merge-tree --write-tree`, a conflicting merge (the gate's
+// conflict note owns that case, and resolving it changes the diff anyway).
+// Never touches a parked task's branch: parked means parked (T-003).
+const refreshReviewBranch = ({ pr, head, taskId }) => {
+  if (!taskId || parkedStatusOf(taskId)) return;
+  if (effectiveTasks().find((t) => t.id === taskId)?.status !== "review") return;
+  try {
+    refreshMeta();
+    git(["fetch", "origin", head], metaPath());
+    // Branch already contains the base tip: the merge is a literal no-op.
+    if (gitOk(["merge-base", "--is-ancestor", "HEAD", `origin/${head}`], metaPath())) return;
+    const before = patchIdOf(head);
+    const merged = spawnSync("git", ["merge-tree", "--write-tree", "HEAD", `origin/${head}`],
+      { cwd: metaPath(), encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
+    const tree = merged.status === 0 ? (merged.stdout ?? "").trim().split("\n")[0] : "";
+    if (!/^[0-9a-f]{40,}$/.test(tree)) return; // conflict, or a git that cannot answer
+    const after = patchIdOfDiff("HEAD", tree);
+    if (!before || !after || before === after) return; // the merge cannot change the branch's diff
+    const sha = git(["commit-tree", tree, "-p", `origin/${head}`, "-p", "HEAD",
+      "-m", `Merge ${cfg.baseBranch} into ${head} (base moved under an open review PR)`], metaPath()).trim();
+    git(["push", "origin", `${sha}:refs/heads/${head}`], metaPath());
+    log(`sweep: refreshed ${head} from ${cfg.baseBranch} — the base move changes the branch's diff, so ${pr}'s checks were testing a combination that no longer exists`);
+    journal("gate:refresh", "done", `${head} (${taskId})`);
+  } catch (e) {
+    log(`sweep: could not refresh ${head} from ${cfg.baseBranch} (${firstLine(e)}) — the next sweep retries`);
+  }
+};
+
 const sweepOpenPRs = async ({ waitForChecks = true, excludePr = null, context = "window-end" } = {}) => {
   try {
     closeOwnerMergedGates();
@@ -4418,6 +4586,7 @@ const sweepOpenPRs = async ({ waitForChecks = true, excludePr = null, context = 
     const left = deadline - Date.now();
     if (waitForChecks && left <= 0) { log("sweep: gate budget exhausted — remaining PRs wait for the next pass"); break; }
     const taskId = p.title.match(/T-[\w-]+/)?.[0] ?? null;
+    refreshReviewBranch({ pr: p.url, head: p.headRefName, taskId });
     const note = await mergeGate({ pr: p.url, taskId }, waitForChecks ? left : 0);
     if (note) notes.push(note);
   }
@@ -4633,7 +4802,16 @@ const stampWindowLock = () => writeLock(stateD, {
 });
 stampWindowLock();
 await replayUnfinishedFinalization(); // a crashed window's tail lands before a new one starts
-const promptText = promptFor("dev-task") + configPromptNote();
+// Engine skills never fire from their descriptions in real windows, while
+// prompt-named imperatives measure 100% — so the driver, which detects the
+// engine anyway (allowlist presets), carries the pointer itself.
+const engineSkillNote = () => {
+  const engines = detectEngines(project).filter((e) => e === "godot" || e === "unity");
+  if (!engines.length) return "";
+  return `\n\n## Engine note (driver-detected)\n\n` + engines.map((e) =>
+    `This repo contains a ${e === "godot" ? "Godot" : "Unity"} project. Run the \`code4food-factory:${e}\` skill before any engine work (CLI, tests, scenes, builds).`).join("\n") + "\n";
+};
+const promptText = promptFor("dev-task") + configPromptNote() + engineSkillNote();
 rmScratch("window start"); // leftovers from a killed window
 // A killed driver strands its session (or grader) worktree — sweep old ones
 // before starting new (disk hygiene; git registrations are pruned on next add).
@@ -4817,15 +4995,21 @@ while (true) {
   // Unreadable list = no claim info, never a stopped window (the human's
   // draft still protects the task at merge time: the sweep skips drafts).
   const claims = new Map();
+  // The same read answers the review-skip below: a task at `review` whose own
+  // PR is still open is work already in the gate's hands. Null = the list
+  // couldn't be read this session (assume nothing about what is open).
+  let openFactoryPrs = new Set();
   // A retry session's assignment is fixed and claims were consulted at
   // pick time — skip the per-session forge read for it.
   if (!staleRetryId) try {
     for (const p of forge.prListOpen()) {
       const factoryOwn = !p.isDraft && (p.headRefName.startsWith("factory/") || p.title.startsWith("[factory]"));
+      if (factoryOwn && p.url) openFactoryPrs.add(p.url);
       const id = factoryOwn ? null : p.title.match(/T-[\w-]+/)?.[0];
       if (id && !claims.has(id)) claims.set(id, { number: p.number, draft: p.isDraft });
     }
   } catch (e) {
+    openFactoryPrs = null;
     log(`claims: pr list failed (${firstLine(e)}) — proceeding without claim info`);
   }
   // planIdx is per-window but plan.json lives until triage rewrites it, so
@@ -4834,7 +5018,26 @@ while (true) {
   // item 43). Skip them — and claimed entries — a fully-settled plan falls
   // back to self-selection like an exhausted one.
   if (plan && !staleRetryId) {
-    const settled = new Map(effectiveTasks().map((t) => [t.id, t.status]));
+    const pool = effectiveTasks();
+    const settled = new Map(pool.map((t) => [t.id, t.status]));
+    const byId = new Map(pool.map((t) => [t.id, t]));
+    // Structural refusal of wrong-shaped plan entries (B3): triage queues from
+    // a snapshot, so an entry can name a task whose deps are still open or
+    // whose milestone nobody promoted. Both guards fail OPEN — unknown dep
+    // ids, an unlisted epic, an index without milestone headings all pass —
+    // because a lenient parse must never brick a window.
+    const inactiveEpics = (() => {
+      try {
+        const ms = parseMilestones(fs.readFileSync(path.join(runtimeFactoryDir(), "backlog", "index.md"), "utf8"));
+        if (!ms.some((m) => m.status === "active")) return new Map(); // statusless dialects: no signal, no guard
+        const out = new Map();
+        for (const m of ms) {
+          if (m.status === "active" || !m.status) continue;
+          for (const e of m.epics) out.set(e.file.replace(/\.md$/, ""), { id: m.id, status: m.status });
+        }
+        return out;
+      } catch { return new Map(); }
+    })();
     while (planIdx < plan.length) {
       const st = settled.get(plan[planIdx].taskId);
       if (st === "done" || st === "blocked" || st === "needs-human") {
@@ -4842,9 +5045,28 @@ while (true) {
         planIdx += 1;
         continue;
       }
+      const heldPr = gateHeldPr(plan[planIdx].taskId, st, openFactoryPrs);
+      if (heldPr) {
+        log(`plan: skipping ${plan[planIdx].taskId} — it is at review and the merge gate holds its open PR ${heldPr}`);
+        planIdx += 1;
+        continue;
+      }
       if (claims.has(plan[planIdx].taskId)) {
         const c = claims.get(plan[planIdx].taskId);
         log(`plan: skipping ${plan[planIdx].taskId} (claimed by ${c.draft ? "draft " : ""}PR #${c.number})`);
+        planIdx += 1;
+        continue;
+      }
+      const task = byId.get(plan[planIdx].taskId);
+      const openDep = (task?.deps ?? []).find((d) => settled.has(d) && settled.get(d) !== "done");
+      if (openDep) {
+        log(`plan: skipping ${plan[planIdx].taskId} — Deps not done (${openDep} is ${settled.get(openDep)})`);
+        planIdx += 1;
+        continue;
+      }
+      const ms = task && inactiveEpics.get(task.epic);
+      if (ms) {
+        log(`plan: skipping ${plan[planIdx].taskId} — its milestone ${ms.id} is ${ms.status}`);
         planIdx += 1;
         continue;
       }
@@ -4954,7 +5176,7 @@ while (true) {
   }
   // Questions before any repo work: filing needs only gh, and a repo
   // failure below must not swallow a session's needs-human asks.
-  const filedQuestions = await processQuestions(mcp.questions, "dev");
+  const filedQuestions = await processQuestions(attributeQuestions(mcp.questions, result), "dev");
   // Dev sessions don't write daily logs, but a queued entry from a failed
   // triage/report post retries at every session end, like questions do.
   await postDailyLogs(mcp.dailyLogs, "dev");
@@ -5070,6 +5292,13 @@ while (true) {
       break;
     }
     const realDeath = end.kind !== "turn-capped" || timedOut;
+    // Durable marker for the turn-capped task: nextSessionNote above is
+    // in-memory and dies with a cap-1 window, and a SELF-PICKED session
+    // never got the spawn-time in-progress write — without this the next
+    // window sees a bare todo (window 4 recovered only emergently). The
+    // stale-retry lane already broke out above, so a dead retry can never
+    // un-park through here; real deaths keep the breaker as their signal.
+    if (!realDeath && taskId) noteRuntimeStatus(taskId, "in-progress", mcp.inProgress?.pr ?? null);
     if (realDeath && exitCode !== 0) {
       const prev = path.join(logDir, `.silent-death`);
       if (fs.existsSync(prev)) {

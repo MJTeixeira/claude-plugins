@@ -1,0 +1,3 @@
+interface:
+  display_name: "Verify"
+  short_description: "Drive the real product before calling it done"

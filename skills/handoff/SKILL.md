@@ -1,44 +1,22 @@
 ---
 name: handoff
-description: Stopping mid-task (context running long, window ending, blocked) or starting a session where .docs/HANDOFF.md exists — carry work across sessions.
+description: Compact the current conversation into a handoff for another agent to pick up — written back onto the backlog task when the work in flight is a task, otherwise as a portable document.
+argument-hint: "What will the next session be used for?"
+disable-model-invocation: true
 ---
 
-# Session handoff
+**If the work in flight is a backlog task, the handoff _is_ the task.** A task and a handoff are one object at two stages of its life, so write the progress back onto the task block in `.factory/backlog/`: `- Status: in-progress`, and everything the next session needs under `- Notes:`. A separate file forks the state in two, and only one of the two forks is pickable by a factory window.
 
-`.docs/HANDOFF.md` carries in-flight work between sessions. It describes ONE
-task in progress; it is not a journal.
+`Notes:` is free prose — the driver's parser reads the fields around it, not it — with one constraint: no `## ` headings inside a task block, because a `## ` line starts a new block and would cut the task in half. Use bold lines or bullets instead.
 
-## Writing (when stopping before the task is done)
+Otherwise, write a handoff document summarising the current conversation so a fresh agent can continue the work. Save to the temporary directory of the user's OS - not the current workspace.
 
-Triggers: context is getting long, an execution window is ending, or you're
-blocked and stopping. Write it as your LAST act, when your knowledge is
-freshest:
+Either way:
 
-```markdown
-# HANDOFF: <task title / backlog id>
-- Branch: <branch, worktree path if any>
-- Done: <what is complete and verified, 1-3 bullets>
-- Next: <the exact next action to take, specific enough to start cold>
-- State: <uncommitted files? failing test? half-applied migration? — anything
-  a fresh session would not expect>
-- Blocked on: <if blocked: the EXACT command that failed + its verbatim first
-  error line — a paraphrase ("the sandbox blocks X") becomes a belief later
-  sessions inherit without re-testing; omit the line when not blocked>
-- Open questions: <decisions pending, who/what they're waiting on; "None">
-```
+Include a "suggested skills" section, which suggests skills that the agent should invoke.
 
-Keep it tight — facts a cold reader needs, not narrative — but never drop a
-fact the next session needs just to stay short. Commit it if the branch is
-pushed; otherwise leave it in the worktree.
+Do not duplicate content already captured in other artifacts (specs, plans, ADRs, issues, tasks, commits, diffs). Reference them by path or URL instead.
 
-## Reading (at session start)
+Redact any sensitive information, such as API keys, passwords, or personally identifiable information.
 
-If `.docs/HANDOFF.md` exists: read it FIRST, before exploring. Trust `Next`
-as your starting point, but verify `State` against reality (git status, test
-run) — the previous session may have been cut mid-action.
-
-## Deleting
-
-Delete the file in the same change that completes the task (the finishing
-pass). A stale handoff is worse than none — if you find one describing work
-that's already merged, delete it on the spot.
+If the user passed arguments, treat them as a description of what the next session will focus on and tailor the doc accordingly.

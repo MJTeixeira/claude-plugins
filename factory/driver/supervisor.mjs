@@ -197,18 +197,28 @@ const runPrep = (project) => {
 // that static budget legitimately: runGrader re-stamps graderStartedAt into
 // the lock at each grader start, so a live sweep advances the horizon one
 // bounded leg at a time (each grader is itself killed by the session
-// timeout), while a hung grader still dies one leg after its stamp.
+// timeout), while a hung grader still dies one leg after its stamp. The
+// last-session leg alone can run under a plan's raised `timeoutMin`
+// (submit_plan), up to `maxSessionTimeoutMin` — the two grader legs are
+// never plan-overridden, so only that one leg needs the wider ceiling.
 const hangBound = (lock, cfg) => {
   const timeoutMin = Number(cfg?.sessionTimeoutMin) || 45;
   const windowEnd = Date.parse(lock.windowEndsAt ?? "");
   if (!Number.isNaN(windowEnd)) {
     const gateMin = Number(cfg?.mergeGateMinutes) || 10;
-    const base = windowEnd + (3 * timeoutMin + 2 * gateMin + 30) * 60 * 1000;
     const graderStart = Date.parse(lock.graderStartedAt ?? "");
     if (!Number.isNaN(graderStart)) {
-      return Math.max(base, graderStart + (timeoutMin + gateMin + 30) * 60 * 1000);
+      // A grader stamp is concrete evidence the last dev session already
+      // finished (it's what produced the PR now being graded) — a plan's
+      // raised timeoutMin no longer matters; only the grader's own
+      // (never plan-overridden) budget does.
+      return graderStart + (timeoutMin + gateMin + 30) * 60 * 1000;
     }
-    return base;
+    // No grader signal yet: the last dev session may still be running,
+    // possibly under a plan's raised timeoutMin (submit_plan) up to the
+    // config ceiling — plus room for its PR's grader and one window-end sweep.
+    const devTimeoutMin = Math.max(timeoutMin, Number(cfg?.maxSessionTimeoutMin) || 90);
+    return windowEnd + (devTimeoutMin + 2 * timeoutMin + 2 * gateMin + 30) * 60 * 1000;
   }
   const started = Date.parse(lock.startedAt ?? "");
   if (!Number.isNaN(started)) return started + timeoutMin * 60 * 1000 + SINGLE_GRACE_MS;

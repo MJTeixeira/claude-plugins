@@ -2,13 +2,16 @@
 
 Two plugins, one marketplace:
 
-- **`code4food-skillset`** — a development workflow for interactive Claude
-  Code, built on one rule: **process is proportional to task size**. Ceremony
-  goes where the stakes are, so a typo doesn't get a planning phase and a
-  feature doesn't get skipped review.
+- **`code4food-skillset`** — the Live skillset, for sessions with a human in
+  the room: a typed flow — chart, grill, spec, tickets, implement — that
+  terminates in factory-runnable backlog tasks, plus the method skills the
+  flow names at its seams (tdd, code-review, verify, diagnosing-bugs, and
+  more). Skills only: no injected contract, no hooks, no agents. Built on
+  [mattpocock/skills](https://github.com/mattpocock/skills) — see NOTICE.md.
 - **`code4food-factory`** — autonomous spec-driven development: Claude builds
   a fully-specced product alone in scheduled daily windows and opens pull
-  requests for you to review.
+  requests for you to review. Ships the skills a factory window loads, the
+  attended-side speccing/setup skills, and the driver itself.
 
 Use either or both. Everything below is the setup path; the factory's full
 manual — configuration, operations, contracts, gotchas — is
@@ -29,28 +32,31 @@ repos use an Atlassian API token instead.
 
 ## Using the skillset
 
-Per project, once:
+Run **`/code4food-skillset:setup`** once per repo: it configures the backlog
+and spec destinations, the inbound issue tracker, the triage labels and the
+doc layout the rest of the flow assumes.
 
-```
-/code4food-skillset:setup
-```
+Don't remember which skill you want? Type **`/route`** — it's the router over
+everything below, and the only skill whose job is to name the others.
 
-That opts the project in by creating `.docs/index.md` — the signal the plugin
-watches. From then on the workflow contract is injected at session start
-wherever that file exists; nothing is written into your `CLAUDE.md` (a legacy
-managed block from an older install gets removed). Ask for the statusline in
-the same message if you want the cost/token bar.
+The flow, typed: `/chart` when the effort is too big to hold at once, then
+`/grill` or `/grill-with-docs` → `/spec` → `/tickets` → `/implement` (one per
+fresh window), with `/handoff` when a session stops mid-task. On-ramps:
+`/triage` for inbound issues and external PRs, `/diagnosing-bugs` when
+something is broken, `/improve-codebase-architecture` for deepening work,
+`/to-questionnaire` when a decision needs someone else's knowledge, `/teach`
+when the project's technology is new to you, `/wait-what` when an explanation
+does not land.
 
-**Check it worked:** open `claude` in the project and ask for something tiny
-("fix this typo in the README"). It should just make the edit — no plan, no
-subagents, no ceremony. Bigger asks pick up more process on their own.
+The method skills — `grilling`, `domain-modeling`, `tdd`, `code-review`,
+`verify`, `prototype`, `research`, `codebase-design`, `diagnosing-bugs`,
+`wizard`, `resolving-merge-conflicts`, `writing-for-agents` — fire on their
+own where the flow names them; you rarely type them.
 
-What you get: the task-sizing router; skills for the work that benefits from
-discipline (dev-workflow, tdd, debugging, worktrees, finishing, verify, docs,
-handoff, auth, db-migrations, deploy, plus Unity and Godot); a `/commit`
-command; a code-reviewer subagent; a branch guard that blocks commits on
-`main`/`master`/`dev`; and the `.docs/` convention — agent-facing project docs
-loaded a slice at a time.
+The flow terminates in `.factory/backlog/` — the same format the Factory
+driver parses, whether or not a factory is registered for the repo. A
+registered factory picks the tasks up unattended; without one, the backlog
+simply has no second consumer yet.
 
 ## Setting up a factory
 

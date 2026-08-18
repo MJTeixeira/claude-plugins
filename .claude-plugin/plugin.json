@@ -1,8 +1,8 @@
 {
   "name": "code4food-skillset",
   "displayName": "code4food Skillset",
-  "version": "1.11.1",
-  "description": "Attention-lean dev workflow, injected at session start into opted-in projects: task sizing, explore/plan/TDD/verify/finishing discipline, debugging, worktrees, handoff \u2014 plus a code-reviewer agent, /commit, and a protected-branch guard hook.",
+  "version": "2.0.0",
+  "description": "Live sessions with a human in the room. A typed flow — chart, grill, spec, tickets, implement — that terminates in factory-runnable backlog tasks, plus the method skills the flow names at its seams. Skills only: no injected contract, no hooks, no agents.",
   "author": {
     "name": "Marcos Teixeira",
     "url": "https://github.com/MJTeixeira"
@@ -11,9 +11,8 @@
   "license": "MIT",
   "keywords": [
     "workflow",
-    "tdd",
+    "backlog",
     "skills"
   ],
-  "skills": "./skills/",
-  "commands": "./commands/"
+  "skills": "./skills/"
 }

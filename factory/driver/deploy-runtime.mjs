@@ -101,6 +101,16 @@ if (!fs.existsSync(path.join(RUNTIME, ".git"))) {
   process.exit(1);
 }
 
+// A machine declared unattended (unattended-skillset GA) carries deliberate
+// runtime overlays and a different plugin install — a deploy would clobber
+// the overlays and reinstall the shipped pair.
+{
+  const declaration = path.join(os.homedir(), ".factory", "unattended.json");
+  if (fs.existsSync(declaration)) {
+    await refuse(`machine is declared unattended (${declaration}) — a deploy would clobber the runtime overlays and reinstall the shipped plugin pair; remove the declaration first if this machine is returning to the shipped runtime`);
+  }
+}
+
 // A wrong or retired origin fetches fine and the up-to-date exit below then
 // reports success forever — a silently frozen machine. Verify the remote
 // BEFORE trusting anything the fetch says (migration runbook Phase 0).

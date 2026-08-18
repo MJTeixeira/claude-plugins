@@ -211,6 +211,11 @@ export const parseTaskFile = (text, epic) => {
       epic,
       model: block.match(/- Model:\s*(\S+)/)?.[1] ?? null,
       effort: block.match(/- Effort:\s*(\S+)/)?.[1] ?? null,
+      // `- Deps: T-024, T-020` — tasks this one builds on. Read as the task
+      // ids anywhere on the line so both list dialects (commas, spaces) and
+      // a prose tail parse; the driver's spawn guard refuses a plan entry
+      // whose deps aren't done.
+      deps: [...(block.match(/^-[ \t]+Deps:[ \t]*(\S.*)/m)?.[1] ?? "").matchAll(/T-[\w-]+/g)].map((x) => x[0]),
       // The issue a session filed for this task (driver writes `- Question:`
       // under the Status line) — the needs-human pill links straight to it.
       // http(s) only: this lands in an href, and backlog files are written

@@ -1,209 +1,182 @@
 ---
 name: backlog
-description: Working inside a Factory project (.factory/ exists) — how to pick, execute, and update backlog tasks.
+description: Read the Factory backlog in an unattended window — pick the one task to work, judge whether a task is eligible, interpret a task block's fields, and decide what status to report. Use this whenever a factory session is choosing or resuming a task, wondering whether a task is off-limits, reading `Acceptance:`/`Verify:`/`Gate:`/`Deps:`, or deciding between `review`, `blocked`, `incomplete` and `no-tasks`. Not for writing backlog files — in a factory window the driver owns every write.
 ---
 
-# Factory backlog
-
-The factory's rules — piloting, checkout ownership, the monitor contract,
-how sessions and owners converge at origin — live in
-`~/.factory/runtime/factory/FACTORY.md` §Architecture & contracts. Read
-THAT before answering questions about factory behavior; this skill covers
-only the backlog vocabulary.
+# The backlog, from a factory window
 
 The backlog is the single source of work. `.factory/backlog/index.md` maps
-milestones → epics; each `.factory/backlog/<epic>.md` holds tasks.
+milestones to epics; each `.factory/backlog/<epic>.md` holds the task blocks.
 
-## Index format (`backlog/index.md`)
+You are one unattended session with no human in the room. Your job is to work
+**one** task and report what happened. The driver — the process that spawned
+you — owns the files, the PR and the merge. That split is what lets a window
+crash mid-task without corrupting anything, so it is worth honouring even when
+editing a line yourself would be faster.
 
-Milestone headings are MACHINE-READ — `promote` flips their status and the
-dashboard shows the active one — so they have one shape:
-
-```markdown
-## M<n>: <title> — <status>
-- [e<n>-<kebab-name>](e<n>-<kebab-name>.md) — <count> tasks
-```
-
-`<status>` is `active` | `not-started` | `gated` | `done`, and it is the
-LAST thing on the heading line. Milestone ids are `M<n>`; epic bullets link
-the epic file. Older factories carry other dialects (`### M1: …`,
-`## Milestone 1 — … (active)`) and the parser still reads them, but write
-new indexes this way — a heading nothing can parse takes milestone
-promotion and the dashboard's active-milestone display down silently, which
-is how three dialects grew unnoticed in the first place.
-
-Each `.factory/backlog/<epic>.md` holds tasks:
+## The task block
 
 ```markdown
 ## T-023: <title>
+- What: <the end-to-end behaviour this makes work>
+- Type: AFK | HITL
 - Status: todo | in-progress | blocked | needs-human | review | done
-- Reqs: REQ-4, REQ-7          # spec requirements this satisfies
-- Deps: T-021                  # must be done first ("None" if none)
-- Gate: human (<reason>)       # optional: acceptance needs owner judgment —
-                               # the merge gate holds green PRs for owner review
+- Reqs: REQ-4, REQ-7
+- Deps: T-021
+- Gate: human (<reason>)
 - Acceptance:
-  - <observable criterion, exact expectation — §Acceptance wording below>
-- Verify: <command(s) that prove it — §Verify tiers below>
+  - <observable criterion with an exact expectation>
+- Verify: <one line of command(s) that prove it>
 - Notes: <PR link, blocked reason, decisions>
-- Model: opus                  # required unless done: model for the session
-- Effort: high                 # required unless done: low|medium|high|xhigh|max
-- Turns: 120                   # optional: session turn budget
+- Model: opus
+- Effort: high
+- Turns: 120
 ```
 
-`Model:` and `Effort:` are REQUIRED on every task that isn't done — a task
-without them is a defect the dashboard flags and triage must fix by reading
-the spec (never by stamping a blanket default). `Turns:` stays optional.
-Assign by difficulty, honestly:
+`Acceptance:` is the contract — the task is done when those criteria pass, not
+when the code looks finished. An independent grader session will later run
+`Verify:` verbatim in a fresh checkout and judge each criterion **as written**,
+reading neither your PR body nor your commits. Nothing you write can talk it
+past a criterion, so make the criteria actually pass.
 
-- sonnet/low — mechanical and fully specified: docs, config, seed data.
-- sonnet/medium — standard well-specified implementation: CRUD, pages,
+`Gate: human (<reason>)` means the acceptance needs judgment you cannot make
+headlessly. Build it and open the PR as normal; the merge gate holds it for the
+owner instead of auto-merging. Do not try to self-assess the gated part.
+
+`Verify:` that only runs the suite (`npm test`, the configured gate command)
+proves the diff, not the task — the merge gate already runs that on the merged
+tree. Run it anyway, then also drive the product once per the `verify` skill,
+and say in your report that the line was weak so it gets fixed.
+
+**Three things live sessions write that mean nothing to you:** `## D-NNN:`
+decision-ticket blocks in the same epic files, map sections at the head of
+`index.md` above the first milestone heading, and the `What:`/`Type:` fields.
+The driver's parser skips all of them. Read them if they help you understand the
+work; never act on them as if they were tasks.
+
+## Picking your task
+
+1. If the prompt carries a **Driver assignment** naming a task, that is your
+   task — no selection needed.
+2. A task showing `in-progress` means a previous session was cut before
+   finishing. Resume it, but verify the real state first — branch, `git status`,
+   a test run. Trust the code over the note.
+3. Otherwise take the first `todo` task whose `Deps:` are all `done`, scanning
+   the **active** milestone's epics in index order.
+4. Nothing eligible → report `no-tasks` and stop. Don't invent work.
+
+Four things make a task ineligible even when it reads `todo`:
+
+- **The driver's state overlay wins over the files.** The prompt carries the
+  runtime status of every task; a task the overlay shows as `review` or `done`
+  is taken, whatever its file says. Backlog files lag by design — a status flip
+  rides a merge commit.
+- **Milestones that are `gated` or `not-started`.** Only the `active` one is
+  open for work.
+- **A `Model:` pin above your own tier** (haiku < sonnet < opus < fable). Your
+  tier is in the prompt. A cheaper session having a go at a task pinned higher
+  produces confidently-wrong work that tests don't catch — skip it, take the
+  next eligible task, and note the skip in your report.
+- **A claimed task.** A human's open PR carrying the task id in its title holds
+  it, draft or ready; the prompt lists these under **Claimed tasks**. Their
+  `Status:` flip only lands when their PR merges, so the open PR is the claim,
+  not the file.
+
+## Status: you report, the driver writes
+
+Report once through the `report_status` MCP tool. The driver writes the result
+into the files — `done` inside the merge commit, `blocked` in its own commit.
+Sessions do not edit `Status:` lines, index counts, or anything else under
+`.factory/backlog/`. If a backlog file looks stale next to the overlay, it is:
+move on, bookkeeping is not your job.
+
+What to report, and when:
+
+- **`review`** — your PR is open. Include the url. Report this the moment the
+  PR exists, before anything else, so a turn cap after that point loses nothing.
+- **`blocked`** — a technical dependency stops you. Put the reason in your
+  summary and end; never wait. If what stops you is a decision only the owner
+  can make, also call `open_question` with the `taskId` — the driver files it
+  and parks the task `needs-human`, which only the owner clears.
+- **`completed`** — there was nothing left to do (already merged or landed).
+- **`incomplete`** — you ran out of window or turns mid-task. Say exactly where
+  you stopped, so the next session lands the leftovers rather than re-deriving
+  them.
+- **`no-tasks`** — nothing eligible.
+
+Mid-task progress belongs on the task's `Notes:` — the driver writes it from
+your report, and a task and a handoff are the same object at two stages of its
+life. Keep it free prose, but never put a `## ` heading in it: a `## ` line
+starts a new block and would cut the task in half.
+
+## The triage session is the one exception
+
+Triage runs once before the dev window, in the driver's meta worktree. It edits
+backlog files and never runs git — the driver commits its tree when it finishes.
+
+Triage **maintains** tasks; it does not create them. New work is authored in a
+live session, so an inbound issue, a board card or a bug report that arrives
+without a task becomes a line in the daily log, not a new task block. Two of the
+edits it does make need a rule.
+
+### Stamping `Gate: human (<reason>)`
+
+Stamp it on a task whose acceptance needs judgment no headless session can make:
+visual quality, game feel, aesthetics, product sign-off — anything whose
+expectation cannot be written as a check. The merge gate then holds its green PR
+for the owner instead of auto-merging.
+
+The tell is an acceptance criterion reaching for an unmeasurable adjective. If
+the expectation can be stated exactly, state it exactly and no gate is needed;
+if it genuinely cannot, the gate is the honest home for it, and hiding it behind
+"looks good" only moves the judgment to a grader that cannot make it either.
+
+A human-gated task whose machine half is already done — PR open, waiting on the
+owner — is waiting, not stuck. Don't plan it again.
+
+### Assigning `Model:` and `Effort:`
+
+Both are required on every task that isn't done; a task missing them is a defect
+to fix by reading the task against the spec, never by stamping a blanket
+default. Judge by difficulty, honestly:
+
+- **sonnet/low** — mechanical and fully specified: docs, config, seed data.
+- **sonnet/medium** — standard well-specified implementation: CRUD, pages,
   parsers with a known format.
-- sonnet/high — tricky but specified: clock/timezone math, concurrency,
-  e2e/integration, fuzzy parsing, thin-spec ops work.
-- opus/* — where a cheaper model plausibly produces confidently-wrong
-  output that tests can't catch (novel algorithm or game-design judgment,
-  canon interpretation, architecture whose mistakes propagate), AND for
-  the FIRST-of-its-kind integration in each engine/subsystem (first
-  netcode task, first combat pipeline, first replication, first rig work)
-  — these set the pattern every follow-up copies; the followers drop back
-  to sonnet/high. Note the reason in the task's Notes.
-- fable/* (the tier above opus) — BEHAVIOR-DEFINING reasoning artifacts
-  where subtly-wrong logic is invisible even to careful review: rubrics,
-  judgment prompts, playbooks, spec red-teams, architecture-locking spikes
-  the whole project inherits. Not for routine implementation at ANY
-  difficulty — a hard parser is still opus at most. Note the reason in
-  the task's Notes.
+- **sonnet/high** — tricky but specified: clock and timezone math, concurrency,
+  e2e and integration work, fuzzy parsing, thin-spec ops work.
+- **opus/\*** — where a cheaper model plausibly produces confidently-wrong output
+  that tests can't catch: a novel algorithm, game-design judgment, canon
+  interpretation, architecture whose mistakes propagate. **Also the
+  first-of-its-kind integration in each engine or subsystem** — the first netcode
+  task, the first combat pipeline, the first replication or rig work. Those set
+  the pattern every follow-up copies, so they are worth buying right; the
+  followers drop back to sonnet/high. Note the reason in `Notes:`.
+- **fable/\*** (above opus) — behaviour-defining reasoning artifacts where subtly
+  wrong logic is invisible even to careful review: rubrics, judgment prompts,
+  playbooks, spec red-teams, architecture-locking spikes the whole project
+  inherits. Not for routine implementation at any difficulty — a hard parser is
+  still opus at most. Note the reason in `Notes:`.
 
-Tie-breaker: time is the scarce resource, not tokens. When torn between
-two tiers, take the higher one — a session that flails against a task too
-big for its model, or a burned owner-review cycle, costs more than any
-model delta. Stay honest at the bottom (docs and data files don't need
-opus), but never talk yourself DOWN a tier to save money.
+Time is the scarce resource here, not tokens. Torn between two tiers, take the
+higher one: a session that flails against a task too big for its model, or a
+burned owner-review cycle, costs more than any model delta. Stay honest at the
+bottom — docs and data files don't need opus — but never talk yourself *down* a
+tier to save money.
 
-### Verify tiers (the one home for this — other docs point here)
+`Turns:` stays optional. Correct all three against observed usage: a task that
+keeps turn-capping gets more turns next time.
 
-The acceptance grader executes the `Verify:` line VERBATIM in a fresh
-checkout. Write it at the highest tier the acceptance criteria reach:
+## Finishing a milestone
 
-1. **Suite-only — weak.** `npm test`, `dotnet test`, or a repeat of the
-   config's `gateCommand`: the merge gate already runs these on the merged
-   tree, so this line grades the diff, never the task. The driver lints
-   for it — doctor's `Verify lines` row, and the triage prompt lists the
-   hits to fix.
-2. **Drive the product — the bar.** A curl against the changed endpoint
-   (status AND body), the CLI with real arguments, a headless engine run —
-   and assert on output, not just exit codes (exit-0 proves almost
-   nothing). On engine projects, a game-touching task's Verify includes
-   the pinned engine-test command (godot/unity skill): engine-free unit
-   tests alone skip the engine. The lint cross-checks this edge too —
-   acceptance naming engine-tier tests with a Verify that never runs
-   them is flagged even when the line otherwise drives the product.
-3. **Human eyes.** Visual quality, game feel, aesthetics — that is
-   `Gate: human (<reason>)`, never a Verify command; a headless session
-   cannot self-judge it.
+Under `milestone-gates` autonomy, a milestone whose tasks are all `done` needs
+the owner to open the next one. Raise it with `open_question` — the driver files
+the tracker item, never you — and report `no-tasks`. A live session flips the
+milestone to `active` once the owner says so.
 
-Triage copies hints into the day's session plan and corrects them against
-observed usage (a task that keeps turn-capping gets more turns next time).
+## Scope
 
-### Acceptance wording — the strictness dial
-
-The grader judges each criterion AS WRITTEN, so the wording is the
-strictness setting: write each criterion observable and checkable by a
-stranger in a fresh checkout — observable behavior plus the exact
-expectation (the input, the exact output/exit code/error contract, and
-the comparison target): "exit 2 with `error:` on stderr", "byte count
-matches `wc -c` on non-UTF-8 input".
-
-An unmeasurable adjective ("gracefully", "correctly", "robust", "fast")
-delegates strictness to per-run grader mood — the grader battery caught
-borderline PRs graded lenient 2-in-3 until the criterion said "byte
-length" literally. The driver lints for it (tier `vague`, same doctor
-row and triage list as the Verify lint): a criterion with a mood
-adjective and no measurable anchor — no number, no backticked
-command/string, no path, no comparison target — gets flagged; "word
-count matching `wc -w`" passes.
-
-If the expectation can't be written exactly (visual quality, feel), it
-belongs in `Gate: human (<reason>)`, not behind an adjective. A task
-with no criteria at all becomes one synthesized criterion from its
-title, which grades much more loosely than the spec deserves — write
-the real ones.
-
-## Picking the next task
-
-1. If `.docs/HANDOFF.md` exists, resume that task — it outranks everything.
-2. If a task shows `in-progress` (in the backlog file OR the prompt's
-   Driver state overlay), a previous session was cut before finishing —
-   resume it (verify actual state first: branch, `git status`, test run;
-   trust the code over the note).
-3. Otherwise: first `todo` task whose `Deps` are all `done`, scanning the
-   ACTIVE milestone's epics in index order — with the Driver state overlay
-   applied on top of the files (a task the overlay shows as `review` or
-   `done` is NOT eligible even if its file still says `todo`). Never start
-   tasks from a milestone marked `gated` or `not-started`. A task whose
-   `Model:` pin is ABOVE your own tier (haiku < sonnet < opus < fable) is
-   not eligible for you either — skip it; the plan routes it to a stronger
-   session.
-4. A CLAIMED task is never eligible: a human's open PR with the task id in
-   its title — draft (in progress) or ready (awaiting review; their status
-   flip only lands at merge) — holds the task (the prompt's **Claimed
-   tasks** section lists them). Skip it — the claim clears when the PR
-   merges or closes.
-5. Nothing eligible → report `no-tasks` and stop; don't invent work.
-
-## Status (factory dev sessions REPORT, the driver EDITS)
-
-Factory dev sessions never edit `Status:` lines, index counts, or anything
-else in `.factory/backlog/` — status is reported once, via the
-`report_status` MCP tool (falling back to `.factory/log/last-session.json`
-only when the factory MCP tools are missing from the session), and the
-driver writes it into the files
-(done rides inside the merge commit; blocked gets its own commit). TRIAGE
-sessions edit backlog content: new tasks, acceptance criteria, Notes,
-hints, unblocking (`blocked → todo`, answered `needs-human → todo`),
-milestone gating.
-
-LIVE/PILOTING sessions (owner-attended, no driver behind them) are the one
-other writer: update the `Status:` line (and a `Notes:` PR link) of the
-tasks YOU shipped, inside the same branch/PR that ships the work — there
-is no driver to do it for you, and an un-updated task means triage
-re-discovers work already done. Touch ONLY your own tasks' lines — never
-index counts (the driver refreshes those), never other tasks — so any
-number of live devs can pilot the repo before the next factory window
-without colliding; their edits land on disjoint lines and converge at
-origin. Picking a task for a live session? **Claim it first: open a draft
-PR with the task id in the title** (branch name is free) — the factory and
-other pilots route around your open PR, draft through ready, until it
-merges or closes.
-
-What to report when:
-
-- `review` — your PR is open (every autonomy level). Include the PR url.
-- `blocked` — a technical dependency stops you: put the reason in your
-  summary, then end. Never wait. If what stops you is a DECISION or
-  judgment only the owner can make, also call `open_question` with the
-  `taskId` — the driver files the issue and parks the task `needs-human`
-  (a status only the owner clears; `blocked` is machine-clearable and
-  triage may re-open it).
-- `completed` — nothing was left to do (task already merged/landed).
-- `incomplete` — you ran out of window/turns mid-task: say exactly where
-  you stopped so the next session lands the leftovers.
-- Milestone finished (all tasks done) under `milestone-gates` autonomy:
-  raise the gate via `open_question` (the driver files the tracker item —
-  never file it yourself) and report `no-tasks`; triage marks the
-  milestone `done`/`gated` in the files until a human flips the gate to
-  `active`.
-
-## Rules
-
-- Acceptance criteria are the contract — the task is done when they pass,
-  not when the code looks done. Run the task's `Verify` commands. Under
-  auto-merge they are also EXECUTED: the driver briefs an independent
-  grader session from the `Acceptance:`/`Verify:` lines verbatim and the
-  PR merges only on its per-criterion pass — write each criterion per
-  §Acceptance wording above: it is the strictness dial.
-- Scope creep goes to the backlog via your report, not the diff: mention
-  discovered work in your summary and triage turns it into a task.
-- Backlog edits (triage only) are facts, not prose — keep the format
-  exactly; the driver edits `Status:` lines mechanically and the dashboard
-  parses them.
+Work stops at your one task. Discovered work goes in your report as a sentence,
+not in your diff — a live session turns it into a task later. A diff that grew
+past its acceptance criteria is harder to grade and harder to review, and the
+grader judges what the criteria said, not what you added.
