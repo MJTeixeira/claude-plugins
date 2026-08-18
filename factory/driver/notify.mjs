@@ -5,14 +5,16 @@
 // identically with notifications broken.
 import * as os from "node:os";
 import * as path from "node:path";
-import { stateDir, readEnvLines } from "./paths.mjs";
+import { stateDir, machineEnvFile, readEnvLines } from "./paths.mjs";
 
-// ~/.factory/telegram.env first (the machine-level creds the OnFailure
-// unit uses), then any registered factory's .env — one bot serves the
-// fleet, first hit wins.
+// ~/secrets/factory-shared.env first (the machine-level creds the OnFailure
+// unit's notify-fail.sh also reads), then any registered factory's .env —
+// one bot serves the fleet, first hit wins. The legacy
+// ~/.factory/telegram.env home was hard-migrated (owner decision
+// 2026-08-18) — no fallback read.
 export const telegramCreds = (factories = {}, home = os.homedir()) => {
   const candidates = [
-    path.join(home, ".factory", "telegram.env"),
+    machineEnvFile(home),
     ...Object.keys(factories).map((p) => path.join(stateDir(p, home), ".env")),
   ];
   for (const p of candidates) {

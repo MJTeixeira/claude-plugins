@@ -130,8 +130,9 @@ built to interleave with them:
 - **Bitbucket repos: use `bb`** — the runtime ships a gh-style PR CLI
   (`factory/driver/bb.mjs`, symlinked onto PATH at machine setup):
   `bb pr create|list|view|merge|comment`, `bb` alone for usage. It reuses
-  the driver's forge adapter and resolves credentials from the registered
-  factory's state `.env`, so live sessions never touch tokens or curl
+  the driver's forge adapter and resolves credentials machine→project
+  (`~/secrets/factory-shared.env` under the registered factory's state
+  `.env`), so live sessions never touch tokens or curl
   (session credential forms are proven dead on Bitbucket). `pr create`
   defaults the destination to the factory's `baseBranch` and always sends
   it explicitly. Non-factory Bitbucket repos work too, via
@@ -386,8 +387,9 @@ runs the merge gate, unlike the until-done-only no-progress breaker.
    claude plugin install code4food-skillset@code4food
    code4food-factory@code4food`).
 3. **Telegram plumbing** (optional but recommended): bot token + chat id in
-   `~/.factory/telegram.env`, and `notify-fail.sh` in `~/.factory/` for the
-   `factory-onfailure@.service` outer net (see Monitoring).
+   `~/secrets/factory-shared.env` (§ Machine credentials), and
+   `notify-fail.sh` in `~/.factory/` for the `factory-onfailure@.service`
+   outer net (see Monitoring).
 4. **Machine services**: the fleet watchdog timer and, on an always-on box,
    the dashboard service — templates in `factory/schedulers/`.
 5. **Auth**: `claude` logged in (or `ANTHROPIC_API_KEY` in the factory's
@@ -552,7 +554,12 @@ There is no per-dollar cap in Claude Code — `windowHours`,
 `maxSessionsPerWindow`, `maxTurnsPerSession` and `sessionTimeoutMin`
 together ARE the budget.
 
-**Secrets — `<state>/.env`** (machine-side, the whole file optional):
+**Secrets — `<state>/.env`** (machine-side, the whole file optional). The
+driver resolves every key machine→project: it merges
+`~/secrets/factory-shared.env` (see § Machine credentials below) under the
+project file, and the project file wins per key. There is no second
+resolution path — forge/tracker credentials, session env, the dashboard,
+and `bb` all read this one merge:
 
 | Key | Needed when |
 |---|---|
@@ -563,6 +570,55 @@ together ARE the budget.
 | `DISCORD_BOT_TOKEN` | `tracker: "discord"` — the bot token from the Discord developer portal |
 | `NOTION_TOKEN` | the Notion mirror (internal integration token — OAuth does NOT work headless) |
 | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` | `notify: {"telegram": true}` |
+
+### Machine credentials (`~/secrets/factory-shared.env`)
+
+Creds shared by every factory on a box live in ONE machine file, so
+rotating a token edits one file instead of one per project
+(spec: `factory/specs/machine-credentials.md`):
+
+- `~/secrets/factory-shared.env` — same KEY=VALUE format as `<state>/.env`,
+  file mode 600, `~/secrets` mode 700. The driver auto-merges it under
+  every project's `.env` (project wins per key); a missing file is fine —
+  all-project mode stays legitimate. Doctor warns on loose perms and on a
+  project `.env` key byte-identical to the machine file's (a dead
+  duplicate — delete the project copy).
+- ONLY `factory-shared.env` auto-loads. Other `~/secrets/<service>.env`
+  files are other services' creds a factory session must never see;
+  projects opt into those explicitly if they need them.
+- Each key gets a row in the machine's secrets registry
+  (`docs/secrets.md` in the box's admin repo) in the same change — the
+  registry maps secret → env-var names → consumers.
+- The Telegram outer net (`~/.factory/notify-fail.sh`) and the Bitbucket
+  git helper read this file too. The legacy `~/.factory/telegram.env` and
+  `~/.factory/bitbucket.env` homes are retired (hard-migrated 2026-08-18)
+  — nothing reads them.
+
+**Bitbucket git transport**: every factory machine on a Bitbucket forge
+sets the global `credential.helper` to `~/.factory/bin/git-credential-bitbucket`
+— a hand-placed machine artifact (the driver never ships executables into
+`~/.factory/bin` silently). Canonical content:
+
+```sh
+#!/bin/sh
+# git credential helper — Bitbucket over HTTPS from the machine credentials
+# file. Install: chmod +x, then
+#   git config --global credential.helper "$HOME/.factory/bin/git-credential-bitbucket"
+[ "$1" = "get" ] || exit 0
+ENV_FILE="$HOME/secrets/factory-shared.env"
+[ -f "$ENV_FILE" ] || exit 0
+TOKEN=$(sed -n 's/^BITBUCKET_API_TOKEN=//p' "$ENV_FILE" | head -n 1)
+[ -n "$TOKEN" ] || exit 0
+printf 'username=x-bitbucket-api-token-auth\npassword=%s\n' "$TOKEN"
+```
+
+(The basic-auth username for git over HTTPS is the literal
+`x-bitbucket-api-token-auth`; the account email is for REST calls only.
+Never copy the token value into `~/.git-credentials` or a repo.)
+
+Mac exception (owner decision 2026-08-18): the owner's Mac keeps its
+keychain/GitKraken SSH auth for Bitbucket — the helper is for the
+factory boxes.
 
 ## Autonomy levels (`config.json → autonomy`)
 
@@ -1294,7 +1350,7 @@ service, `factory-onfailure@.service`) live in `factory/schedulers/`.
   runtime"). The `OnFailure=factory-onfailure@…` units are the dumb outer
   net: if a factory unit fails in ANY way — even a runtime too broken to
   send its own Telegram — `~/.factory/notify-fail.sh` (plain sh + curl,
-  creds in `~/.factory/telegram.env`) still reaches the phone.
+  creds in `~/secrets/factory-shared.env`) still reaches the phone.
 - **Fleet watchdog** (item 26): `factory/driver/watchdog.mjs` + the
   `factory-watchdog.timer` template — one timer per MACHINE that runs every
   registered factory's doctor daily, writes `<state>/log/doctor.json`
@@ -1329,7 +1385,7 @@ service, `factory-onfailure@.service`) live in `factory/schedulers/`.
   3. **Escalations outbox** — appends structured records to
      `~/.factory/escalations.jsonl` (the Layer-3/Eva contract — format in
      `.docs/escalations.md`) and pings Telegram best-effort
-     (`~/.factory/telegram.env`, else any factory's `.env`). Each cause
+     (`~/secrets/factory-shared.env`, else any factory's `.env`). Each cause
      escalates exactly once (dedupe in `~/.factory/supervisor/state.json`).
 - `<state>/log/dev-*.out` — full session transcripts.
 - `[factory] daily log` on the tracker (issue, Jira item, or Discord
@@ -1364,9 +1420,9 @@ service, `factory-onfailure@.service`) live in `factory/schedulers/`.
   2. Get your chat id: send the bot any message, then open
      `https://api.telegram.org/bot<token>/getUpdates` and read
      `message.chat.id`.
-  3. Put both in `<state>/.env`: `TELEGRAM_BOT_TOKEN=…`,
-     `TELEGRAM_CHAT_ID=…`, and enable in `config.json`:
-     `"notify": {"telegram": true}`.
+  3. Put both in `~/secrets/factory-shared.env` (§ Machine credentials):
+     `TELEGRAM_BOT_TOKEN=…`, `TELEGRAM_CHAT_ID=…`, and enable in
+     `config.json`: `"notify": {"telegram": true}`.
   One bot serves all factories — messages are prefixed `[<factory-name>]`.
   Notification failures are logged and never affect the run.
 - **Budget**: spend ≈ sessions × turns. Caps: `windowHours`,

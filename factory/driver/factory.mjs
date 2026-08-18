@@ -16,7 +16,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
 import { fileURLToPath } from "node:url";
-import { factoryKey, stateDir, writeJsonAtomic, readEnvFile, readJson, execGit, pidAlive, TRUST_FLAGS } from "./paths.mjs";
+import { factoryKey, stateDir, writeJsonAtomic, readEnvFile, readEnvLines, machineEnvFile, readJson, execGit, pidAlive, TRUST_FLAGS } from "./paths.mjs";
 import { sendTelegram } from "./notify.mjs";
 import { makeNotifiers } from "./notify-route.mjs";
 import { senseMachineFacts, recordOutcome, threadTitle } from "./machine-threads.mjs";
@@ -2116,6 +2116,33 @@ const runDoctor = () => {
     const unset = needed.filter((k) => !env[k]);
     check(unset.length ? "fail" : "ok", ".factory/.env keys", unset.length ? `enabled features need: ${unset.join(", ")}` : `${needed.join(", ")} set`);
   } else check("skip", ".factory/.env keys", "no feature needs one");
+
+  // 6b. machine credentials (~/secrets/factory-shared.env) — the one home
+  //     for creds shared by every factory on the box; sessions see it via
+  //     the readEnvFile merge (project wins per key). Absent is fine:
+  //     all-project mode stays legitimate. Present, two things matter: the
+  //     owner-pattern perms (file 600, dir 700 — the whole point of the
+  //     home), and project .env keys byte-identical to the machine file's —
+  //     dead duplicates that put rotation back to one-edit-per-project.
+  {
+    const mFile = machineEnvFile();
+    if (!fs.existsSync(mFile)) {
+      check("skip", "machine credentials", `no ${mFile} — all creds project-side`);
+    } else {
+      const mode = (p) => { try { return fs.statSync(p).mode & 0o777; } catch { return null; } };
+      const bad = [];
+      const fMode = mode(mFile), dMode = mode(path.dirname(mFile));
+      if (fMode !== null && fMode !== 0o600) bad.push(`file mode ${fMode.toString(8)} — chmod 600 ${mFile}`);
+      if (dMode !== null && dMode !== 0o700) bad.push(`dir mode ${dMode.toString(8)} — chmod 700 ${path.dirname(mFile)}`);
+      const mEnv = readEnvLines(mFile);
+      check(bad.length ? "warn" : "ok", "machine credentials",
+        bad.length ? bad.join("; ") : `${Object.keys(mEnv).length} shared key(s), perms 600/700`);
+      const projEnv = readEnvLines(path.join(stateD, ".env"));
+      const dup = Object.keys(projEnv).filter((k) => k in mEnv && projEnv[k] === mEnv[k]);
+      if (dup.length) check("warn", "machine credential duplicates",
+        `${dup.join(", ")} in <state>/.env duplicate the machine file byte-for-byte — delete the project copy (rotation should edit one file)`);
+    }
+  }
 
   // 7. forge auth (+ scopes when the token lists them)
   if (forgeBin) for (const r of forge.authCheck({ wantBoard: !!cfg.board?.github })) check(r.level, r.name, r.detail);

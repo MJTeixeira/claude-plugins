@@ -6,7 +6,8 @@
 # Install (once per machine):
 #   cp factory-onfailure@.service ~/.config/systemd/user/
 #   cp notify-fail.sh ~/.factory/notify-fail.sh
-#   printf 'TELEGRAM_BOT_TOKEN=...\nTELEGRAM_CHAT_ID=...\n' > ~/.factory/telegram.env
+#   TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID in ~/secrets/factory-shared.env
+#   (FACTORY.md § Machine credentials)
 #   systemctl --user daemon-reload
 [Unit]
 Description=Factory failure notifier (%i)
