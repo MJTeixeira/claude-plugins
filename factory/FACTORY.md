@@ -657,7 +657,10 @@ display on 4 of 6 fleet factories (2026-07-19).
 Tasks are authored in live sessions and by compile-spec/triage — never by a
 factory window (the `code4food-factory:backlog` skill covers the window's
 reading half). This section is the one home for the two authoring rules;
-other docs and the lints point here.
+other docs and the lints point here. Triage authors from ONE source, inbox
+notes, and only up to the completeness bar in the `code4food-factory:tickets`
+skill — a note it cannot meet the bar from becomes a task parked at
+`needs-human` carrying the question, never a guess.
 
 ### Verify tiers
 
@@ -1219,7 +1222,19 @@ service, `factory-onfailure@.service`) live in `factory/schedulers/`.
   `<state>/.env`. Notion needs the official Notion MCP server in the project's
   `.mcp.json` with `NOTION_TOKEN` (internal integration token — OAuth does
   NOT work headless). Jira uses plain REST with an API token.
-- **Zero-dependency fallback**: drop a markdown note in `.factory/inbox/`.
+- **Zero-dependency fallback**: drop a markdown note in `.factory/inbox/`,
+  then **commit and push it to the base branch**. Triage runs in the driver's
+  meta worktree, reset to `origin/<baseBranch>` at every boundary — an
+  uncommitted note is not late, it is simply not input, and the next dirty-tree
+  sweep quarantines it out of your checkout. Triage reads every top-level
+  `*.md` there and authors ONE backlog task per note, or parks it at
+  `needs-human` with the question it could not answer alone (the completeness
+  bar is the `code4food-factory:tickets` skill); processed notes move to
+  `.factory/inbox/processed/`. Notes are the only input triage tickets itself —
+  tracker issues and PR comments still surface in the daily log for a live
+  session. Doctor's `work data committed` row warns when your checkout holds
+  uncommitted files under `.factory/{spec,backlog,inbox}`, which is exactly
+  the drop-and-forget shape.
 - **GitHub Projects board** (opt-in, two-way): set
   `"board": {"github": true}` in `config.json`, grant the scope once
   (`gh auth refresh -s project`), then
@@ -1231,8 +1246,8 @@ service, `factory-onfailure@.service`) live in `factory/schedulers/`.
   triage — task cards carry status, epic, model/effort and PR links. The
   backlog markdown stays the source of truth; sync failures never affect
   the run. **The board is also an input**: add a card (draft or issue) and
-  the next sync captures it into `.factory/inbox/board-delta.md` for
-  triage to fold into the backlog (the card is archived — a proper task
+  the next sync captures it into `.factory/inbox/board-delta.md`, which
+  triage tickets like any inbox note (the card is archived — a proper task
   card replaces it once triaged); drag a card against factory state and
   the move is recorded for triage to judge while the factory's status is
   restored (factory wins on status, humans win on new work and priority).

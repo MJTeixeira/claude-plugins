@@ -12,8 +12,11 @@ it — this file is the whole contract.
   holds tasks with a `- Status:` line (`todo | in-progress | blocked |
   needs-human | review | done`).
 - `inbox/` — notes TO the factory. Drop a markdown file here (an idea, a bug,
-  a change of direction); the factory's triage reads it, turns it into
-  backlog tasks, and deletes the note.
+  a change of direction) **and commit and push it**: triage runs against the
+  base branch, so an uncommitted note is never read. Triage turns each note
+  into a backlog task — or, when the note leaves an open question a session
+  cannot answer, into a task parked at `needs-human` with that question — and
+  moves the note to `inbox/processed/`.
 
 ## Working alongside the factory
 

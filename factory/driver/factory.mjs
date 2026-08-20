@@ -2294,6 +2294,23 @@ const runDoctor = () => {
     const untracked = mustTrack.filter((f) => fs.existsSync(path.join(project, f)) && !tracked(f));
     check(untracked.length ? "fail" : "ok", "scaffold committed",
       untracked.length ? `not in git: ${untracked.join(", ")} — work data is the collaboration surface; commit it (check the project .gitignore)` : "work data tracked");
+    // Sensor for the input path the docs promise: sessions read work data
+    // from the base branch (triage runs in the meta worktree, reset to
+    // origin at every boundary), so an uncommitted note/spec/task in the
+    // owner's checkout is not late input — it is no input at all, and the
+    // next dirty-tree sweep quarantines it out of the tree. Warn, never
+    // fail: mid-edit work data is a normal state to be caught in.
+    {
+      // -uall: without it an untracked directory collapses to one
+      // ".factory/inbox/" line and the owner never learns which note.
+      const dirty = (sh("git", ["-C", project, "status", "--porcelain", "-uall", "--",
+        ".factory/spec", ".factory/backlog", ".factory/inbox"]).out ?? "")
+        .split("\n").map((l) => l.trim()).filter(Boolean);
+      check(dirty.length ? "warn" : "ok", "work data committed",
+        dirty.length
+          ? `${dirty.length} uncommitted under .factory/{spec,backlog,inbox} — sessions read the base branch, so these are not input until committed and pushed: ${dirty.slice(0, 3).join("; ")}${dirty.length > 3 ? ", …" : ""}`
+          : "nothing uncommitted");
+    }
     if (tracked(".factory/config.json")) {
       check("fail", "config in repo", "legacy repo-side config.json — config lives on the machine now; run: factory.mjs migrate --project " + project);
     } else if (fs.existsSync(path.join(dataDir, "config.json"))) {

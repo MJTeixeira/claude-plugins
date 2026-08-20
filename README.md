@@ -132,8 +132,11 @@ schedulers.
 
 ## Day to day
 
-- **Feed it**: drop markdown notes in `.factory/inbox/`, or file items on the
-  factory's tracker. The morning triage folds them in.
+- **Feed it**: drop markdown notes in `.factory/inbox/` **and commit them** (an
+  uncommitted note is not input — triage reads the base branch), or file items
+  on the factory's tracker. The morning triage folds them in: inbox notes
+  become backlog tasks, tracker items become daily-log lines for a live
+  session to ticket.
 - **It asks you**: questions land on the tracker — repo issues by default, or
   a Jira project or Discord channel if you route them there. Answer in your own
   time; the next triage picks it up. The `[factory] daily log` item is its report.
