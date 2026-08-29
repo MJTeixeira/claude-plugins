@@ -28,10 +28,9 @@ evidence means captured output, not eyes on a screen.
 
 Start from the task's `Verify:` line — someone already agreed it proves this
 task, and the grader will run it verbatim. For anything beyond it (booting the
-server, running the suite, building), `CONTEXT.md` § Commands pins this repo's
-canonical commands. If that section is missing, derive the command from the repo
-and name it in your report, so the next session inherits it instead of paying to
-re-derive it.
+server, running the suite, building), the repo itself is the source: its CI
+config, its run scripts, its manifests. Name the command you used in your
+report, so the next session inherits it instead of paying to re-derive it.
 
 ## Headless recipes (step 2, per stack)
 

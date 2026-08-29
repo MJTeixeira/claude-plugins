@@ -286,7 +286,7 @@ export const materializeWorkspace = ({ worktree, runtimeRoot, config = {} }) => 
   for (const name of factorySkillNames(runtimeRoot)) {
     const rel = `.claude/skills/${name}`;
     const dest = path.join(worktree, ".claude", "skills", name);
-    if (!tracked(rel) && fs.existsSync(dest)) fs.rmSync(dest, { recursive: true, force: true });
+    if (fs.existsSync(dest) && !tracked(rel)) fs.rmSync(dest, { recursive: true, force: true });
   }
   const agentRel = ".claude/agents/code-reviewer.md";
   if (!tracked(agentRel) && fs.existsSync(path.join(worktree, agentRel))) {

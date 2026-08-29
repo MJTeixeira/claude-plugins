@@ -5,10 +5,10 @@ description: Any work in a Godot project (`project.godot` present) — read befo
 
 # Godot
 
-Project docs win: `CONTEXT.md` § Commands pins this repo's exact
-test/build/import commands — use those, don't rediscover. Absent that
-section, derive the command from the repo and say which one you used, so
-the next session inherits it rather than re-deriving it.
+The repo pins its own commands — CI config, run scripts, `.mcp.json`,
+`project.godot` — so read them rather than rediscovering the invocation. Say
+which command you used, so the next session inherits it rather than
+re-deriving it.
 
 ## Headless CLI ground rules
 

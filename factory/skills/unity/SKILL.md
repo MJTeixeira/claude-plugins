@@ -5,10 +5,10 @@ description: Any work in a Unity project — read before running Unity CLI/batch
 
 # Unity
 
-Project docs win: `CONTEXT.md` § Commands pins this repo's exact
-test/build commands and editor version — use those, don't rediscover.
-Absent that section, derive the command from the repo and say which one you
-used, so the next session inherits it rather than re-deriving it.
+The repo pins its own commands and editor version — CI config, run scripts,
+`ProjectSettings/ProjectVersion.txt` — so read them rather than rediscovering
+the invocation. Say which command you used, so the next session inherits it
+rather than re-deriving it.
 
 ## Two drive modes — mutually exclusive
 

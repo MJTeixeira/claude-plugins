@@ -201,8 +201,7 @@ write can talk it past a criterion — make the criteria actually pass.
    avoided synonyms, in task titles, test names and PR text; if you made a
    decision the next session would otherwise re-litigate, write
    `docs/adr/NNNN-<slug>.md`, and if your change contradicts an existing ADR,
-   say so in your PR body instead of silently overriding it; if you changed how
-   the project is tested, built or run, fix `CONTEXT.md` § Commands. Nothing
+   say so in your PR body instead of silently overriding it. Nothing
    else — none of these files exist until they are needed, and a repo that has
    none of them is not a defect. Anything a reader could learn by reading the
    code belongs in the code.

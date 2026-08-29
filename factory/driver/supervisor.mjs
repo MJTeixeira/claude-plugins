@@ -16,7 +16,7 @@
 //      standing default: scheduled factories keep their timers, manual
 //      factories run only when asked).
 //   3. Structured escalations: append-only ~/.factory/escalations.jsonl (the
-//      L3/Eva contract — see .docs/escalations.md) + best-effort Telegram.
+//      L3/Eva contract — see FACTORY.md §Escalations outbox) + best-effort Telegram.
 //
 // Like watchdog.mjs it runs the driver that ships BESIDE it (the machine
 // runtime) and is read-only apart from kills, prep runs, its own state
@@ -136,7 +136,7 @@ const killTree = async (rootPid) => {
   return liveGroups().size === 0;
 };
 
-// ---------- escalations (the L3/Eva contract — .docs/escalations.md) ----------
+// ---------- escalations (the L3/Eva contract — FACTORY.md §Escalations outbox) ----------
 
 let telegram; // resolved once per process, cached
 const telegramCreds = () => {
