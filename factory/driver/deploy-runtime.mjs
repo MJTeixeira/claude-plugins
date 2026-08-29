@@ -187,7 +187,7 @@ syncPlugins();
   };
   const changed = git(["diff", "--name-only", `${head}..${candidate}`]).split("\n").filter(Boolean);
   const PLUGIN_CONTENT = [
-    { manifest: ".claude-plugin/plugin.json", owns: /^(skills|commands|agents|hooks|statusline)\/|^claude-md-block\.md$|^\.claude-plugin\// },
+    { manifest: ".claude-plugin/plugin.json", owns: /^(skills|commands|agents|hooks|statusline)\/|^\.claude-plugin\// },
     { manifest: "factory/.claude-plugin/plugin.json", owns: /^factory\/(skills|commands)\/|^factory\/\.claude-plugin\// },
   ];
   const stale = [];

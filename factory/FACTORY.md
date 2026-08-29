@@ -152,9 +152,8 @@ A monitor consumes the read surfaces and acts only through the sanctioned
 act surfaces:
 
 - **Read** (what → status → why → work-product):
-  `~/.factory/escalations.jsonl` (the outbox — format in
-  `.docs/escalations.md`; transport across machines is the consumer's
-  concern) → dashboard `GET /api/state` / `GET /api/log` → session logs
+  `~/.factory/escalations.jsonl` (the outbox — format in §Escalations
+  outbox below; transport across machines is the consumer's concern) → dashboard `GET /api/state` / `GET /api/log` → session logs
   `<state>/log/dev-*.out` → `gh` (PRs, checks, issues).
 - **Act**, in escalating order: gh-level (answer needs-human issues,
   comment, merge green PRs *if authorized*) → repo-level fixes on its OWN
@@ -166,6 +165,65 @@ act surfaces:
   or edit `<state>` internals directly.
 - What a monitor may merge is an owner decision per factory, not a
   product default.
+
+### Escalations outbox (the Layer-3 contract)
+
+`~/.factory/escalations.jsonl` is the machine's append-only outbox of things
+only the owner can clear. The fleet supervisor
+(`factory/driver/supervisor.mjs`) writes it; Layer 3 — any owner-facing monitor — consumes it. This file IS the interface between the
+machine layers and the human layer — change it only additively, and update
+this doc in the same PR.
+
+#### Record format
+
+One JSON object per line:
+
+```json
+{
+  "ts": "2026-07-12T03:14:15.000Z",
+  "machine": "myhost.local",
+  "project": "/path/to/myproject",
+  "name": "myproject",
+  "type": "hung-window-killed",
+  "detail": "dev run (started 2026-07-11T22:00:00Z, session 3) hung 190min past its bound — killed its process tree and ran prep"
+}
+```
+
+- `ts` — when the supervisor escalated (ISO-8601 UTC).
+- `machine` — `os.hostname()` of the machine that wrote it. Consumers merge
+  outboxes from several machines; this is the disambiguator.
+- `project` — absolute project path on that machine (the registry key).
+- `name` — the factory's human name (registry `name`, falls back to the
+  path basename). Use this when talking to the owner.
+- `type` — closed set, see below. Consumers must tolerate unknown types
+  (render them generically) so the set can grow additively.
+- `detail` — one human-readable sentence with the facts and, where useful,
+  the machine-side path to look at. Free text; never parse it.
+
+#### Types
+
+| type | meaning | what the owner does |
+|---|---|---|
+| `hung-window-killed` | a driver run sat past its wall-clock bound; the supervisor killed its tree and ran `prep` | usually nothing — relaunch if the window's work matters tonight |
+| `hung-window-unkillable` | a lock pid is past its bound but is not a factory driver (pid recycling) or survived SIGKILL | inspect the machine, clear the lock file named in `detail` |
+| `waiting-on-owner` | a relaunch directive stopped because the window skipped: every open task needs the owner (PR-C derived status) | answer the open questions / clear the gated tasks |
+| `deadlocked` | same stop, but every open task is dependency-blocked — nothing even the owner is asked to clear | untangle the backlog dependencies |
+| `relaunch-failed` | two consecutive relaunched dev runs ended without running a session | check the driver log dir named in `detail` |
+| `factory-stuck` | N consecutive dev windows aborted before running a session and did not cleanly skip — wedged, not idle | check the machine-side `log/` dir named in `detail` |
+
+#### Semantics
+
+- **Append-only.** The supervisor never rewrites or truncates the file.
+  Consumers track their own read offset (byte offset or last-seen `ts`);
+  there is no ack field — acknowledgement is a consumer-side concern.
+- **Escalate-once.** Each cause escalates exactly once (dedupe keys live in
+  `~/.factory/supervisor/state.json`); a NEW instance of the same problem
+  (a new hang, a new skip) escalates again. Consumers may still see
+  duplicates across machines and should key on `(machine, ts, project,
+  type)`.
+- **Telegram is the fallback, the file is the record.** The supervisor also
+  pings Telegram (machine creds `~/.factory/telegram.env`, else any
+  factory's `.env`) but a failed ping never blocks the outbox write.
 
 ### Verification & review contract (two profiles)
 
@@ -350,7 +408,7 @@ write.
 
 **The graded-fail breaker (1.20.0):** a plain retry after a graded fail
 rarely recovers — the fleet's own metrics put it at 1 in 6
-(`.docs/context-degradation.md`, 2026-08-02): retry sessions inherit the
+(ADR 0004, from the 2026-08-02 fleet-metrics analysis): retry sessions inherit the
 prior session's conclusions and deliver a minimal delta that fails the
 same criteria again. So the fix-note loop has a floor: after
 `gradeFailLimit` (config, default 2) CONSECUTIVE genuine graded fails —
@@ -1399,7 +1457,7 @@ service, `factory-onfailure@.service`) live in `factory/schedulers/`.
      `relaunch-failed`; expiry and `enabled:false` drop it silently.
   3. **Escalations outbox** — appends structured records to
      `~/.factory/escalations.jsonl` (the Layer-3/Eva contract — format in
-     `.docs/escalations.md`) and pings Telegram best-effort
+     §Escalations outbox) and pings Telegram best-effort
      (`~/secrets/factory-shared.env`, else any factory's `.env`). Each cause
      escalates exactly once (dedupe in `~/.factory/supervisor/state.json`).
 - `<state>/log/dev-*.out` — full session transcripts.
@@ -1450,6 +1508,45 @@ service, `factory-onfailure@.service`) live in `factory/schedulers/`.
   `in-progress` in the runtime state, so even when the window ends right
   there (the prompt note is in-memory) the next window's state overlay
   still names the unfinished task.
+- **`wait-forfeit`: a session that ended a turn waiting on a background
+  task.** A session that backgrounds a long command (the gate suite, a
+  subagent) and then ends its turn on prose is betting on a re-entry it may
+  not get. Background completions DO re-enter a `claude -p` session as a new
+  run — but only while the task is still pending when the turn ends. Lose
+  that race and the run ends for good: the CLI exits 0, the `.out` carries a
+  clean `success` result, and without this class the driver bookkeeps a
+  ~$3.50 death as an ordinary one. Measured on dev-skills 2026-08-04: two
+  sessions, ~$7.10.
+
+  **Both fix shapes were taken, because either alone is unsound.** The
+  prompt rule (`FOREGROUND_RULE` in the driver — one source, appended to the
+  three lanes that run long commands: the dev lane, the stale-parked retry
+  lane and the acceptance grader, which re-runs the task's own `Verify`
+  command) is prevention only: it is
+  advisory, a session can and did ignore it, and asserting a sentence exists
+  in a prompt proves nothing about the failure. The driver-side
+  classification is detection only: it names a class that has already cost
+  the money. Prevention without detection goes silently unenforced;
+  detection without prevention pays for the same lesson every window.
+
+  The detection is `classifySessionEnd` → `wait-forfeit`, for a **non-capped
+  clean `success`** whose **last assistant turn called no tool** while a
+  **background task it started was still open**. All three clauses carry
+  weight: the turn cap is checked first (that is `turn-capped`, T-008's
+  class, and it too can leave tasks open), `is_error` keeps a mid-response
+  API failure in `errored`, and the open task — not the closing prose — is
+  what separates a forfeit from an ordinary text wrap-up, which also ends on
+  text. The openness is read from the CLI's `system` background-task events
+  (`task_started`, then `task_updated`/`task_notification` with a terminal
+  status) **snapshotted at each `result` event, never at end of file**: the
+  CLI kills surviving tasks AFTER its final result, so end-of-file state
+  reads every forfeit as cleanly closed. The window log line and the ⚠
+  alert name the class and point at the quarantine directory holding the
+  session's uncommitted work.
+
+  Task handling is deliberately unchanged: a wait-forfeit is still a
+  reportless death, so the task stays re-assignable next window. This is a
+  name for a class, not a new retry lane.
 
 ## Piloting gotchas (learned the hard way — don't relearn)
 

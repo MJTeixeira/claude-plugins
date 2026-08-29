@@ -11,7 +11,7 @@ present; ask questions rather than guessing.
   branch: `~/.factory/projects/<project-basename>-*/config.json` (config
   lives on the machine, not in the repo; glob the suffix — it is a path
   hash). If it doesn't exist yet, ask instead of guessing. Also read
-  `.docs/index.md` if the project has code already.
+  the project's `CLAUDE.md` and `CONTEXT.md` if it has code already.
 
 ## Output
 
@@ -51,9 +51,12 @@ epic, in exactly the format defined in the `code4food-factory:backlog` skill
    section or discovered while compiling), ask the user now. Answers get
    recorded in the relevant task's Notes or a spec addendum file
    (`.factory/spec/decisions.md`) — never left in chat only.
-7. Also seed `.docs/index.md` with a `Commands` section once the stack is
-   decided (test/build/run), even if the commands don't exist yet — the first
-   scaffolding task makes them real.
+7. **The stack's commands are the scaffolding task's output, not a doc.**
+   Once the stack is decided, the first scaffolding task must leave the
+   project able to answer "how is this tested, built and run" from its own
+   config — CI workflow, run scripts, manifests. Do not write a commands
+   section into any document: a copy of a lookup goes stale, the config
+   cannot.
 
 Finish by summarizing: milestone plan, task count per epic, coverage gaps
 resolved, and decisions recorded.

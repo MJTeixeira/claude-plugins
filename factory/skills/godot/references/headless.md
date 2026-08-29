@@ -2,7 +2,7 @@
 
 ## Finding the binary
 
-Resolve in order: project pin (`CONTEXT.md` § Commands, `.mcp.json`, CI config) → `GODOT_BIN`
+Resolve in order: project pin (`.mcp.json`, CI config) → `GODOT_BIN`
 / `GODOT` env → `godot` / `godot4` on PATH → platform default
 (`/Applications/Godot_mono.app/Contents/MacOS/Godot` on macOS). Fail with the
 resolution list, don't guess versions. For mono builds: real binary or wrapper

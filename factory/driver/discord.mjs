@@ -43,6 +43,13 @@ const API = "https://discord.com/api/v10";
 const MSG_MAX = 2000; // Discord message cap; longer bodies post as chunks
 const NAME_MAX = 100; // Discord thread-name cap
 const PACE_MS = 350; // gap between chunk posts — under the per-channel bucket's burst
+// Preflight probes are quick calls to a healthy API; 15s is the production
+// budget. Overridable because a test box running the whole suite can take
+// longer than that just to spawn the stub, and a preflight that reports
+// "auth failed" because the machine was busy is a false alarm either way.
+// Read per call, not once at import: a test setting it in its own module body
+// runs AFTER this module was evaluated, and a constant would miss it.
+const curlTimeoutMs = () => Number(process.env.FACTORY_CURL_TIMEOUT_MS ?? 15_000);
 const MAX_429_WAIT_S = 30; // a retry_after above this is a global limit; don't sit on it
 // Sync wait, matching this module's execFileSync transport.
 const sleepMs = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
@@ -243,7 +250,7 @@ export const discordTracker = ({ cfg = {}, env = {} }) => {
     // meaningless 15s-timeout "curl exit null" instead of the real message.
     let config;
     try { config = cred(); url = url(); } catch (e) { done({ error: String(e.message ?? e).split("\n")[0].slice(0, 120) }); return; }
-    const child = spawn("curl", curlArgs(url), { timeout: 15_000 });
+    const child = spawn("curl", curlArgs(url), { timeout: curlTimeoutMs() });
     const out = [], errBuf = [];
     child.stdout.on("data", (d) => out.push(d));
     child.stderr.on("data", (d) => errBuf.push(d));
@@ -374,12 +381,12 @@ export const discordTracker = ({ cfg = {}, env = {} }) => {
         }
       }
       try {
-        const u = JSON.parse(execFileSync("curl", curlArgs(`${API}/users/@me`), { input: cred(), timeout: 15_000, encoding: "utf8" }));
+        const u = JSON.parse(execFileSync("curl", curlArgs(`${API}/users/@me`), { input: cred(), timeout: curlTimeoutMs(), encoding: "utf8" }));
         // Probe every distinct configured channel — a typo'd id must fail
         // preflight, not the first mid-window post to that channel.
         const ids = [...new Set(["questions", "activity", "digests"].map((k) => cfg.discordChannels?.[k] ?? cfg.discordChannel).filter(Boolean).map(String))];
         const names = ids.map((id) => {
-          const c = JSON.parse(execFileSync("curl", curlArgs(`${API}/channels/${id}`), { input: cred(), timeout: 15_000, encoding: "utf8" }));
+          const c = JSON.parse(execFileSync("curl", curlArgs(`${API}/channels/${id}`), { input: cred(), timeout: curlTimeoutMs(), encoding: "utf8" }));
           return `#${c.name ?? id}`;
         });
         return [{ level: "ok", name: "discord auth", detail: `authenticated as ${u.username ?? "?"} — channel${names.length > 1 ? "s" : ""} ${names.join(", ")} reachable (tag [${cfg.discordTag}], owner ${cfg.discordOwnerId})` }];

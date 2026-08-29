@@ -280,17 +280,41 @@ const readSessionResult = (factoryDir) => {
   }
 };
 
+// A background task the CLI reports as settled — `task_updated` carries the
+// terminal status in its patch, `task_notification` on the event itself.
+// These four are the whole vocabulary: measured over every session log on
+// this Mac, 314 `task_started` against 314 `task_notification`, no other
+// terminal word and no task left unaccounted. "stopped"/"killed" are what
+// teardown stamps on a task that was STILL RUNNING when the run ended,
+// which is the wait-forfeit signal below.
+const TERMINAL_TASK_STATUSES = new Set(["completed", "failed", "killed", "stopped"]);
+
 // The session .out is stream-json (one event per line): assistant events
 // carry per-message usage, a final `result` event carries cost/turns. A
 // killed session has no result event but its assistant events survive —
 // the whole point (NOTES item 29). Also tolerates the old single-JSON
 // .out format (pre-stream files, older CLIs).
+//
+// It also carries the CLI's background-task lifecycle as `system` events
+// (`task_started`, then `task_updated`/`task_notification` with a terminal
+// status). Those are snapshotted AT each result event, never at end of
+// file: the CLI tears surviving tasks down AFTER its final result, so the
+// teardown "killed" is the proof a task was open when the turn ended, not
+// evidence that it closed (T-013).
 const parseSessionStream = (sessionLogPath) => {
   const sum = { input: 0, output: 0, cacheRead: 0, cacheCreate: 0, messages: 0 };
   const trajectory = []; // per assistant message: output tokens + context size at that turn
   const tools = {}; // tool_use histogram by tool name
   let result = null;
   let lastAssistantText = "";
+  const running = new Map(); // background task id -> description, live as the stream is walked
+  // Did the SESSION's last assistant turn end on a tool call? Deliberately
+  // not reset per result event: a continuation fragment streams its turns
+  // BEFORE its predecessor's result line (measured — all 8 multi-result logs
+  // on this Mac carry zero assistant turns between first and last result),
+  // so resetting would read every multi-fragment session as ending on prose.
+  let turnCalledTool = false;
+  let atResult = null; // { openTasks, turnCalledTool } snapshotted at the last result event
   try {
     for (const line of fs.readFileSync(sessionLogPath, "utf8").split("\n")) {
       const t = line.trim();
@@ -299,6 +323,10 @@ const parseSessionStream = (sessionLogPath) => {
       try { e = JSON.parse(t); } catch { continue; }
       if (e.type === "result" || (e.type === undefined && (e.result !== undefined || e.subtype !== undefined))) {
         result = e;
+        atResult = { openTasks: [...running.values()], turnCalledTool };
+      } else if (e.type === "system" && e.task_id) {
+        if (e.subtype === "task_started") running.set(e.task_id, e.description ?? e.task_id);
+        else if (TERMINAL_TASK_STATUSES.has(e.patch?.status ?? e.status)) running.delete(e.task_id);
       } else if (e.type === "assistant" && e.message?.usage) {
         const u = e.message.usage;
         sum.messages += 1;
@@ -323,12 +351,19 @@ const parseSessionStream = (sessionLogPath) => {
           }
           const text = e.message.content.filter((p) => p.type === "text").map((p) => p.text).join("\n");
           if (text) lastAssistantText = text;
+          // Pure-thinking messages are turn fragments, not the turn's shape:
+          // only a message that actually said or did something re-decides
+          // whether this turn ended on a tool call.
+          const acted = e.message.content.some((p) => p.type === "tool_use");
+          if (acted || text) turnCalledTool = acted;
         }
       }
     }
   } catch { /* unreadable/absent .out — caller sees no result, no messages */ }
   const finalText = typeof result?.result === "string" && result.result ? result.result : lastAssistantText;
-  return { result, sum, finalText, trajectory, tools };
+  // No result event (killed mid-run): the live walk IS the end state.
+  const end = atResult ?? { openTasks: [...running.values()], turnCalledTool };
+  return { result, sum, finalText, trajectory, tools, openTasks: end.openTasks, turnCalledTool: end.turnCalledTool };
 };
 
 // A session that ends without last-session.json is not necessarily dead:
@@ -336,13 +371,22 @@ const parseSessionStream = (sessionLogPath) => {
 // (NOTES item 12 — all three factories hit this on 2026-07-05). Read the
 // raw session output to tell "ran out of turns mid-wrap-up" from a crash.
 const classifySessionEnd = (sessionLogPath) => {
-  const { result, finalText } = parseSessionStream(sessionLogPath);
-  if (!result) return { kind: "no-json", finalText }; // killed before the result event — a real death
+  const { result, finalText, openTasks, turnCalledTool } = parseSessionStream(sessionLogPath);
+  if (!result) return { kind: "no-json", finalText, openTasks }; // killed before the result event — a real death
   const capped =
     result.subtype === "error_max_turns" ||
     result.terminal_reason === "max_turns" ||
     (result.errors ?? []).some((e) => /maximum number of turns/i.test(String(e)));
-  return { kind: capped ? "turn-capped" : "errored", finalText };
+  if (capped) return { kind: "turn-capped", finalText, openTasks };
+  // wait-forfeit (T-013): the CLI reports a clean success, but the session
+  // ended its turn on prose while a background task it started was still
+  // running — it lost the re-entry race parseSessionStream describes.
+  // `success` + no error is what separates this from a crash; the open task
+  // is what separates it from an ordinary text wrap-up, which ends on text
+  // too.
+  const clean = !result.is_error && (result.subtype ?? "success") === "success";
+  if (clean && !turnCalledTool && openTasks.length) return { kind: "wait-forfeit", finalText, openTasks };
+  return { kind: "errored", finalText, openTasks };
 };
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -656,7 +700,7 @@ const pruneLocalBranch = (name, context) => {
 };
 
 const removeWorktree = (p, context) => {
-  if (!p) return;
+  if (!p) return { quarantine: null };
   // The branch checked out in there, if any (worktrees are added detached;
   // sessions create their task branch themselves) — captured before removal,
   // pruned after: the ref outlives the worktree in the shared .git.
@@ -666,10 +710,15 @@ const removeWorktree = (p, context) => {
   // work — copy the bytes to log/quarantine-* before --force destroys them
   // (NOTES item 45: fleet task T-034 lost 121 turns this way; the checkout
   // had this protection since item 23, worktrees never did).
+  // Where the rescued bytes landed, so callers can point the operator at
+  // them (the wait-forfeit alert does — the quarantine IS the session's
+  // work when it ends without a PR).
+  let quarantine = null;
   try {
     // Injected tooling doesn't count as dirt — see copyDirtyBytes.
     if (statusRecords(p).some(({ rel }) => !isInjectedPath(rel))) {
       const q = copyDirtyBytes(p, nowStamp(), { skipInjected: true });
+      quarantine = q.qdir;
       log(`${context}: dirty worktree — ${q.copied} path(s) copied to ${q.qdir} before removal`);
     }
   } catch { /* not a live worktree — nothing to save */ }
@@ -682,6 +731,7 @@ const removeWorktree = (p, context) => {
     gitOk(["worktree", "prune"]);
   }
   pruneLocalBranch(branch, context);
+  return { quarantine };
 };
 
 // prep-only: a LOCKED registered worktree whose locker died lingers forever —
@@ -1305,44 +1355,12 @@ if (mode === "migrate") {
           }
         }
       }
-      // The LEAN-WORKFLOW managed block in CLAUDE.md predates plugin-injected
-      // contracts (skillset ≥ 1.6.0: a SessionStart hook injects the workflow
-      // into opted-in projects — .docs/index.md — so a committed copy is
-      // redundant and goes stale). Remove the block, markers included;
-      // everything outside the markers is the owner's. No markers → not ours
-      // to touch. Self-ordering: the runtime that removes blocks is the same
-      // runtime whose plugins inject the contract.
-      {
-        const cmRel = "CLAUDE.md";
-        const cmPath = path.join(project, cmRel);
-        if (tracked(cmRel) && fs.existsSync(cmPath)) {
-          const text = fs.readFileSync(cmPath, "utf8");
-          const B = "<!-- BEGIN LEAN-WORKFLOW MANAGED BLOCK";
-          const E = "<!-- END LEAN-WORKFLOW MANAGED BLOCK -->";
-          const b = text.indexOf(B);
-          const e = text.indexOf(E);
-          if (b !== -1 && e > b) {
-            if (!fs.existsSync(path.join(project, ".docs", "index.md"))) {
-              // No opt-in → the hook would inject nothing; removing the
-              // block would leave the project with no contract at all.
-              say("CLAUDE.md: managed block kept — no .docs/index.md opt-in; run the docs initial pass, then migrate again");
-            } else {
-              // Normalize ONLY the junction the removal creates; the
-              // owner's own blank-line style outside the markers is not
-              // ours to rewrite.
-              const head = text.slice(0, b);
-              const tail = text.slice(e + E.length);
-              const next = !head.trim() ? tail.replace(/^\n+/, "")
-                : !tail.trim() ? head.replace(/\n+$/, "\n")
-                : head.replace(/\n+$/, "\n\n") + tail.replace(/^\n+/, "");
-              fs.writeFileSync(cmPath, next);
-              g(["add", "--", cmRel]);
-              staged.push(cmRel);
-              say("CLAUDE.md: managed workflow block removed — the skillset plugin injects the contract at session start (opt-in: .docs/index.md)");
-            }
-          }
-        }
-      }
+      // CLAUDE.md is the owner's, entirely. The LEAN-WORKFLOW managed block
+      // this used to remove belonged to the injected-contract era; the
+      // skillset has been skills-only since 2.0.0, so there is no injection
+      // to replace a removed block with — removing one would have left the
+      // project with nothing. A project that still carries the markers keeps
+      // them as ordinary owner content.
       if (staged.length) {
         // Pathspec'd commit: migrate runs in the owner's live checkout —
         // whatever THEY had staged must not ride this commit.
@@ -3548,6 +3566,27 @@ const promptFor = (name) => {
   return fs.readFileSync(p, "utf8");
 };
 
+// The foreground rule (T-013). ONE source, appended to every session prompt
+// that runs long commands — the dev lane, the stale-parked retry lane and
+// the acceptance grader, which re-runs the task's own Verify command(s) —
+// so no two can drift into disagreeing about the same discipline. Triage,
+// report and compile-spec are left out on purpose: they read and write, they
+// don't run suites.
+// It is a driver-side note rather than prose in each prompt file for exactly
+// that reason. Measured cost of the failure it names: two dev-skills
+// sessions on 2026-08-04, ~$7.10, both ending on prose while the gate suite
+// was still running in the background.
+const FOREGROUND_RULE = `\n\n## Background tasks (never violate)\n\n` +
+  "Long commands — the gate suite above all — run in the FOREGROUND and " +
+  "block. Ending a turn to wait for a background task's completion " +
+  "notification is not an available move in an unattended session: the " +
+  "notification re-enters your session only while the task is still pending " +
+  "when your turn ends, and if it finishes first the run ends there — " +
+  "uncommitted work quarantined, no PR, no report, the task re-assigned " +
+  "next window. If something IS already backgrounded, finish it with a " +
+  "foreground command that blocks until it is done. Never end a turn on " +
+  "prose about waiting.\n";
+
 // Sessions run in throwaway worktrees (dev) or the meta worktree (triage/
 // report) — neither carries a config file (the machine-product premise:
 // config never enters a checkout), so the config facts sessions act on
@@ -3971,7 +4010,7 @@ const runGrader = async ({ pr, taskId, head, sha }) => {
   try { writeLock(stateD, { ...readJson(lockPath(stateD)), graderStartedAt: new Date().toISOString() }); }
   catch { log("grader: could not stamp window.lock — hang bound stays static this leg"); }
   const sessionLog = path.join(logDir, `grade-${stamp}.out`);
-  const promptText = promptFor("grade") +
+  const promptText = promptFor("grade") + FOREGROUND_RULE +
     `\n\n## Grading brief (driver-generated from the task's backlog entry)\n\n` +
     `- Task: ${taskId}${task?.title ? ` — ${task.title}` : ""}\n` +
     `- Under grade: PR ${pr}, branch ${head} at commit ${sha} — checked out here\n` +
@@ -4162,7 +4201,7 @@ const landMerge = async ({ pr, view, taskId }) => {
         }
         if (!grade.pass) {
           try { git(["merge", "--abort"], metaPath()); } catch { /* nothing staged */ }
-          // Graded-fail breaker (.docs/context-degradation.md, 2026-08-02): a
+          // Graded-fail breaker (ADR 0004, fleet metrics 2026-08-02): a
           // plain retry after a graded fail recovers 1 time in 6 — after
           // `gradeFailLimit` consecutive genuine fails the task needs
           // re-planning, not another "checkout, fix, push" note. Only fresh
@@ -4855,7 +4894,7 @@ const engineSkillNote = () => {
   return `\n\n## Engine note (driver-detected)\n\n` + engines.map((e) =>
     `This repo contains a ${e === "godot" ? "Godot" : "Unity"} project. Run the \`code4food-factory:${e}\` skill before any engine work (CLI, tests, scenes, builds).`).join("\n") + "\n";
 };
-const promptText = promptFor("dev-task") + configPromptNote() + engineSkillNote();
+const promptText = promptFor("dev-task") + FOREGROUND_RULE + configPromptNote() + engineSkillNote();
 rmScratch("window start"); // leftovers from a killed window
 // A killed driver strands its session (or grader) worktree — sweep old ones
 // before starting new (disk hygiene; git registrations are pruned on next add).
@@ -5155,7 +5194,7 @@ while (true) {
       break;
     }
     retryOverrides = { model: cfg.staleRetryModel ?? "fable", effort: "high" };
-    retryPromptText = promptFor("retry-task") + configPromptNote() +
+    retryPromptText = promptFor("retry-task") + FOREGROUND_RULE + configPromptNote() +
       `\n\n## The task (verbatim from the backlog — your assignment)\n\n${block}\n`;
     log(`session ${sessions} is a stale-parked retry: ${retryingId} (${retryOverrides.model}, effort ${retryOverrides.effort})`);
   }
@@ -5192,8 +5231,15 @@ while (true) {
   // result. The file report was written inside the session's worktree.
   const mcp = readMcpEvents(mcpEventsPath);
   const result = mcp.report ?? readSessionResult(path.join(sessionCwd, ".factory"));
-  removeWorktree(sessionWt, `session ${sessions} end`);
+  const { quarantine } = removeWorktree(sessionWt, `session ${sessions} end`);
   const end = result ? null : classifySessionEnd(sessionLog);
+  // A wait-forfeit's whole symptom is that it looks like a success: the log
+  // line and the alert have to name the class and say where the bytes went,
+  // or the operator reads a $3 death as a clean session (T-013).
+  const waitForfeit = end?.kind === "wait-forfeit"
+    ? `wait-forfeit: ended a turn waiting on a background task still running (${end.openTasks.map((d) => `\`${String(d).slice(0, 80)}\``).join(", ")})` +
+      (quarantine ? ` — its uncommitted work is at ${quarantine}` : " — it left nothing uncommitted to quarantine")
+    : null;
   const status = result?.status ?? (spawnFailed ? "spawn-failed" : timedOut ? "timeout" : end.kind === "turn-capped" ? "turn-capped" : "died");
   // Task attribution: a settled report is trusted as-is — a null taskId
   // there means no-tasks, the one status where null is truthful. Reportless
@@ -5214,6 +5260,7 @@ while (true) {
     await notify(
       `⚠ session ${sessions}: ${taskId ?? "?"} → ${status}` +
         (row?.costUsd != null ? ` ($${row.costUsd.toFixed(2)})` : "") +
+        (waitForfeit ? `\n${waitForfeit}` : "") +
         (result?.pr ? `\n${result.pr}` : "") +
         (status === "blocked" && result?.summary ? `\n${result.summary}` : "")
     );
@@ -5310,13 +5357,16 @@ while (true) {
         `without writing last-session.json` +
         (end.kind === "turn-capped" ? " (turn cap — treating as unfinished wrap-up, not a death)" : "")
     );
+    if (waitForfeit) log(`session ${sessions} ${waitForfeit}`);
     const reason = spawnFailed
       ? "never started (spawn failed — a machine problem, not this task)"
       : timedOut
         ? `was killed at the ${cfg.sessionTimeoutMin}min timeout`
         : end.kind === "turn-capped"
           ? "hit the max-turns cap during wrap-up"
-          : "died before finishing";
+          : end.kind === "wait-forfeit"
+            ? "ended a turn waiting for a background task's completion notification and never came back (run long commands in the foreground)"
+            : "died before finishing";
     const snapProject = isGitRepo() ? metaPath() : project;
     nextSessionNote =
       `The previous session ${reason} and never reported a settled status. ` +
