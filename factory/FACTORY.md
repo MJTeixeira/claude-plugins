@@ -735,9 +735,12 @@ checkout. Write it at the highest tier the acceptance criteria reach:
 
 1. **Suite-only — weak.** `npm test`, `dotnet test`, or a repeat of the
    config's `gateCommand`: the merge gate already runs these on the merged
-   tree, so this line grades the diff, never the task. The driver lints
-   for it — doctor's `Verify lines` row, and the triage prompt lists the
-   hits to fix.
+   tree, so this line grades the diff, never the task. Inert package
+   scripts (`npm run lint|build|typecheck|type-check|format|format:check|check|compile`,
+   `yarn`/`pnpm` alike) and install preludes (`npm ci`) never lift a line
+   out of this tier — `npm test && npm run lint` is still suite-only. The
+   driver lints for it — doctor's `Verify lines` row, and the triage
+   prompt lists the hits to fix.
 2. **Drive the product — the bar.** A curl against the changed endpoint
    (status AND body), the CLI with real arguments, a headless engine run —
    and assert on output, not just exit codes (exit-0 proves almost
@@ -796,7 +799,7 @@ the real ones.
   `.factory/backlog/`, never commit to base, never merge. (Live/piloting
   sessions are the sanctioned exception: they ship their OWN tasks' `Status:`
   flips inside the PR that ships the work — see the Piloting contract.) They report MID-RUN through the
-  driver's stdio MCP server (v2 O2: `report_status`, `open_question`,
+  driver's stdio MCP server (`factory/driver/mcp-server.mjs`; v2 O2: `report_status`, `open_question`,
   `log_progress`, plus `create_pr` since factory 1.7.0 and
   `post_daily_log` since 1.8.0 — the driver opens PRs and posts the
   daily log itself via the forge/tracker adapters with its own
@@ -1388,8 +1391,10 @@ service, `factory-onfailure@.service`) live in `factory/schedulers/`.
   `<state>/config.json`, or
   `node factory.mjs dev --project <path> --max-sessions 1`.
 - **Doctor** — `node ~/.factory/runtime/factory/driver/factory.mjs doctor
-  --project <path>`: read-only checklist of everything that has actually
-  broken a night once — claude/gh on the current AND the systemd unit's
+  --project <path>` (the checks live in `factory/driver/doctor.mjs`;
+  `factory.mjs` hands them the loaded config): read-only checklist of
+  everything that has actually broken a night once — claude/gh on the
+  current AND the systemd unit's
   PATH, workspace trust, scaffold, allowlist, machine-runtime health (clean
   tree; legacy per-project driver copies warn; schedulers still exec'ing a
   deleted `.factory/driver.mjs` FAIL with the migration hint), .env keys

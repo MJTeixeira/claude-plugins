@@ -259,9 +259,15 @@ const SUITE_RES = [
 
 // Install/chdir preludes: neither proof nor product. A line of ONLY these
 // (`npm ci`) proves even less than the suite and lands in the same tier.
+// Inert package scripts (`npm run lint`, `npm run build`) sit here too:
+// they never drive the product, so they must not buy a suite-only line the
+// benefit of the doubt (T-025 — 27 of 321 fleet tasks passed on exactly
+// that). Only the named scripts are inert; `e2e`, `smoke`, `start` and any
+// other script keep reading as product.
 const SETUP_RES = [
   /^cd\b/,
   /^npm[ \t]+(?:ci|i|install)\b/,
+  /^(?:npm|yarn|pnpm)[ \t]+run[ \t]+(?:lint|build|typecheck|type-check|format|format:check|check|compile)\b/,
   /^yarn(?:[ \t]+install)?$/,
   /^pnpm[ \t]+(?:i|install)\b/,
   /^pip3?[ \t]+install\b/,
