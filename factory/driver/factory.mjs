@@ -520,7 +520,16 @@ const isGitRepo = () => fs.existsSync(path.join(project, ".git"));
 const gitRaw = (args, cwd = project) => execGit(cwd, args, { timeoutMs: 120_000, env, trim: false });
 const git = (args, cwd) => gitRaw(args, cwd).trim();
 const gitOk = (args, cwd) => { try { git(args, cwd); return true; } catch { return false; } };
-const hasOrigin = () => gitOk(["remote", "get-url", "origin"]);
+// Memoized: a run's origin cannot change under it. Nothing in this process
+// adds or removes a remote — `git init` and the remote wiring live in
+// init.mjs, which is always a SEPARATE process (factory.mjs only ever names
+// it in a message). Seven call sites, but `startRef()` is itself called per
+// worktree, so a dev window asked git 35 times for one unchanging answer —
+// the largest single repeat left after T-029 (spawn census, 2026-08-29).
+// `??=` is correct for a false answer too: false is not nullish, so a repo
+// with no origin memoizes false and is not re-probed.
+let originMemo = null;
+const hasOrigin = () => (originMemo ??= gitOk(["remote", "get-url", "origin"]));
 
 // -z: NUL-separated, no quoting. Rename records carry a second NUL field
 // (the original path) — consume it. gitRaw: a leading " M" space in the
@@ -1496,7 +1505,7 @@ if (mode === "mcp-server") {
                 taskId: { type: "string", description: "backlog task id, e.g. T-019" },
                 model: { type: ["string", "null"], description: "model for the session, per the task's Model: hint" },
                 effort: { type: ["string", "null"], description: "effort for the session, per the task's Effort: hint" },
-                maxTurns: { type: ["number", "null"], description: "turn cap override, if the task warrants one" },
+                maxTurns: { type: ["number", "null"], description: "turn cap override, if the task warrants one — clamped to 1.5x the config cap and logged if capped" },
                 timeoutMin: { type: ["number", "null"], description: "session wall-clock timeout override in minutes, if the task's turn budget won't fit the default — clamped to the config ceiling and logged if capped" },
                 why: { type: ["string", "null"], description: "one line: why this task, this order" },
               },
@@ -3762,11 +3771,22 @@ const runSingle = async (name) => {
             log(`plan: ${taskId} timeoutMin ${timeoutMin} exceeds the config ceiling (${cfg.maxSessionTimeoutMin}) — clamping`);
             timeoutMin = cfg.maxSessionTimeoutMin;
           }
+          // maxTurns is the same lever on turns rather than minutes, and had
+          // no bound at all — triage could hand a session any cap it liked.
+          // Clamped RELATIVE to the configured cap, not to an absolute
+          // ceiling: a project whose own cap is high is entitled to go high
+          // (owner ruling — the config number is his).
+          let maxTurns = Number.isInteger(e.maxTurns) && e.maxTurns > 0 ? e.maxTurns : null;
+          const turnCeiling = Math.floor(cfg.maxTurnsPerSession * 1.5);
+          if (maxTurns && maxTurns > turnCeiling) {
+            log(`plan: ${taskId} maxTurns ${maxTurns} exceeds 1.5x the config cap (${cfg.maxTurnsPerSession} → ${turnCeiling}) — clamping`);
+            maxTurns = turnCeiling;
+          }
           queue.push({
             taskId,
             model: typeof e.model === "string" ? e.model : null,
             effort: typeof e.effort === "string" ? e.effort : null,
-            maxTurns: Number.isInteger(e.maxTurns) && e.maxTurns > 0 ? e.maxTurns : null,
+            maxTurns,
             timeoutMin,
             why: typeof e.why === "string" ? e.why : null,
           });

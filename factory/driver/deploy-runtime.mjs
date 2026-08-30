@@ -283,12 +283,72 @@ fs.writeFileSync(path.join(os.homedir(), ".factory", "runtime-deploy.json"), JSO
 // practice (2026-07-19) — technically accurate but misread is a defect.
 log(`runtime now at ${candidate.slice(0, 7)} (was ${head.slice(0, 7)}, ${count} commit(s))`);
 syncPlugins();
-// The dashboard is the one long-lived process running this checkout — a
-// deploy advances the files under it, but the process keeps serving the old
-// code until someone restarts it (timers re-exec per fire and self-heal).
-let dashboardHint = "";
-if (git(["diff", "--name-only", `${head}..${candidate}`]).split("\n").includes("factory/driver/dashboard.mjs")) {
-  dashboardHint = "dashboard.mjs changed — the running dashboard still serves the OLD code; restart it (systemctl --user restart factory-dashboard)";
-  log(`⚠ ${dashboardHint}`);
-}
-await notify(registry, `✓ runtime now at ${candidate.slice(0, 7)} (was ${head.slice(0, 7)}, ${count} commit(s), ${Object.keys(registry?.factories ?? {}).length} factory doctor(s) green)${dashboardHint ? `\n⚠ ${dashboardHint}` : ""}`);
+// A deploy advances the files under a long-lived process, but that process
+// keeps running the OLD code until someone restarts it (timers re-exec per
+// fire and self-heal, so they need no hint). This used to name the dashboard
+// alone — "the one long-lived process running this checkout", true when it
+// was written. factory-supervisor shipped later, and the 2026-08-29 deploy of
+// 2.3.0 changed supervisor.mjs and left both the VPS and zeroone running the
+// old supervisor, silently (T-041).
+//
+// So ASK the machine rather than carrying a list: every --user unit whose
+// ExecStart runs a module out of this runtime is a candidate, and the ones
+// whose module is in this deploy's diff are stale. A service added later is
+// found the same way, with no edit here.
+// BOTH managers, because the fleet uses both: the VPS and zeroone run these
+// as systemd --user services, this Mac runs com.factory.supervisor under
+// launchd. Covering only systemd would reproduce T-041's exact defect on the
+// other platform.
+const out = (cmd, args) => {
+  try {
+    return execFileSync(cmd, args, { encoding: "utf8", timeout: 15_000, stdio: ["ignore", "pipe", "pipe"] });
+  } catch { return null; } // manager absent, or no user bus — nothing to discover
+};
+// The module a unit executes, as the repo-relative path `git diff
+// --name-only` prints, so the two can be compared directly.
+const moduleOf = (text) => (text?.includes(RUNTIME) ? text.match(/(factory\/driver\/[\w-]+\.mjs)/)?.[1] : null) ?? null;
+
+const systemdStale = (changed) => {
+  const listed = out("systemctl", ["--user", "list-units", "--type=service", "--all", "--no-legend", "--plain", "--no-pager"]);
+  if (listed === null) return [];
+  const found = [];
+  for (const line of listed.split("\n")) {
+    const unit = line.trim().split(/\s+/)[0];
+    if (!unit?.endsWith(".service")) continue;
+    const mod = moduleOf(out("systemctl", ["--user", "show", unit, "-p", "ExecStart", "--value"]));
+    if (mod && changed.includes(mod)) found.push({ mod, name: unit, restart: `systemctl --user restart ${unit}` });
+  }
+  return found;
+};
+
+const launchdStale = (changed) => {
+  const loaded = out("launchctl", ["list"]);
+  if (loaded === null) return [];
+  const labels = new Set(loaded.split("\n").slice(1).map((l) => l.trim().split(/\s+/)[2]).filter(Boolean));
+  const dir = path.join(os.homedir(), "Library", "LaunchAgents");
+  let plists = [];
+  try { plists = fs.readdirSync(dir).filter((f) => f.endsWith(".plist")); } catch { return []; }
+  const found = [];
+  for (const f of plists) {
+    const label = f.replace(/\.plist$/, "");
+    if (!labels.has(label)) continue; // on disk but not loaded — nothing running to be stale
+    // Read the plist as text: it may be XML or binary, and `plutil -p`
+    // normalises both without adding a dependency.
+    const mod = moduleOf(out("plutil", ["-p", path.join(dir, f)]));
+    // unload+load is what this driver already uses for launchd elsewhere
+    // (factory.mjs's schedule --install), so the hint stays consistent.
+    if (mod && changed.includes(mod)) {
+      found.push({ mod, name: label, restart: `launchctl unload ${path.join(dir, f)} && launchctl load ${path.join(dir, f)}` });
+    }
+  }
+  return found;
+};
+
+const staleUnits = (changed) => [...systemdStale(changed), ...launchdStale(changed)];
+
+const changed = git(["diff", "--name-only", `${head}..${candidate}`]).split("\n");
+const hints = staleUnits(changed).map(({ mod, name, restart }) =>
+  `${path.basename(mod)} changed — ${name} still runs the OLD code; restart it (${restart})`);
+for (const h of hints) log(`⚠ ${h}`);
+const hintText = hints.map((h) => `\n⚠ ${h}`).join("");
+await notify(registry, `✓ runtime now at ${candidate.slice(0, 7)} (was ${head.slice(0, 7)}, ${count} commit(s), ${Object.keys(registry?.factories ?? {}).length} factory doctor(s) green)${hintText}`);

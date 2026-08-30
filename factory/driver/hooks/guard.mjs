@@ -11,6 +11,7 @@
 // (dev|triage|report) when spawning sessions, so the owner's interactive
 // sessions in the same checkout are never restricted.
 import { execFileSync } from "node:child_process";
+import * as fs from "node:fs";
 import * as path from "node:path";
 
 const mode = process.env.FACTORY_MODE;
@@ -42,9 +43,27 @@ const input = event.tool_input ?? {};
 // belong to the driver alone; task branches are code-only (NOTES item 24).
 const TOOLING = new Set(["driver.mjs", "prompts", "schedulers", "hooks"]);
 
+// `path.resolve` is LEXICAL, and `linkMetaRuntime` symlinks `.factory/log`
+// into the meta worktree — so a write to `<meta>/.factory/log/state.json`
+// resolved to a path whose `.factory` child reads "log", and the machine-state
+// rule below never saw the "projects" it was looking for. Probe-verified
+// 2026-08-05 against the real hook: fed the symlink path it exited silent, fed
+// the resolved path it denied. state.json holds the acceptance-grade cache, so
+// that gap let a session pre-seed a passing grade for its own PR.
+//
+// The target itself often does not exist yet (a first write), which is why
+// realpath falls back to resolving the DIRECTORY and re-joining the basename:
+// the symlink is the parent, so that is the hop that matters. Fully lexical is
+// the last resort.
+const resolveThrough = (p) => {
+  const abs = path.resolve(cwd, p);
+  try { return fs.realpathSync(abs); } catch { /* not created yet */ }
+  try { return path.join(fs.realpathSync(path.dirname(abs)), path.basename(abs)); } catch { return abs; }
+};
+
 if (["Edit", "MultiEdit", "Write", "NotebookEdit"].includes(tool)) {
   const p = input.file_path ?? input.notebook_path ?? "";
-  const segments = path.resolve(cwd, p).split(path.sep);
+  const segments = resolveThrough(p).split(path.sep);
   const i = segments.lastIndexOf(".factory");
   if (i !== -1) {
     const child = segments[i + 1] ?? "";
@@ -76,6 +95,22 @@ if (tool === "Bash") {
   if (/\.factory[\\/]projects\b/.test(cmd)) {
     deny("machine-side factory state (~/.factory/projects) is driver-owned — sessions never read or write it");
   }
+  // ...and the same target reached through the log SYMLINK, which the literal
+  // check above cannot see. Scoped to redirection and tee — i.e. writes only.
+  // The read half is deliberately left alone: all 26 measured firings of the
+  // rule above were reads, none was ever a write, and the reads it blocks are
+  // exactly the ones the report leg is now instructed to make with Read/Glob
+  // (T-016). Widening this to reads would trade one silent gap for a new
+  // wave of denials.
+  for (const target of [...cmd.matchAll(/(?:>>?|\btee\b(?:\s+-a)?)\s*("[^"]+"|'[^']+'|[^\s;&|]+)/g)]
+    .map((m) => m[1].replace(/^["']|["']$/g, ""))) {
+    if (/^[0-9]?&/.test(target)) continue; // 2>&1 and friends are not paths
+    const seg = resolveThrough(target).split(path.sep);
+    const i = seg.lastIndexOf(".factory");
+    if (i !== -1 && seg[i + 1] === "projects") {
+      deny(`${target} resolves into machine-side factory state (~/.factory/projects) — driver-owned; sessions never write it. Report through the MCP tools`);
+    }
+  }
   if (/\bgh\s+pr\s+merge\b/.test(cmd)) {
     deny("sessions never merge PRs — the driver's merge gate merges when checks are green");
   }
@@ -84,11 +119,57 @@ if (tool === "Bash") {
   // mutating subcommands are policed.
   const sub = cmd.match(/\bgit\b(?:\s+-[^\s]+)*\s+([a-z-]+)/)?.[1] ?? null;
   const MUTATING = new Set(["add", "commit", "push", "rm", "mv", "restore", "checkout", "switch", "stash", "reset", "apply", "clean", "merge", "rebase", "cherry-pick"]);
-  // .claude is session tooling the driver INJECTS into worktrees (P2) plus
-  // owner-level config — neither belongs in a session commit. The exclude
-  // block already hides injected paths from git; this denial is the belt.
-  if (sub && MUTATING.has(sub) && /\.factory[\\/](backlog|driver\.mjs|prompts|schedulers|hooks)|\.claude[\\/]/.test(cmd)) {
-    deny("mutating git on .factory metadata/tooling or .claude paths is driver/owner-only — task branches are code-only");
+  const PROTECTED = /\.factory[\\/](backlog|driver\.mjs|prompts|schedulers|hooks)|\.claude[\\/]/;
+
+  // Flags that swallow the next token, so a commit message or an author name
+  // is never mistaken for a path.
+  const VALUE_FLAGS = new Set(["-m", "--message", "-C", "-c", "--author", "--date", "--file", "-F"]);
+
+  // The paths a single git invocation actually acts on. Quoted spans go
+  // first: a commit message is the single biggest source of false positives
+  // here, and it is always quoted.
+  const pathArgs = (segment) => {
+    const tokens = segment.replace(/'[^']*'|"[^"]*"/g, " ").trim().split(/\s+/);
+    const out = [];
+    let seenGit = false, seenSub = false, afterDashDash = false;
+    for (let i = 0; i < tokens.length; i++) {
+      const tk = tokens[i];
+      if (!tk) continue;
+      if (afterDashDash) { out.push(tk); continue; }
+      if (tk === "--") { afterDashDash = true; continue; }
+      if (!seenGit) { if (/(^|\/)git$/.test(tk)) seenGit = true; continue; }
+      if (VALUE_FLAGS.has(tk)) { i += 1; continue; }
+      if (tk.startsWith("-")) continue;
+      if (!seenSub) { seenSub = true; continue; } // the subcommand itself
+      out.push(tk);
+    }
+    return out;
+  };
+
+  // A compound command is several invocations: only the mutating git one's
+  // own arguments decide. `grep .factory/backlog x && git commit -m ...` is
+  // two different acts, and the guard used to read them as one string.
+  // `&&`/`||` before the single-char class so they are not split in half.
+  for (const segment of cmd.split(/&&|\|\||[|;&\n]/)) {
+    const s = segment.match(/\bgit\b(?:\s+-[^\s]+)*\s+([a-z-]+)/)?.[1] ?? null;
+    if (!s || !MUTATING.has(s)) continue;
+    // What this invocation names, plus — for a commit — what is already
+    // staged, since `git add -A` puts paths in the index that never appear
+    // in the commit's own arguments.
+    const targets = pathArgs(segment);
+    if (s === "commit") {
+      try {
+        targets.push(...execFileSync("git", ["diff", "--cached", "--name-only"],
+          { cwd, encoding: "utf8", timeout: 10_000, stdio: ["ignore", "pipe", "pipe"] }).split("\n"));
+      } catch { /* not a repo, or no index yet — the argument scan still applies */ }
+    }
+    // .claude is session tooling the driver INJECTS into worktrees (P2) plus
+    // owner-level config — neither belongs in a session commit. The exclude
+    // block already hides injected paths from git; this denial is the belt.
+    const hit = targets.find((p) => p && PROTECTED.test(p));
+    if (hit) {
+      deny(`mutating git on .factory metadata/tooling or .claude paths is driver/owner-only — task branches are code-only (${hit.trim()})`);
+    }
   }
   if (sub === "commit" || sub === "push") {
     if (mode !== "dev") {

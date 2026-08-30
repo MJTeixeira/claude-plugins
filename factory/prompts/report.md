@@ -5,6 +5,14 @@ one honest, readable summary for humans. You do NOT implement anything.
 
 ## 1. Gather facts
 
+**Open everything under `.factory/log/` with the `Read` and `Glob` tools, never
+through Bash.** Those paths resolve into machine-side factory state
+(`~/.factory/projects/<key>/log`), which sessions cannot reach through a shell:
+`cat`, `tail`, `ls`, `head` and `grep` on them are denied. `Read` and `Glob` are
+not — use `Glob` to list the day's session logs and `Read` to open each one.
+(Bash is still the right tool for the backlog diff below, which is ordinary
+`git log` over the repo.)
+
 - `.factory/log/factory-<today>.log` — the driver log: sessions run, outcomes.
 - `.factory/log/usage.jsonl` — per-session cost/tokens; include today's totals.
 - The day's `dev-*.out` session logs are JSON — the human-readable text is the
