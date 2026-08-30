@@ -468,7 +468,15 @@ the candidate (`node --check` on every driver module, then the CANDIDATE
 driver's doctor over every registered factory, read-only), fast-forwards
 only when green, stamps `~/.factory/runtime-deploy.json`, and Telegrams the
 result. A failed gate leaves the runtime exactly where it was — the
-merge-gate principle applied to the runtime itself. Doctor carries a
+merge-gate principle applied to the runtime itself. After an advance it also
+names any long-lived unit left running old code, with the restart command:
+it asks systemd `--user` and launchd which units exec a module out of this
+runtime, walks each one's local (`./`-relative) imports transitively, and
+reports the unit stale when the deploy's diff touched anything it reaches —
+so a change to a module the dashboard merely imports is named too. Only
+RUNNING processes qualify (systemd `SubState=running`, a launchd agent with a
+pid): timers and the per-factory `@dev`/`@triage`/`@report` oneshots re-exec
+per fire and self-heal, and restarting one of those would launch a window. Doctor carries a
 standing `runtime origin` row for the same check (URL comparison only, no
 network). Log: `~/.factory/deploy.log`. **This is the ONLY update verb** —
 there is no per-project tooling refresh anymore (`init.mjs --update` died

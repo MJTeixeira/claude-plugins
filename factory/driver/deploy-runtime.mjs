@@ -293,8 +293,8 @@ syncPlugins();
 //
 // So ASK the machine rather than carrying a list: every --user unit whose
 // ExecStart runs a module out of this runtime is a candidate, and the ones
-// whose module is in this deploy's diff are stale. A service added later is
-// found the same way, with no edit here.
+// whose code this deploy changed are stale. A service added later is found
+// the same way, with no edit here.
 // BOTH managers, because the fleet uses both: the VPS and zeroone run these
 // as systemd --user services, this Mac runs com.factory.supervisor under
 // launchd. Covering only systemd would reproduce T-041's exact defect on the
@@ -308,23 +308,38 @@ const out = (cmd, args) => {
 // --name-only` prints, so the two can be compared directly.
 const moduleOf = (text) => (text?.includes(RUNTIME) ? text.match(/(factory\/driver\/[\w-]+\.mjs)/)?.[1] : null) ?? null;
 
-const systemdStale = (changed) => {
+// Only a RUNNING process can be running old code. The per-factory
+// `<name>-factory@dev|triage|report` units exec factory.mjs and are oneshots
+// that have already exited — they re-exec per fire and pick the new code up
+// by themselves, which is the "timers self-heal" case above. Naming them
+// would be worse than noise: their restart command LAUNCHES A FACTORY WINDOW.
+// Measured on the VPS 2026-08-30: 12 units exec a driver module and 9 are
+// exactly these oneshots, so without the SubState filter almost every deploy
+// would print nine instructions that must not be followed.
+const systemdUnits = () => {
   const listed = out("systemctl", ["--user", "list-units", "--type=service", "--all", "--no-legend", "--plain", "--no-pager"]);
   if (listed === null) return [];
   const found = [];
   for (const line of listed.split("\n")) {
-    const unit = line.trim().split(/\s+/)[0];
-    if (!unit?.endsWith(".service")) continue;
-    const mod = moduleOf(out("systemctl", ["--user", "show", unit, "-p", "ExecStart", "--value"]));
-    if (mod && changed.includes(mod)) found.push({ mod, name: unit, restart: `systemctl --user restart ${unit}` });
+    // UNIT LOAD ACTIVE SUB DESCRIPTION — SUB is the one that separates a live
+    // daemon from an exited oneshot ("running" vs "dead"/"exited").
+    const [unit, , , sub] = line.trim().split(/\s+/);
+    if (!unit?.endsWith(".service") || sub !== "running") continue;
+    const entry = moduleOf(out("systemctl", ["--user", "show", unit, "-p", "ExecStart", "--value"]));
+    if (entry) found.push({ entry, name: unit, restart: `systemctl --user restart ${unit}` });
   }
   return found;
 };
 
-const launchdStale = (changed) => {
+const launchdUnits = () => {
   const loaded = out("launchctl", ["list"]);
   if (loaded === null) return [];
-  const labels = new Set(loaded.split("\n").slice(1).map((l) => l.trim().split(/\s+/)[2]).filter(Boolean));
+  // PID<TAB>Status<TAB>Label — a loaded agent with no pid ("-") is not a
+  // running process, same rule as systemd's SubState above.
+  const labels = new Set(loaded.split("\n").slice(1)
+    .map((l) => l.trim().split(/\s+/))
+    .filter(([pid, , label]) => label && /^\d+$/.test(pid))
+    .map(([, , label]) => label));
   const dir = path.join(os.homedir(), "Library", "LaunchAgents");
   let plists = [];
   try { plists = fs.readdirSync(dir).filter((f) => f.endsWith(".plist")); } catch { return []; }
@@ -334,21 +349,55 @@ const launchdStale = (changed) => {
     if (!labels.has(label)) continue; // on disk but not loaded — nothing running to be stale
     // Read the plist as text: it may be XML or binary, and `plutil -p`
     // normalises both without adding a dependency.
-    const mod = moduleOf(out("plutil", ["-p", path.join(dir, f)]));
+    const entry = moduleOf(out("plutil", ["-p", path.join(dir, f)]));
     // unload+load is what this driver already uses for launchd elsewhere
     // (factory.mjs's schedule --install), so the hint stays consistent.
-    if (mod && changed.includes(mod)) {
-      found.push({ mod, name: label, restart: `launchctl unload ${path.join(dir, f)} && launchctl load ${path.join(dir, f)}` });
+    if (entry) {
+      found.push({ entry, name: label, restart: `launchctl unload ${path.join(dir, f)} && launchctl load ${path.join(dir, f)}` });
     }
   }
   return found;
 };
 
-const staleUnits = (changed) => [...systemdStale(changed), ...launchdStale(changed)];
+// A unit runs its entry module AND everything that module imports, so
+// matching the entry alone is the same defect one level down: the 2026-08-30
+// deploy of b077aa1 changed status.mjs, left dashboard.mjs untouched, said
+// nothing — and both dashboards kept serving the old derivation, because
+// dashboard.mjs imports deriveFactoryStatus from it (T-043).
+//
+// The driver is zero-dependency and every local import is a `./`-relative
+// single-line statement, so a regex plus a visited set is the whole graph —
+// no parser, no package resolution. Anything else (`node:` builtins, bare
+// specifiers) resolves outside the runtime and so can never be in a deploy's
+// diff. The graph is read from the runtime as it stands NOW — post-advance,
+// the candidate — because that is the code the unit will run once restarted.
+const LOCAL_IMPORT = /(?:^|[\s;(])(?:import|export)\s[^;\n]*?["'](\.\/[^"']+)["']|import\s*\(\s*["'](\.\/[^"']+)["']\s*\)/g;
 
-const changed = git(["diff", "--name-only", `${head}..${candidate}`]).split("\n");
-const hints = staleUnits(changed).map(({ mod, name, restart }) =>
-  `${path.basename(mod)} changed — ${name} still runs the OLD code; restart it (${restart})`);
+const reachableFrom = (entry) => {
+  const seen = new Set();
+  const queue = [entry];
+  while (queue.length) {
+    const rel = queue.shift();
+    if (seen.has(rel)) continue; // cycles terminate here
+    seen.add(rel);
+    let src;
+    try { src = fs.readFileSync(path.join(RUNTIME, rel), "utf8"); } catch { continue; } // deleted, or not a file we ship
+    for (const m of src.matchAll(LOCAL_IMPORT)) {
+      queue.push(path.posix.join(path.posix.dirname(rel), m[1] ?? m[2]));
+    }
+  }
+  return seen;
+};
+
+const changed = git(["diff", "--name-only", `${head}..${candidate}`]).split("\n").filter(Boolean);
+const hints = [];
+for (const { entry, name, restart } of [...systemdUnits(), ...launchdUnits()]) {
+  // Name every changed module the unit reaches, not just one: after a
+  // multi-commit deploy the reason it is stale is usually more than one file.
+  const stale = [...reachableFrom(entry)].filter((m) => changed.includes(m)).sort();
+  if (!stale.length) continue;
+  hints.push(`${stale.map((m) => path.basename(m)).join(", ")} changed — ${name} still runs the OLD code; restart it (${restart})`);
+}
 for (const h of hints) log(`⚠ ${h}`);
 const hintText = hints.map((h) => `\n⚠ ${h}`).join("");
 await notify(registry, `✓ runtime now at ${candidate.slice(0, 7)} (was ${head.slice(0, 7)}, ${count} commit(s), ${Object.keys(registry?.factories ?? {}).length} factory doctor(s) green)${hintText}`);
