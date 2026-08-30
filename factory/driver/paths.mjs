@@ -105,3 +105,10 @@ export const writeJsonAtomic = (p, value) => {
 // projectTrusted all read THIS object — stamping one flag while checking
 // the other is how the half-trusted legacy state grew (review S12).
 export const TRUST_FLAGS = { hasTrustDialogAccepted: true, hasCompletedProjectOnboarding: true };
+
+// First non-empty of stderr/stdout/message: git puts the interesting text
+// on either stream depending on the failure (one fleet sweep logged three
+// bare "attempt failed ()" retries because "nothing to commit" is stdout).
+export const firstLine = (e) =>
+  String([e?.stderr, e?.stdout, e?.message].find((s) => s && String(s).trim()) ?? e)
+    .trim().split("\n")[0].slice(0, 200);
