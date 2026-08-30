@@ -150,12 +150,37 @@ const cliSupports = (claudeCmd, flag) => {
   return cliFlags.get(flag);
 };
 
+// A dev session's closing acts — create_pr, then report_status — are the two
+// turns that decide whether a window's work is bookkept or lost. Spend the
+// last granted turn on implementation and they never happen: T-002's retry on
+// 2026-08-02 used 142/140 turns, committed "task complete, PR next", then went
+// silent. The branch was complete on origin with no PR, no last-session.json,
+// and an in-progress status two later windows nearly re-assigned.
+//
+// So the CLI gets a reserve the session is never told about. It must stay
+// SECRET to work: a stated budget is a budget, and a session that knows about
+// the reserve spends it. The prompt states the granted number (see the dev
+// spawn site) while the cap the CLI enforces is granted + this.
+//
+// Ten, not two: landing is push + create_pr + report_status, and each can
+// need a retry (a create_pr that answers "PR already exists" costs a turn to
+// read and another to report). Two would cover the 142/140 case exactly and
+// nothing rougher. It is a constant, not config — a knob here would just be
+// another number to get wrong, and the failure it prevents is the same size
+// on every project.
+const LANDING_RESERVE = 10;
+
 // overrides: per-session {model, effort, maxTurns, timeoutMin} from the
 // triage plan; anything unset falls back to config, then the machine default.
 // mode (dev|triage|report) reaches the session env as FACTORY_MODE — the
 // PreToolUse guard hook is a no-op without it (interactive sessions).
 const runSession = ({ project, cfg, env, promptText, sessionLogPath, log, mode, overrides = {} }) =>
   new Promise((resolve) => {
+    // Dev only. Triage, grade and report have no create_pr/report_status
+    // endgame to forfeit — triage's closing act is submit_plan, whose loss
+    // costs a re-run of a cheap session rather than a window's work, and no
+    // measured triage has hit its cap. Widen this when one does, not before.
+    const granted = overrides.maxTurns ?? cfg.maxTurnsPerSession;
     const args = [
       "-p",
       "--output-format",
@@ -164,7 +189,7 @@ const runSession = ({ project, cfg, env, promptText, sessionLogPath, log, mode, 
       "--permission-mode",
       cfg.permissionMode,
       "--max-turns",
-      String(overrides.maxTurns ?? cfg.maxTurnsPerSession),
+      String(mode === "dev" ? granted + LANDING_RESERVE : granted),
     ];
     const model = overrides.model ?? cfg.model;
     if (model) args.push("--model", model);
@@ -5234,15 +5259,23 @@ while (true) {
     extra += `\n\n## Claimed tasks (a human holds each via an open PR — NOT eligible, even if the backlog says todo)\n\n${[...claims].map(([id, c]) => `- ${id} — ${c.draft ? "draft " : ""}PR #${c.number}`).join("\n")}\n`;
   }
   if (!retryingId) nextSessionNote = null; // the retry prompt never carries driver notes — leave them for the sweep
+  // State the GRANTED budget, never the padded cap. The config dump carries
+  // maxTurnsPerSession, which is a lie the moment triage grants an override —
+  // the same reason the assignment above has to name the launch model. Both
+  // prompts get it: the stale-retry lane is a dev-mode spawn with the same
+  // endgame, so it earns the reserve and must be told the same number.
+  const sessionOverrides = retryOverrides ?? entry ?? {};
+  const grantedTurns = sessionOverrides.maxTurns ?? cfg.maxTurnsPerSession;
+  const budgetNote = `\n\n## Your turn budget\n\nThis session's budget is ${grantedTurns} turns. Have the PR open and \`report_status\` called before you reach it — turns spent past your budget are not yours to plan with.\n`;
   const { exitCode, timedOut, mcpEventsPath, spawnFailed } = await runSession({
     project: sessionCwd,
     cfg,
     env,
-    promptText: retryPromptText ?? (extra ? promptText + extra : promptText),
+    promptText: (retryPromptText ?? (extra ? promptText + extra : promptText)) + budgetNote,
     sessionLogPath: sessionLog,
     log,
     mode: "dev",
-    overrides: retryOverrides ?? entry ?? {},
+    overrides: sessionOverrides,
   });
 
   // Session result: a settled MCP report (validated, made at the moment of

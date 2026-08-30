@@ -160,6 +160,15 @@ write can talk it past a criterion — make the criteria actually pass.
 
 ## Land it (per `autonomy` in config.json)
 
+- **The moment the acceptance criteria are green, land — then polish.** Open
+  the PR and call `report_status` BEFORE any extra test, tidier refactor,
+  fuller PR body or further verification you think the work deserves. Those
+  are worth turns only after the work is bookkept; before that they are a bet
+  that you will not be killed mid-improvement, and that bet has already been
+  lost (a session that spent its last turn improving left a complete branch on
+  origin with no PR, and a task two later windows nearly re-assigned). Landed
+  and unpolished beats polished and lost — you can always keep working on the
+  branch after the PR is open.
 - Every level: push the branch, then open the PR **with the `create_pr`
   MCP tool** (title `[factory] T-<id>: <title>`, body: what/why/how-verified
   + REQ ids, branch: your pushed branch). The driver makes the forge call
