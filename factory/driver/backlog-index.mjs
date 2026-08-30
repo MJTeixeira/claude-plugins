@@ -357,13 +357,19 @@ export const vagueCriterion = (acceptance) =>
 
 // The lint doctor and triage consume: non-done tasks whose Verify line the
 // tier check is sure about. Done tasks already shipped — their weak lines
-// are history, not work. Solo tier first; only lines that pass it get the
-// acceptance cross-check (tier "engine"), then the wording check (tier
-// "vague", which alone carries the offending `criterion`) — one report per
-// task, the more fundamental defect wins.
-export const lintVerify = (tasks, gateCommand = null) =>
-  tasks
-    .filter((t) => t.status !== "done")
+// are history, not work. With `indexText`, the feed is also scoped to
+// ACTIVE milestones (owner ruling, T-044): a not-started milestone's lines
+// get their look at promote time, and 84 of 91 fleet hits sat there —
+// noise for a triage that cannot finish the list. blocked/needs-human stay
+// IN: their blocks are still editable and their work is near-term. Solo
+// tier first; only lines that pass it get the acceptance cross-check (tier
+// "engine"), then the wording check (tier "vague", which alone carries the
+// offending `criterion`) — one report per task, the more fundamental
+// defect wins.
+export const lintVerify = (tasks, gateCommand = null, indexText = null) => {
+  const inactive = indexText == null ? new Map() : inactiveEpics(indexText);
+  return tasks
+    .filter((t) => t.status !== "done" && !inactive.has(t.epic))
     .map((t) => {
       let tier = verifyTier(t.verify, gateCommand);
       let criterion = null;
@@ -373,6 +379,25 @@ export const lintVerify = (tasks, gateCommand = null) =>
       return criterion ? { ...entry, criterion } : entry;
     })
     .filter((t) => t.tier !== "product");
+};
+
+// Epics of every non-active milestone, keyed by epic id (file base name),
+// each mapped to its milestone's {id, status}. Fail-open, same semantics as
+// the dev plan's milestone guard: no active milestone anywhere (statusless
+// dialects) = no signal, empty map; unparseable text = empty map; an epic
+// listed under no milestone never appears, so it always passes.
+export const inactiveEpics = (indexText) => {
+  try {
+    const ms = parseMilestones(indexText);
+    if (!ms.some((m) => m.status === "active")) return new Map();
+    const out = new Map();
+    for (const m of ms) {
+      if (m.status === "active" || !m.status) continue;
+      for (const e of m.epics) out.set(e.file.replace(/\.md$/, ""), { id: m.id, status: m.status });
+    }
+    return out;
+  } catch { return new Map(); }
+};
 
 // Every task in a backlog directory. index.md holds milestones, never tasks.
 export const parseBacklogTasks = (backlogDir) => {

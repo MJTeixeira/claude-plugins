@@ -525,7 +525,9 @@ export const runDoctor = (ctx) => {
     const all = parseBacklogTasks();
     if (!all.length) check("skip", "Verify lines", "no tasks");
     else {
-      const flagged = lintVerify(all, cfg.gateCommand);
+      const idxPath = path.join(dataDir, "backlog", "index.md");
+      const flagged = lintVerify(all, cfg.gateCommand,
+        fs.existsSync(idxPath) ? fs.readFileSync(idxPath, "utf8") : "");
       check(flagged.length ? "warn" : "ok", "Verify lines",
         flagged.length
           ? `${flagged.length} non-done task(s) whose Verify/acceptance won't hold the grader to the task — missing, suite-only, skipping the engine tests the acceptance names, or vague acceptance wording; triage should fix them: ${flagged.map((t) => `${t.id}=${t.tier}`).join(", ").slice(0, 120)}`

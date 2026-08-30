@@ -26,7 +26,7 @@ import { healConfigSchema } from "./config.mjs";
 import { SCHEDULE_KINDS, SCHEDULE_MODES, normalizeSchedule, validateDeclaration, generateUnits, parseInstalled, compareInstalled, defaultPathLine } from "./schedule.mjs";
 import { deriveFactoryStatus } from "./status.mjs";
 import { createForge, createTracker } from "./forge.mjs";
-import { parseMilestones, parseBacklogTasks as parseTasksInDir, lintVerify } from "./backlog-index.mjs";
+import { parseMilestones, parseBacklogTasks as parseTasksInDir, lintVerify, inactiveEpics as inactiveEpicsFromIndex } from "./backlog-index.mjs";
 import { jiraTracker } from "./jira.mjs";
 import { jiraBoardInit, syncJiraBoard } from "./jira-board.mjs";
 import { selectStaleRetry, retryOutcome, appendRetryLine, extractTaskBlock } from "./stale-retry.mjs";
@@ -2755,7 +2755,9 @@ const runSingle = async (name) => {
     // the grader executes these lines verbatim, so a suite-only line grades
     // the diff, never the task. Feeding triage the flagged list is what
     // makes "fix weak Verify lines" agent-fed instead of aspirational.
-    const flagged = lintVerify(effectiveTasks(), cfg.gateCommand);
+    const lintIdxPath = path.join(runtimeFactoryDir(), "backlog", "index.md");
+    const flagged = lintVerify(effectiveTasks(), cfg.gateCommand,
+      fs.existsSync(lintIdxPath) ? fs.readFileSync(lintIdxPath, "utf8") : "");
     if (flagged.length) {
       promptText += `\n\n## Verify-line lint (driver-computed — fix these with your other backlog edits)\n\n` +
         `These tasks' \`Verify:\` lines or acceptance wording won't hold the grader to the task. ` +
@@ -4175,16 +4177,8 @@ while (true) {
     // ids, an unlisted epic, an index without milestone headings all pass —
     // because a lenient parse must never brick a window.
     const inactiveEpics = (() => {
-      try {
-        const ms = parseMilestones(fs.readFileSync(path.join(runtimeFactoryDir(), "backlog", "index.md"), "utf8"));
-        if (!ms.some((m) => m.status === "active")) return new Map(); // statusless dialects: no signal, no guard
-        const out = new Map();
-        for (const m of ms) {
-          if (m.status === "active" || !m.status) continue;
-          for (const e of m.epics) out.set(e.file.replace(/\.md$/, ""), { id: m.id, status: m.status });
-        }
-        return out;
-      } catch { return new Map(); }
+      try { return inactiveEpicsFromIndex(fs.readFileSync(path.join(runtimeFactoryDir(), "backlog", "index.md"), "utf8")); }
+      catch { return new Map(); }
     })();
     while (planIdx < plan.length) {
       const st = settled.get(plan[planIdx].taskId);
