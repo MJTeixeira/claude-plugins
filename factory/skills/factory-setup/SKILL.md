@@ -42,6 +42,9 @@ Gather, with sensible suggestions from context:
   (platforms, must-have vs nice-to-have, stack preference or "my choice").
   For a product that deserves real speccing depth, offer the `spec` skill's
   multi-sitting interview instead of speccing inline here.
+- External APIs the product calls + where each official spec or doc
+  lives (even when specs already exist: check `docs/apis.json` — missing
+  or stale means vendor in step 2).
 - Autonomy (`pr-only` default — recommend it for a first Factory), window
   hours + start times + work days, mirrors (notion/jira — only if they
   actually use them), stack (detect from the repo when it exists).
@@ -68,6 +71,13 @@ their intent before moving on.
 
 Note: `init.mjs` creates `.factory/` — if it doesn't exist yet, write the
 spec files after step 3, or create the directory first. Either order works.
+
+For every external API named in the interview (do this even when the
+spec step was skipped): vendor its oracle and write the `docs/apis.json`
+manifest per `${CLAUDE_PLUGIN_ROOT}/skills/spec/references/apis-manifest.md`
+— the rung ladder, vendoring rules and schema live there, nowhere else.
+Vendored oracles are read-only ground truth for sessions — a session
+editing or authoring one is laundered guessing; refresh is owner-side.
 
 ## 3. Run the wizard for them
 

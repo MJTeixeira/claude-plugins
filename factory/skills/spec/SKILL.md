@@ -34,14 +34,22 @@ this is the highest-leverage hour of the whole project.
    edit the same item?" over "any concurrency requirements?". Pin, in
    rough order: who the users are and the core value; scope boundary
    (explicit OUT list, not just in); must-have vs nice-to-have; platforms
-   and stack (or "agent's choice within <constraints>"); success criteria
+   and stack (or "agent's choice within <constraints>"); external APIs
+   the product calls and where each official spec or doc lives; success criteria
    per feature, observable and testable; milestones as demoable stages.
    Challenge vagueness on the spot: "fast", "simple", "like X" become
    numbers or named behaviors, or go to Open decisions with an owner.
 3. **Write as you go**, following the template: numbered REQ ids unique
    across all spec files, one file per domain when the product is big,
    observable behavior not implementation, NFRs measurable, out-of-scope
-   explicit.
+   explicit. External APIs get their ground truth vendored in the same
+   sitting: oracle files + the `docs/apis.json` manifest per
+   `references/apis-manifest.md` — the rung ladder, vendoring rules and
+   schema live there, nowhere else. Vendored oracles are read-only for
+   sessions — a session editing or authoring one is laundered guessing;
+   refresh happens owner-side, at a sitting like this one. Existing
+   projects with external APIs and no manifest get this fixed this
+   sitting.
 4. **Close the sitting**: update `## Open decisions` (each entry: the
    question, who decides, what it blocks) — this is the handoff to the
    next sitting, on any machine, any day. Show a compact status (settled

@@ -2641,6 +2641,29 @@ const FOREGROUND_RULE = `\n\n## Background tasks (never violate)\n\n` +
   "foreground command that blocks until it is done. Never end a turn on " +
   "prose about waiting.\n";
 
+// The API traceability rule (T-009; api-ground-truth REQ-1..4 + REQ-9). ONE
+// source, appended to every session prompt that writes or judges code
+// against an external API — the dev lane, the stale-parked retry lane and
+// the acceptance grader — so implementer and grader can never drift on
+// what counts as a source. Triage, report and compile-spec are left out:
+// they never code against an API surface. Driver-side for FOREGROUND_RULE's
+// reason. grade.md's External-APIs bullet cites this section's heading by
+// name — rename them together. Trigger incident: a session shipped `GET /v3/identities/self`
+// flagging its own guess in a code comment — the endpoint exists in NO
+// version of the vendor's spec, and every gate passed it (spec sitting
+// 2026-08-03; the fixture it wrote validated its own guess).
+const TRACEABILITY_RULE = `\n\n## External APIs (never invent one)\n\n` +
+  "Never invent an external API surface. Every endpoint, method, and " +
+  "response field you code against must be traceable to a source " +
+  "available in this checkout: a vendored spec, a docs snapshot, existing " +
+  "working code that already calls it, or SDK types. A mock or test " +
+  "fixture is NEVER a source — least of all one written in the same " +
+  "change as the call it validates. No source in the checkout → stop on that call and ask: file " +
+  "an `open_question`, or `ask_peer` a factory that owns the answer. " +
+  "That stop is the correct completion of the task, not a failure — a " +
+  "sourced question beats a plausible guess, and an untraceable endpoint " +
+  "fails the grade.\n";
+
 // Sessions run in throwaway worktrees (dev) or the meta worktree (triage/
 // report) — neither carries a config file (the machine-product premise:
 // config never enters a checkout), so the config facts sessions act on
@@ -3077,7 +3100,7 @@ const runGrader = async ({ pr, taskId, head, sha }) => {
   try { writeLock(stateD, { ...readJson(lockPath(stateD)), graderStartedAt: new Date().toISOString() }); }
   catch { log("grader: could not stamp window.lock — hang bound stays static this leg"); }
   const sessionLog = path.join(logDir, `grade-${stamp}.out`);
-  const promptText = promptFor("grade") + FOREGROUND_RULE +
+  const promptText = promptFor("grade") + FOREGROUND_RULE + TRACEABILITY_RULE +
     `\n\n## Grading brief (driver-generated from the task's backlog entry)\n\n` +
     `- Task: ${taskId}${task?.title ? ` — ${task.title}` : ""}\n` +
     `- Under grade: PR ${pr}, branch ${head} at commit ${sha} — checked out here\n` +
@@ -3961,7 +3984,7 @@ const engineSkillNote = () => {
   return `\n\n## Engine note (driver-detected)\n\n` + engines.map((e) =>
     `This repo contains a ${e === "godot" ? "Godot" : "Unity"} project. Run the \`code4food-factory:${e}\` skill before any engine work (CLI, tests, scenes, builds).`).join("\n") + "\n";
 };
-const promptText = promptFor("dev-task") + FOREGROUND_RULE + configPromptNote() + engineSkillNote();
+const promptText = promptFor("dev-task") + FOREGROUND_RULE + TRACEABILITY_RULE + configPromptNote() + engineSkillNote();
 rmScratch("window start"); // leftovers from a killed window
 // A killed driver strands its session (or grader) worktree — sweep old ones
 // before starting new (disk hygiene; git registrations are pruned on next add).
@@ -4253,7 +4276,7 @@ while (true) {
       break;
     }
     retryOverrides = { model: cfg.staleRetryModel ?? "fable", effort: "high" };
-    retryPromptText = promptFor("retry-task") + FOREGROUND_RULE + configPromptNote() +
+    retryPromptText = promptFor("retry-task") + FOREGROUND_RULE + TRACEABILITY_RULE + configPromptNote() +
       `\n\n## The task (verbatim from the backlog — your assignment)\n\n${block}\n`;
     log(`session ${sessions} is a stale-parked retry: ${retryingId} (${retryOverrides.model}, effort ${retryOverrides.effort})`);
   }

@@ -369,6 +369,19 @@ spawn graders; a prep sweep leaves ungraded PRs for the next window
 (prep spawns no sessions, by contract). Human-gated and risk-parked PRs
 are unchanged: the owner IS their acceptance check.
 
+**The API traceability rule (T-009, `factory/specs/api-ground-truth.md`
+REQ-1..4 + REQ-9):** every code-writing lane — dev, stale-parked retry and
+the acceptance grader — gets `TRACEABILITY_RULE` appended to its prompt
+(one driver-side source beside `FOREGROUND_RULE`, same reason): never
+invent an external API surface; every endpoint, method and response field
+must be traceable to an in-checkout source (vendored spec, docs snapshot,
+existing working code, SDK types), a mock or fixture is never a source,
+and no source means stop and ask (`open_question`/`ask_peer`) as the
+CORRECT completion. The grader applies it as an evidence rule — an
+untraceable endpoint fails the criterion it rides; its asking exits
+belong to the implementer, never the grader — with no new verdict states
+and no bypass.
+
 **The grade cache — identity is the diff, not the commit (1.21.0):**
 verdicts cache under `<taskId>@pid:<patch-id>`, where the patch-id is
 `git patch-id --verbatim` over the branch-vs-base diff (`base...head`) —
@@ -590,7 +603,7 @@ without its row.
 | `triageModel` | *(= `model`)* | triage-only model. Planning gates everything downstream, so cheap dev sessions can pair with strong triage |
 | `graderModel` | `"opus"` | the acceptance grader's model — deliberately NOT `model` (§Verification & review contract) |
 | `mergeGateMinutes` | `10` | how long the gate polls CI before leaving a PR for the sweep (auto-merge only) |
-| `gateCommand` | `null` | repo suite the gate runs on the MERGED tree before pushing (e.g. `"npm ci --silent && npm test"`); `null` = rely on CI. With NEITHER, the gate refuses to auto-merge and doctor goes red. It is the merge FLOOR, not verification: a task `Verify:` line that only repeats it proves nothing the gate didn't — doctor's `Verify lines` row and the triage lint flag those (§Backlog authoring, Verify tiers) |
+| `gateCommand` | `null` | repo suite the gate runs on the MERGED tree before pushing (e.g. `"npm ci --silent && npm test"`); `null` = rely on CI. With NEITHER, the gate refuses to auto-merge and doctor goes red. It is the merge FLOOR, not verification: a task `Verify:` line that only repeats it proves nothing the gate didn't — doctor's `Verify lines` row and the triage lint flag those (§Backlog authoring, Verify tiers); projects with `docs/apis.json` can chain the endpoint lint — see the merge-gate section |
 | `gateSuiteTimeoutMin` | `15` | wall-clock bound on `gateCommand`; a timeout counts as a failed suite |
 | `riskTiers` | `{"high": []}` | path prefixes (end dirs with `/`) whose PRs always park for owner review. A malformed value FAILS doctor rather than silently disabling the floor |
 | `toolchain` | *(unset)* | external tools the window needs, `[{"name": "godot", "check": "godot --version"}]` — one doctor row each, so a missing tool stops the window before it burns sessions. Malformed = doctor fail |
@@ -981,6 +994,21 @@ The toolchain manifest is the window's other floor: declare
 BEFORE it burns sessions against it. A malformed manifest is itself a
 doctor fail (same rule as riskTiers: a typo must never silently turn a
 floor off).
+
+The endpoint lint is a ready-made gate floor for projects with vendored
+API oracles (T-011, api-ground-truth REQ-8/14): wire
+`config.json → gateCommand` to
+`node ~/.factory/runtime/factory/driver/endpoint-lint.mjs --root . [--diff-base <base>]`
+(alone or `&&`-chained with the suite). Nonzero exit = a call absent
+from a machine-readable oracle, a raw HTTP call bypassing an sdk-rung
+oracle's declared hosts, a diff touching vendored-oracle paths
+(`--diff-base`, REQ-7/13), or an unparseable manifest/oracle — a typo
+never silently turns this floor off. Deprecated and legacy-generation
+calls WARN on stdout and exit 0; docs-snapshot/none rungs report
+"grader-citation only" and exit 0, so wiring it is always safe. What it
+can and cannot see (string-literal extraction, client-call shapes only)
+is documented in the module header; the manifest schema lives in the
+spec skill's apis-manifest reference.
 
 Risk tiers ride the same landing: before the merge is even attempted, the
 gate diffs the PR against base and any file under a `riskTiers.high`
