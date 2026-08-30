@@ -1516,6 +1516,17 @@ service, `factory-onfailure@.service`) live in `factory/schedulers/`.
   `in-progress` in the runtime state, so even when the window ends right
   there (the prompt note is in-memory) the next window's state overlay
   still names the unfinished task.
+
+  **Landing reserve (T-008).** A dev session's CLI is spawned with its granted
+  budget PLUS a fixed reserve of 10 turns, while the prompt states the
+  unpadded granted number — so the closing acts (`create_pr`, then
+  `report_status`) survive a session that spends its whole stated budget. The
+  reserve is a constant in the driver, deliberately not configurable, and
+  deliberately not disclosed to the session: a stated budget is a budget, and
+  a session told about the reserve would spend it. Dev lane only, the
+  stale-parked retry lane included — triage, grade and report have no PR-and-
+  report endgame to forfeit. `maxTurnsPerSession` therefore describes what a
+  session is told it has, not the cap the CLI enforces.
 - **`wait-forfeit`: a session that ended a turn waiting on a background
   task.** A session that backgrounds a long command (the gate suite, a
   subagent) and then ends its turn on prose is betting on a re-entry it may
