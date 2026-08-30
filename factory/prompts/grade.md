@@ -30,6 +30,11 @@ the code has graded its own work. Your worktree is thrown away when you end.
   never touches the behavior proves nothing about it.
 - Read the tests the PR adds: do they assert the criterion's observable
   behavior, or only mirror the implementation?
+- The diff touches an external API call → apply the **External APIs**
+  rule below: every call it codes against needs in-diff or in-checkout
+  evidence. Untraceable → fail the criterion that call rides, with the
+  unsourced call as evidence; the rule's asking exits belong to the
+  implementer, never to you — you record the fail.
 - Judge the criterion as written. If the implementation does something
   adjacent-but-different, that is a fail with the difference as evidence —
   scope judgment belongs to triage and the owner, not to you.

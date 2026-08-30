@@ -45,6 +45,11 @@ within <constraints>" is valid.
   data files, many SMALL scenes/prefabs (scene files don't merge — one task
   per scene).
 
+## External APIs
+Which external APIs the product calls (vendored per the spec skill's
+apis-manifest reference); for split-generation vendors, which generation
+NEW code targets.
+
 ## Out of scope
 Explicit non-goals — prevents the agent from building them.
 
