@@ -740,7 +740,10 @@ checkout. Write it at the highest tier the acceptance criteria reach:
    `yarn`/`pnpm` alike) and install preludes (`npm ci`) never lift a line
    out of this tier — `npm test && npm run lint` is still suite-only. The
    driver lints for it — doctor's `Verify lines` row, and the triage
-   prompt lists the hits to fix.
+   prompt lists the hits to fix. The lint feed is scoped to tasks in
+   ACTIVE milestones (blocked/needs-human included; a not-started
+   milestone's lines get their look at promote time); with no active
+   milestone heading it is unscoped, fail-open.
 2. **Drive the product — the bar.** A curl against the changed endpoint
    (status AND body), the CLI with real arguments, a headless engine run —
    and assert on output, not just exit codes (exit-0 proves almost
