@@ -123,6 +123,26 @@ export const runMcpServer = async ({ project, eventsPath, stateDir, loadConfig }
         return { text: `plan recorded (${queue.length} task(s)) — the driver writes plan.json at session end` };
       },
     },
+    promote_milestone: {
+      description:
+        "TRIAGE ONLY: open the next milestone once every task in the active one is done. The DRIVER " +
+        "flips the backlog/index.md heading to active and commits it itself at session end — never " +
+        "edit a heading's status yourself. Refused for done/unknown milestones; prior active " +
+        "milestones are kept.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          milestone: { type: "string", description: "milestone id to open, e.g. M3" },
+        },
+        required: ["milestone"],
+      },
+      call: (a) => {
+        const milestone = str(a.milestone, 40);
+        if (!milestone) return { error: "milestone (non-empty string) is required" };
+        record("promote_milestone", { milestone });
+        return { text: `recorded — the driver promotes ${milestone} at session end (refused if done or unknown)` };
+      },
+    },
     create_pr: {
       description:
         "Open the pull request for your pushed branch. The DRIVER makes the forge call with its own " +

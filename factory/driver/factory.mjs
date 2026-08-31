@@ -329,6 +329,13 @@ const TERMINAL_TASK_STATUSES = new Set(["completed", "failed", "killed", "stoppe
 // evidence that it closed (T-013).
 const parseSessionStream = (sessionLogPath) => {
   const sum = { input: 0, output: 0, cacheRead: 0, cacheCreate: 0, messages: 0 };
+  // Billed totals across EVERY result record the stream carries: a
+  // continuation fragment reports only its own num_turns and usage, so
+  // last-wins under-counts multi-fragment sessions (measured 2026-08-05:
+  // median 8x under on the 24% of sessions with >1 record). Cost is the
+  // exception — `total_cost_usd` is CUMULATIVE (verified 49/49
+  // multi-fragment logs), so it stays last-wins on `result`, never summed.
+  const billed = { sawTurns: false, turns: 0, parentTurns: 0, input: 0, output: 0, cacheRead: 0, cacheCreate: 0 };
   const trajectory = []; // per assistant message: output tokens + context size at that turn
   const tools = {}; // tool_use histogram by tool name
   let result = null;
@@ -348,6 +355,26 @@ const parseSessionStream = (sessionLogPath) => {
       let e;
       try { e = JSON.parse(t); } catch { continue; }
       if (e.type === "result" || (e.type === undefined && (e.result !== undefined || e.subtype !== undefined))) {
+        // A record carrying parent_tool_use_id is a subagent's: it joins
+        // the billed sums but not parentTurns — `--max-turns` never counts
+        // subagent turns, so parentTurns is the one number a turn budget
+        // may be set against.
+        const isSubagentRecord = !!e.parent_tool_use_id;
+        if (typeof e.num_turns === "number") {
+          billed.sawTurns = true;
+          billed.turns += e.num_turns;
+          if (!isSubagentRecord) billed.parentTurns += e.num_turns;
+        }
+        const ru = e.usage ?? {};
+        billed.input += ru.input_tokens ?? 0;
+        billed.output += ru.output_tokens ?? 0;
+        billed.cacheRead += ru.cache_read_input_tokens ?? 0;
+        billed.cacheCreate += ru.cache_creation_input_tokens ?? 0;
+        if (isSubagentRecord) continue;
+        // Only a PARENT record is "the session's result": end classification,
+        // finalText and cumulative cost must never be hijacked by a
+        // subagent's record (none observed from today's CLIs — guarded for
+        // the day one appears, since agg deliberately counts them above).
         result = e;
         atResult = { openTasks: [...running.values()], turnCalledTool };
       } else if (e.type === "system" && e.task_id) {
@@ -389,7 +416,7 @@ const parseSessionStream = (sessionLogPath) => {
   const finalText = typeof result?.result === "string" && result.result ? result.result : lastAssistantText;
   // No result event (killed mid-run): the live walk IS the end state.
   const end = atResult ?? { openTasks: [...running.values()], turnCalledTool };
-  return { result, sum, finalText, trajectory, tools, openTasks: end.openTasks, turnCalledTool: end.turnCalledTool };
+  return { result, sum, billed, finalText, trajectory, tools, openTasks: end.openTasks, turnCalledTool: end.turnCalledTool };
 };
 
 // A session that ends without last-session.json is not necessarily dead:
@@ -439,36 +466,38 @@ const repoSnapshot = ({ project, env, forge }) => {
   ].join("\n\n");
 };
 
-// Append cost/token facts to usage.jsonl. Three cases: a result event
-// (normal end — exact cost), assistant events only (killed session — sum
-// the per-message usage; a lower bound, but a 45-min killed session must
-// not vanish from spend tracking, NOTES item 29), or nothing parseable
-// (null row so the session at least EXISTS in usage.jsonl).
+// Append cost/token facts to usage.jsonl. Three cases: at least one result
+// record (normal end — turns and tokens are the billed sums across every
+// result record, subagents included; costUsd last-wins, it is cumulative),
+// assistant events only (killed session — sum the per-message usage; a
+// lower bound, but a 45-min killed session must not vanish from spend
+// tracking, NOTES item 29), or nothing parseable (null row so the session
+// at least EXISTS in usage.jsonl).
 const recordUsage = ({ factoryDir, sessionLogPath, mode, taskId, status, model, log }) => {
-  const { result, sum } = parseSessionStream(sessionLogPath);
+  const { result, sum, billed } = parseSessionStream(sessionLogPath);
   const base = { ts: new Date().toISOString(), mode, taskId: taskId ?? null, status: status ?? null, model: model ?? null };
   let row;
   if (result) {
-    const u = result.usage ?? {};
     row = {
       ...base,
       costUsd: result.total_cost_usd ?? null,
-      turns: result.num_turns ?? null,
-      inputTokens: u.input_tokens ?? 0,
-      outputTokens: u.output_tokens ?? 0,
-      cacheReadTokens: u.cache_read_input_tokens ?? 0,
-      cacheCreateTokens: u.cache_creation_input_tokens ?? 0,
+      turns: billed.sawTurns ? billed.turns : null,
+      parentTurns: billed.sawTurns ? billed.parentTurns : null,
+      inputTokens: billed.input,
+      outputTokens: billed.output,
+      cacheReadTokens: billed.cacheRead,
+      cacheCreateTokens: billed.cacheCreate,
     };
   } else if (sum.messages) {
     row = {
-      ...base, costUsd: null, turns: null,
+      ...base, costUsd: null, turns: null, parentTurns: null,
       inputTokens: sum.input, outputTokens: sum.output,
       cacheReadTokens: sum.cacheRead, cacheCreateTokens: sum.cacheCreate,
       partial: true, // killed mid-run: summed from the events streamed so far (lower bound)
     };
   } else {
     row = {
-      ...base, costUsd: null, turns: null,
+      ...base, costUsd: null, turns: null, parentTurns: null,
       inputTokens: null, outputTokens: null, cacheReadTokens: null, cacheCreateTokens: null,
     };
   }
@@ -487,7 +516,7 @@ const recordUsage = ({ factoryDir, sessionLogPath, mode, taskId, status, model, 
 // (chunk 6). Called from recordUsage so every session that exists in the
 // spend ledger has a metrics row — a new mode can't add one and miss the other.
 const recordMetrics = ({ factoryDir, sessionLogPath, mode, taskId, status, model }) => {
-  const { result, trajectory, tools } = parseSessionStream(sessionLogPath);
+  const { result, trajectory, tools, billed } = parseSessionStream(sessionLogPath);
   // A result event names its own end; without one, surviving assistant
   // events mean the session was killed mid-run, none at all means it never
   // produced parseable output.
@@ -498,7 +527,8 @@ const recordMetrics = ({ factoryDir, sessionLogPath, mode, taskId, status, model
     ts: new Date().toISOString(),
     mode, taskId: taskId ?? null, status: status ?? null, model: model ?? null,
     endReason,
-    turns: result?.num_turns ?? null,
+    turns: billed.sawTurns ? billed.turns : null, // billed total, summed across result records
+    parentTurns: billed.sawTurns ? billed.parentTurns : null,
     peakContext: trajectory.length ? Math.max(...trajectory.map((t) => t.context)) : null,
     trajectory,
     denials: Array.isArray(result?.permission_denials) ? result.permission_denials.length : null,
@@ -1567,7 +1597,7 @@ if (mode === "doctor") {
 // into a handoff with facts. Questions are filed by the driver at session
 // end (Decision 1); progress lines are already in the file for post-mortems.
 const readMcpEvents = (eventsPath) => {
-  const out = { report: null, inProgress: null, questions: [], progress: [], dailyLogs: [], verdict: null, plan: null };
+  const out = { report: null, inProgress: null, questions: [], progress: [], dailyLogs: [], verdict: null, plan: null, promotions: [] };
   if (!eventsPath) return out;
   let text;
   try { text = fs.readFileSync(eventsPath, "utf8"); } catch { return out; }
@@ -1595,6 +1625,10 @@ const readMcpEvents = (eventsPath) => {
       // events file is session-writable, so a forged line must not crash
       // ingestion or smuggle non-queue fields into plan.json.
       out.plan = { queue: Array.isArray(e.queue) ? e.queue : null };
+    } else if (e.event === "promote_milestone") {
+      // Shape re-checked for the same reason; the flip itself re-validates
+      // the milestone against the index, so a forged id can only be refused.
+      if (typeof e.milestone === "string" && e.milestone.trim()) out.promotions.push(e.milestone.trim());
     }
   }
   return out;
@@ -2366,37 +2400,47 @@ if (mode === "sync-board") {
 // `factory/ops-*` PR that tripped the merge-gate's code-only warning.
 // Keep-prior-active by default: no other heading is touched — closing a
 // finished milestone stays a separate, explicit (human or triage) edit.
+// The flip itself, shared by the standalone verb and the triage leg
+// (T-027): splice the status token by offset so the heading's dialect
+// (`— active` vs `(active)`) is the author's and survives the flip.
+// Returns {ok, noop?, id?, msg} instead of exiting — the caller decides
+// how to fail. Shared parser (backlog-index.mjs): the local regex this
+// replaced read only `## M1 …`, so promote failed with "milestone not
+// found" on the 4 fleet factories whose index used another dialect
+// (2026-07-19).
+const flipMilestoneActive = (milestoneId) => {
+  const indexPath = path.join(runtimeFactoryDir(), "backlog", "index.md");
+  if (!fs.existsSync(indexPath)) return { ok: false, msg: `no ${indexPath} — nothing to promote` };
+  const text = fs.readFileSync(indexPath, "utf8");
+  const headings = parseMilestones(text);
+  const hit = headings.find((h) => h.id.toLowerCase() === milestoneId.toLowerCase());
+  if (!hit) {
+    return { ok: false, msg: `milestone ${milestoneId} not found in backlog/index.md — headings there: ${
+      headings.map((h) => `${h.id} (${h.status ?? "no status"})`).join(", ") || "none"}` };
+  }
+  if (hit.status === "active") return { ok: true, noop: true, id: hit.id, msg: `${hit.id} is already active — nothing to do` };
+  if (!["not-started", "gated"].includes(hit.status ?? "")) {
+    return { ok: false, msg: `${hit.id} is ${hit.status ?? "missing its status suffix"} — promote only opens not-started/gated milestones (a ${hit.status} heading is yours to edit by hand)` };
+  }
+  const flipped = hit.line.slice(0, hit.statusStart) + "active" + hit.line.slice(hit.statusEnd);
+  fs.writeFileSync(indexPath, text.slice(0, hit.index) + flipped + text.slice(hit.index + hit.line.length));
+  return { ok: true, id: hit.id, msg: `${hit.id} promoted to active` };
+};
+
 if (mode === "promote") {
   const say = (m) => process.stdout.write(m + "\n");
   if (isGitRepo()) refreshMeta(); // edit where the driver commits: meta at origin tip
-  const indexPath = path.join(runtimeFactoryDir(), "backlog", "index.md");
-  if (!fs.existsSync(indexPath)) fail(`no ${indexPath} — nothing to promote`);
-  const text = fs.readFileSync(indexPath, "utf8");
-  // Shared parser (backlog-index.mjs): the local regex this replaced read
-  // only `## M1 …`, so promote failed with "milestone not found" on the 4
-  // fleet factories whose index used another dialect (2026-07-19).
-  const headings = parseMilestones(text);
-  const hit = headings.find((h) => h.id.toLowerCase() === milestone.toLowerCase());
-  if (!hit) {
-    fail(`milestone ${milestone} not found in backlog/index.md — headings there: ${
-      headings.map((h) => `${h.id} (${h.status ?? "no status"})`).join(", ") || "none"}`);
-  }
-  if (hit.status === "active") {
-    say(`${hit.id} is already active — nothing to do`);
+  const r = flipMilestoneActive(milestone);
+  if (!r.ok) fail(r.msg);
+  if (r.noop) {
+    say(r.msg);
     process.exit(0);
   }
-  if (!["not-started", "gated"].includes(hit.status ?? "")) {
-    fail(`${hit.id} is ${hit.status ?? "missing its status suffix"} — promote only opens not-started/gated milestones (a ${hit.status} heading is yours to edit by hand)`);
-  }
-  // Splice the status token in place, by offset — the heading's dialect
-  // (`— active` vs `(active)`) is the author's and must survive the flip.
-  const flipped = hit.line.slice(0, hit.statusStart) + "active" + hit.line.slice(hit.statusEnd);
-  fs.writeFileSync(indexPath, text.slice(0, hit.index) + flipped + text.slice(hit.index + hit.line.length));
   if (isGitRepo()) {
-    if (!commitMetadata(`promote ${hit.id}: milestone → active`)) fail(`flip produced no staged change in ${indexPath} — index format drift?`);
-    say(`${hit.id} promoted to active — committed and pushed as the driver (prior actives kept)`);
+    if (!commitMetadata(`promote ${r.id}: milestone → active`)) fail(`flip produced no staged change in backlog/index.md — index format drift?`);
+    say(`${r.id} promoted to active — committed and pushed as the driver (prior actives kept)`);
   } else {
-    say(`${hit.id} promoted to active in ${indexPath}`);
+    say(`${r.id} promoted to active in backlog/index.md`);
   }
   process.exit(0);
 }
@@ -2913,6 +2957,25 @@ const runSingle = async (name) => {
         refreshIndexCounts();
         if (commitMetadata(`triage: backlog update ${today()}${applied.length ? ` (${applied.join(", ")})` : ""}`)) {
           log(`triage output committed to ${cfg.baseBranch}`);
+        }
+        // Milestone promotion (T-027): triage asks via the promote_milestone
+        // MCP tool and the DRIVER flips + commits here, inside its own
+        // window lock — the standalone verb's live-window refusal guards
+        // out-of-band runs; this leg IS the window. Only a clean session's
+        // ask is honored, same bar as its plan.
+        if (exitCode === 0) {
+          for (const m of [...new Set(mcpEv.promotions)]) {
+            const r = flipMilestoneActive(m);
+            if (!r.ok || r.noop) {
+              log(`promote (triage): ${r.msg}`);
+              continue;
+            }
+            if (commitMetadata(`promote ${r.id}: milestone → active (triage)`)) {
+              log(`promote (triage): ${r.id} → active — committed as the driver`);
+            } else {
+              log(`promote (triage): flip of ${r.id} produced no staged change — index format drift?`);
+            }
+          }
         }
         refreshMeta();
         ffOwnerCheckout();
