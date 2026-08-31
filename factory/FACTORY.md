@@ -720,6 +720,17 @@ active milestones are KEPT active (deps order the work; don't strand
 foundation tasks) — marking one `done` stays an explicit human/triage
 edit. Idempotent; refuses `done`/unknown milestones and a live window.
 
+The triage leg can do this itself (2.6.0): the `promote_milestone` MCP
+tool records the ask and the DRIVER flips + commits at session end,
+inside its own window lock — the verb's live-window refusal guards
+out-of-band runs, not the leg that already holds the lock. Only a clean
+(exit 0) triage session's ask is honored, the same bar as its plan; the
+flip re-validates the milestone, so a done/unknown ask is refused with a
+log line, never applied. The mechanism opens `gated` milestones exactly
+as the verb does — the owner's-go-ahead bar for promoting one lives in
+the triage prompt (owner evidence in, same bar as unblocking
+`needs-human`), not in the driver.
+
 Milestone headings are machine-read, and the canonical shape is
 `## M<n>: <title> — <status>` (status LAST on the line; §Backlog authoring
 below is the one home for the format). The index format went unspecified for a
@@ -816,8 +827,9 @@ the real ones.
   sessions are the sanctioned exception: they ship their OWN tasks' `Status:`
   flips inside the PR that ships the work — see the Piloting contract.) They report MID-RUN through the
   driver's stdio MCP server (`factory/driver/mcp-server.mjs`; v2 O2: `report_status`, `open_question`,
-  `log_progress`, plus `create_pr` since factory 1.7.0 and
-  `post_daily_log` since 1.8.0 — the driver opens PRs and posts the
+  `log_progress`, plus `create_pr` since factory 1.7.0,
+  `post_daily_log` since 1.8.0 and `promote_milestone` since 2.6.0
+  (triage-only; §Autonomy above) — the driver opens PRs and posts the
   daily log itself via the forge/tracker adapters with its own
   credentials, and pre-collects every forge/tracker READ into the
   triage/report prompts' `## Forge inputs` section, so sessions never
@@ -882,7 +894,12 @@ the real ones.
   autonomy epic chunk 5), extracted from the session's own stream log:
   `endReason` (the result event's verdict — `success`, `error_max_turns`,
   `api_error`… — or `killed`/`no-output` when the session died without
-  one), `turns`, `peakContext`, per-turn `trajectory`
+  one), `turns` (billed total, SUMMED across every result record the
+  stream carries — continuation fragments and subagent records each
+  report only their own share; `costUsd` is the exception, cumulative
+  in the CLI and therefore last-wins), `parentTurns` (parent-conversation
+  records only — the one number a turn budget may be set against, since
+  `--max-turns` never counts subagent turns), `peakContext`, per-turn `trajectory`
   (`{output, context}` per assistant message), permission-`denials` count
   (null when no result event recorded it), and a `tools` name→count
   histogram. Written wherever a usage row is written — one ledger row and

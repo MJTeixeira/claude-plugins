@@ -135,6 +135,14 @@ key), and a live session tickets it.
   something (every probe session then reports "stale index"). Strip any
   you find, reconcile milestone active/done flags against the epic files,
   and trust the driver's counter refresh for the `n/m done` numbers.
+- When every task in the ACTIVE milestone is done and the next heading reads
+  `not-started`, call the `promote_milestone` MCP tool with the next
+  milestone's id — the driver flips the heading and commits it at session
+  end; never edit a heading's status yourself. A `gated` milestone is the
+  owner's checkpoint: promote it only when the owner's go-ahead is actually
+  in (an answered question or gate issue — the same evidence bar as
+  unblocking `needs-human`), and otherwise leave it and say so in the daily
+  log.
 - Re-prioritization requests from humans are orders: reorder and note who/why.
 
 ## 3. Plan of day
@@ -199,7 +207,10 @@ Per entry: copy the task's `Model:` / `Effort:` hints and its `Turns:`
 with a config fallback). Then correct against the evidence in
 `.factory/log/usage.jsonl`: a task or epic that recently turn-capped, died,
 or overran its budget gets more turns or a stronger model; consistently
-cheap epics can drop to a cheaper setting. When torn between tiers, take
+cheap epics can drop to a cheaper setting. Read turn evidence from a row's
+`parentTurns` — the count the session's `--max-turns` cap actually meters.
+A row's `turns` is the billed total, subagent turns included: never set a
+turn budget from it. When torn between tiers, take
 the higher one — wasted sessions cost more than tokens. Turn budgets must
 also cover the mandatory pre-PR `code-reviewer` pass every dev session runs
 (spawn + finding triage — roughly 10-20 turns on top of implementation).
