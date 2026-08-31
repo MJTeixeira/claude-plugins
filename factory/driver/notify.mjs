@@ -43,3 +43,14 @@ export const sendTelegram = async ({ token, chatId }, text, { timeoutMs = 10_000
     return false;
   }
 };
+
+// One re-send for the callers with no second channel (supervisor, watchdog,
+// deploy-runtime): a single failed POST must not eat an emergency. Bounded
+// at exactly two attempts by design — these run at process exit, and an
+// unbounded retry would hang it. Same contract as sendTelegram: logs,
+// never throws.
+export const sendTelegramWithRetry = async (creds, text, opts = {}) => {
+  if (await sendTelegram(creds, text, opts)) return true;
+  (opts.log ?? (() => {}))("telegram send failed — re-sending once");
+  return sendTelegram(creds, text, opts);
+};

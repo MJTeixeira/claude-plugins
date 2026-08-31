@@ -21,6 +21,8 @@
 //   route (roadmap) supersedes this.
 
 import { execFileSync, spawn } from "node:child_process";
+import * as fs from "node:fs";
+import * as path from "node:path";
 import { execGit } from "./paths.mjs";
 
 const API = "https://api.bitbucket.org/2.0";
@@ -117,6 +119,8 @@ export const bitbucketForge = ({ project, env = {} }) => {
   return {
     kind: "bitbucket",
     bin: "curl",
+    hasCiConfig: (dir) =>
+      fs.existsSync(path.join(dir, "bitbucket-pipelines.yml")) ? "pipelines present" : null,
 
     prListText: () => listOpen().map((r) => `#${r.number}\t${r.title}\t${r.headRefName}`).join("\n"),
     prListOpen: listOpen,

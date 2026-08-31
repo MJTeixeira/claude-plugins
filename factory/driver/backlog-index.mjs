@@ -52,7 +52,7 @@ const SMELLS_LIKE_MILESTONE = /^#{2,6}[ \t]+(?:milestone|phase|sprint)[ \t]*[\w-
 // The statuses `promote` and the dashboard actually act on. A heading whose
 // status is outside this set is as dead as one that does not parse at all —
 // see unparsedMilestoneHeadings.
-const MILESTONE_STATUSES = new Set(["active", "not-started", "gated", "done"]);
+export const MILESTONE_STATUSES = new Set(["active", "not-started", "gated", "done"]);
 
 // One milestone heading → {id, title, status, line, index, statusStart,
 // statusEnd}. The status offsets are relative to `line` so `promote` can
