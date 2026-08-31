@@ -1002,11 +1002,15 @@ API oracles (T-011, api-ground-truth REQ-8/14): wire
 (alone or `&&`-chained with the suite). Nonzero exit = a call absent
 from a machine-readable oracle, a raw HTTP call bypassing an sdk-rung
 oracle's declared hosts, a diff touching vendored-oracle paths
-(`--diff-base`, REQ-7/13), or an unparseable manifest/oracle — a typo
+or `docs/apis.json` itself (`--diff-base`, REQ-7/13), or an unparseable manifest/oracle — a typo
 never silently turns this floor off. Deprecated and legacy-generation
 calls WARN on stdout and exit 0; docs-snapshot/none rungs report
-"grader-citation only" and exit 0, so wiring it is always safe. What it
-can and cannot see (string-literal extraction, client-call shapes only)
+"grader-citation only" and exit 0, so wiring it is always safe. The gate
+runs from the repo root, so `--root .` resolves there — a suite that
+cds into a subdir must still hand the lint the repo root, because with
+no `docs/apis.json` at `--root` it notices, exits 0, and enforces
+nothing. What it
+can and cannot see (string-literal extraction: client-call shapes plus declared *PATH/*URL/*ENDPOINT constants)
 is documented in the module header; the manifest schema lives in the
 spec skill's apis-manifest reference.
 

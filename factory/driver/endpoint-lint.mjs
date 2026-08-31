@@ -4,7 +4,12 @@
 // wireable as a project gateCommand so an unsourced endpoint is
 // structurally unshippable. Trigger incident: a fabricated
 // `GET /v3/identities/self`, flagged as a guess in its own code comment,
-// absent from every version of the real spec, passed every gate.
+// absent from every version of the real spec, passed every gate. Honest
+// record (pilot, 2026-08-30): the incident's own shape held that path in
+// a module CONSTANT concatenated into the call — invisible to call-shape
+// extraction alone, which is why declared path constants are validated at
+// their declaration too (owner call, 2026-08-30, below). Paths assembled
+// from pieces no scan can see remain the Tier-1 rule's and the grader's.
 //
 // Enforcement maps to the oracle's rung (REQ-14):
 //   openapi        → path+method validation; `deprecated: true` operations
@@ -17,12 +22,16 @@
 // A manifest or vendored oracle that does not PARSE is a failure, never a
 // skip — a typo must never silently turn a floor off. With
 // `--diff-base <ref>` it also flags any diffed path under the manifest's
-// vendored-oracle dirs: a session editing or authoring an oracle is
-// laundered guessing, never a source (REQ-7/13).
+// vendored-oracle dirs — and `docs/apis.json` itself: a session editing
+// or authoring an oracle, or the manifest that scopes it, is laundered
+// guessing, never a source (REQ-7/13).
 //
 // Scoping: an entry judges the calls its surface CLAIMS — the first
 // segments of its oracle's paths ∪ its `generations` keys ∪ its optional
-// `claims` prefixes (apis-manifest reference). A call no entry claims is
+// `claims` prefixes ∪ its `documented` paths (apis-manifest reference —
+// a `documented` entry is a real endpoint the vendor documents only in
+// prose, e.g. an OAuth token path: satisfied by exact match plus the
+// cited source, method-agnostic; a near-miss still fails). A call no entry claims is
 // a project's own route, out of scope — EXCEPT a version-shaped first
 // segment (v3, beta, v2024): that is an API-generation claim by shape,
 // and while a machine-readable oracle is present it FAILS, so the
@@ -39,7 +48,12 @@
 // — `{expr}` in f-strings, `${expr}` in template literals — match as
 // single-segment parameters against the spec's `{param}` segments. A call
 // built from opaque variables is invisible to it; the Tier-1 traceability
-// rule and the grader cover that remainder.
+// rule and the grader cover that remainder. One more claim surface IS
+// seen: a module-level ALL-CAPS constant whose name contains PATH, URL or
+// ENDPOINT and whose value is a path literal is a declared endpoint claim
+// — validated method-agnostically at the declaration, wherever the call
+// is later assembled (the trigger incident's own shape). Other constant
+// names stay invisible.
 //
 // Interface: lintProject(root, { diffBase }) → { failures, warnings,
 // notices } of printable lines; the CLI prints them and exits 1 iff
@@ -108,11 +122,14 @@ const toPath = (raw) => {
 
 const LITERAL = `(?:"([^"\\n]*)"|'([^'\\n]*)'|\`([^\`\\n]*)\`)`;
 const CALL_SHAPES = [
-  // Client verb calls: requests.get(...), httpx.post(...), session.put(...),
-  // axios.delete(...) — receiver-whitelisted so server route registrars
-  // (app.get, router.post) and unrelated .get() receivers never read as
-  // outbound calls. Groups: 1 = verb, 2-4 = the literal.
-  { re: new RegExp(`\\b(?:requests|httpx|session|client|axios|http)\\.(get|post|put|patch|delete|head)\\(\\s*[rbf]{0,2}${LITERAL}`, "g"), lit: [2, 3, 4], method: (m) => m[1].toUpperCase() },
+  // Client verb calls: requests.get(...), httpx.post(...), self._http.put(...)
+  // — receiver-whitelisted so server route registrars (app.get, router.post)
+  // and unrelated .get() receivers never read as outbound calls. The anchor
+  // admits a leading underscore: `self._http`/`self._client` is the idiomatic
+  // private-attribute client shape, and `\b` alone cannot see past the `_`
+  // (word char) — the beholder pilot proved the original incident's own
+  // receiver invisible that way. Groups: 1 = verb, 2-4 = the literal.
+  { re: new RegExp(`(?:\\b|_)(?:requests|httpx|session|client|axios|http)\\.(get|post|put|patch|delete|head)\\(\\s*[rbf]{0,2}${LITERAL}`, "g"), lit: [2, 3, 4], method: (m) => m[1].toUpperCase() },
   // fetch("...") / fetch(`...`, { headers: h(), method: "POST" }) — the
   // options scan tolerates call parens but never crosses a ";".
   // Groups: 1-3 = the literal, 4 = the optional method.
@@ -136,12 +153,33 @@ const extractCalls = (root) => {
   return calls;
 };
 
+// Declared endpoint claims: NAME = "/path" (py) / const NAME = "/path"
+// (js/ts) at line start, NAME all-caps containing PATH|URL|ENDPOINT.
+const CONST_RE = /^[ \t]*(?:export[ \t]+)?(?:const[ \t]+|let[ \t]+|var[ \t]+)?([A-Z][A-Z0-9_]*)\s*=\s*(["'`])(\/[^"'`\n]+)\2/gm;
+const extractPathConstants = (root) => {
+  const consts = [];
+  for (const file of walkFiles(root, SOURCE_EXT, SKIP_DIRS)) {
+    const text = fs.readFileSync(file, "utf8");
+    const rel = path.relative(root, file);
+    CONST_RE.lastIndex = 0;
+    for (const m of text.matchAll(CONST_RE)) {
+      if (!/PATH|URL|ENDPOINT/.test(m[1])) continue;
+      const p = toPath(m[3]);
+      if (p) consts.push({ file: rel, name: m[1], path: p, segs: p.split("/").filter(Boolean) });
+    }
+  }
+  return consts;
+};
+
 // ---------- matching ----------
 
 // A spec {param} segment matches anything; a call's dynamic segment also
 // matches a concrete spec segment (existence is judged permissively — the
 // warn lanes below therefore require EVERY hit to agree, so an ambiguous
-// dynamic call never warns on one bad candidate).
+// dynamic call never warns on one bad candidate). Known limit, by design:
+// a fabricated CONCRETE segment that fits an existing parameterised spec
+// path validates (`/v3/identities/self` is catchable only because v3 has
+// no `/identities/{id}` GET) — the traceability rule and grader cover it.
 const segMatch = (specSegs, callSegs) =>
   specSegs.length === callSegs.length && specSegs.every((s, i) =>
     s.startsWith("{") || callSegs[i] === "{param}" ? true : s === callSegs[i]);
@@ -188,7 +226,9 @@ export const lintProject = (root, { diffBase } = {}) => {
     }
     const oracleDirs = entries.flatMap((a) => a.oracle?.paths ?? []);
     for (const f of changed) {
-      if (oracleDirs.some((d) => f.startsWith(d.replace(/\/$/, "") + "/") || f === d)) {
+      if (f === "docs/apis.json") {
+        failures.push(`FAIL ${f}: session diff edits the manifest — oracle claims and documented[] entries are owner-side (REQ-7/13)`);
+      } else if (oracleDirs.some((d) => f.startsWith(d.replace(/\/$/, "") + "/") || f === d)) {
         failures.push(`FAIL ${f}: session diff touches a vendored oracle — read-only ground truth, refresh is owner-side (REQ-7/13)`);
       }
     }
@@ -197,6 +237,17 @@ export const lintProject = (root, { diffBase } = {}) => {
   const calls = extractCalls(root);
   const lintable = []; // openapi-rung entries: { entry, specs, claims }
   for (const entry of entries) {
+    // documented[] citations are load-bearing and otherwise unverifiable —
+    // verify the careless case (the determined one belongs to --diff-base
+    // and review): a missing source fails, a URL or a cited file that
+    // never names the path warns.
+    for (const d of entry.documented ?? []) {
+      if (!d.source) { failures.push(`FAIL docs/apis.json: documented path ${d.path} has no source — an uncited entry is just a claim`); continue; }
+      if (/^https?:\/\//i.test(d.source)) { warnings.push(`WARN docs/apis.json: documented path ${d.path} cites a URL (${d.source}) — vendor a snapshot for a verifiable citation`); continue; }
+      const sp = path.join(root, d.source);
+      if (!fs.existsSync(sp)) { failures.push(`FAIL docs/apis.json: documented path ${d.path} cites ${d.source}, which does not exist in the checkout`); continue; }
+      if (!fs.readFileSync(sp, "utf8").includes(d.path)) warnings.push(`WARN docs/apis.json: ${d.source} does not mention ${d.path} — check the citation`);
+    }
     const rung = entry.oracle?.rung;
     if (rung === "docs-snapshot" || rung === "none") {
       notices.push(`endpoint-lint: ${entry.name} oracle rung is ${rung} — grader-citation only, no structural check`);
@@ -220,12 +271,16 @@ export const lintProject = (root, { diffBase } = {}) => {
       if (!errors.length) notices.push(`endpoint-lint: ${entry.name} has no parseable JSON oracle under ${entry.oracle?.paths?.join(", ")} — nothing to enforce`);
       continue;
     }
+    const documented = (entry.documented ?? [])
+      .map((d) => toPath(d.path)).filter(Boolean)
+      .map((dp) => dp.split("/").filter(Boolean));
     const claims = new Set([
       ...specs.flatMap((s) => Object.keys(s.paths).map((p) => p.split("/").filter(Boolean)[0]).filter(Boolean)),
       ...Object.keys(entry.generations ?? {}),
       ...(entry.claims ?? []).map((c) => c.split("/").filter(Boolean)[0]).filter(Boolean),
+      ...documented.map((segs) => segs[0]).filter(Boolean),
     ]);
-    lintable.push({ entry, specs, claims });
+    lintable.push({ entry, specs, claims, documented });
   }
 
   for (const call of calls) {
@@ -240,6 +295,9 @@ export const lintProject = (root, { diffBase } = {}) => {
     }
     const hits = owners.flatMap((l) => findOps(l.specs, call).map((h) => ({ ...h, entry: l.entry })));
     if (!hits.length) {
+      // A documented[] path is sourced by citation — exact match passes
+      // (method-agnostic; the manifest names where the vendor documents it).
+      if (owners.some((l) => l.documented.some((d) => segMatch(d, call.segs)))) continue;
       failures.push(`FAIL ${call.file}: ${call.method} ${call.path} is not in the ${owners.map((o) => o.entry.name).join("/")} oracle — no source, no ship`);
       continue;
     }
@@ -248,6 +306,26 @@ export const lintProject = (root, { diffBase } = {}) => {
     }
     if (hits.every((h) => h.op.deprecated === true)) {
       warnings.push(`WARN ${call.file}: ${call.method} ${call.path} is deprecated in the ${hits[0].entry.name} oracle`);
+    }
+  }
+
+  // Declared path constants: same claims scoping as calls, method-agnostic
+  // existence (a declaration carries no verb; the warn lanes stay
+  // call-only so a shared constant never warns on one bad candidate).
+  const pathKnown = (specs, segs) =>
+    specs.some((sp) => Object.keys(sp.paths).some((p) => segMatch(p.split("/").filter(Boolean), segs)));
+  for (const c of extractPathConstants(root)) {
+    const first = c.segs[0];
+    if (!first || first === "{param}") continue;
+    const owners = lintable.filter((l) => l.claims.has(first));
+    if (!owners.length) {
+      if (lintable.length && VERSION_SHAPED.test(first)) {
+        failures.push(`FAIL ${c.file}: ${c.name} = ${c.path} matches no vendored oracle generation — fabricated or unvendored surface, no source, no ship`);
+      }
+      continue;
+    }
+    if (!owners.some((l) => pathKnown(l.specs, c.segs) || l.documented.some((d) => segMatch(d, c.segs)))) {
+      failures.push(`FAIL ${c.file}: declared path constant ${c.name} = ${c.path} is not in the ${owners.map((o) => o.entry.name).join("/")} oracle — no source, no ship`);
     }
   }
   return { failures, warnings, notices };
