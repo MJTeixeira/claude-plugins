@@ -1255,11 +1255,16 @@ service, `factory-onfailure@.service`) live in `factory/schedulers/`.
   that work to protect two questions about tooling.
   The queue itself is never lost — a filing that throws goes to
   `state.pendingQuestions` and retries at the next session end. Its
-  visibility is the driver's job, not doctor's: every session end that
-  leaves questions stranded logs and Telegrams the count and titles
-  (`⚠ N question(s) could not be filed …`). That announcement is the
+  visibility is the driver's job, not doctor's: a session end that leaves
+  questions stranded logs and Telegrams the count and titles
+  (`⚠ N question(s) could not be filed …`) — announced when the stuck SET
+  changes, not on every retry (a permanently dead tracker used to produce
+  an unbounded stream of identical warnings; the retry stays unbounded,
+  only the announcement dedupes). That announcement is the
   load-bearing half — warning without it recreates the original silent-loss
   bug, which is exactly how the pilot lost two real diagnoses.
+  Non-native trackers also get a doctor `tracker reachability` row (warn,
+  never fail): authCheck proves credentials, not that filings can land.
 - **Tracker** (`config.json → tracker`, default the forge's own tracker;
   the legacy value `"github"` means the same): set `"jira"` to route
   needs-human questions and the `[factory] daily log` to a Jira Cloud
@@ -1475,7 +1480,9 @@ service, `factory-onfailure@.service`) live in `factory/schedulers/`.
 - **Fleet watchdog** (item 26): `factory/driver/watchdog.mjs` + the
   `factory-watchdog.timer` template — one timer per MACHINE that runs every
   registered factory's doctor daily, writes `<state>/log/doctor.json`
-  (dashboard tile), and Telegrams a summary when anything fails. A dead
+  (`fails` AND `warns` — the dashboard tile shows warnings distinctly from
+  failures), and Telegrams a summary when anything FAILS; warnings stay off
+  Telegram by design (owner ruling 2026-08-06). A dead
   factory gets noticed by machinery within a day, not by you wondering why
   there were no PRs.
 - **Fleet supervisor** (PR-D, Layer 1): `factory/driver/supervisor.mjs` —
@@ -1533,7 +1540,11 @@ service, `factory-onfailure@.service`) live in `factory/schedulers/`.
   per-type channels instead: merges, review requests, and parks to the
   `activity` channel, the until-done cycle digest to `digests`
   (tag-prefixed plain messages; falls back to the Telegram lane when no
-  posting tracker is configured, so nothing goes silent). Window
+  posting tracker is configured, so nothing goes silent). The emergency
+  lane has the mirror-image floor: a KEEP message whose Telegram send
+  FAILS is also posted to the tracker's questions channel when the
+  tracker can post, and outside factories (supervisor, watchdog,
+  deploy-runtime) a failed send is retried exactly once. Window
   start/end/skip pings and routine ✔ session pings are GONE — the daily
   log and cycle digest carry that. Telegram setup (opt-in):
   1. Create a bot: message [@BotFather](https://t.me/BotFather) → `/newbot`

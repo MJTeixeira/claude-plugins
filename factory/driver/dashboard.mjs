@@ -937,10 +937,12 @@ function row(f, s){
   var active = (f.milestones||[]).filter(function(m){ return m.status==="active"; })[0];
   var cfg = f.config ? f.config.autonomy+" \\u00b7 "+f.config.windowHours+"h \\u00b7 \\u2264"+f.config.maxSessionsPerWindow+" \\u00b7 base "+f.config.baseBranch+(f.config.model?" \\u00b7 "+f.config.model:"") : "";
   var docAge = f.doctor ? (Date.now()-Date.parse(f.doctor.ts))/3600000 : null;
+  var docWarns = (f.doctor && f.doctor.warns) || [];
   var docTag = !f.doctor ? ""
     : docAge>36 ? '<span class="tag warn" title="last doctor '+esc(f.doctor.ts)+' \\u2014 watchdog not running?">\\ud83e\\ude7a stale</span>'
-    : f.doctor.ok ? '<span class="tag good" title="doctor ok \\u00b7 '+esc(f.doctor.ts)+'">\\ud83e\\ude7a ok</span>'
-    : '<span class="tag danger" title="'+esc((f.doctor.fails||[]).join("\\n"))+'">\\ud83e\\ude7a '+(f.doctor.fails||[]).length+'\\u2717</span>';
+    : !f.doctor.ok ? '<span class="tag danger" title="'+esc((f.doctor.fails||[]).join("\\n"))+'">\\ud83e\\ude7a '+(f.doctor.fails||[]).length+'\\u2717</span>'
+    : docWarns.length ? '<span class="tag warn" title="'+esc(docWarns.join("\\n"))+'">\\ud83e\\ude7a '+docWarns.length+' warn</span>'
+    : '<span class="tag good" title="doctor ok \\u00b7 '+esc(f.doctor.ts)+'">\\ud83e\\ude7a ok</span>';
   var nhLen = (f.gh && f.gh.needsHuman) ? f.gh.needsHuman.length : 0;
   var nhTag = nhLen ? '<span class="tag danger">'+nhLen+' needs-human</span>' : "";
   var enWarn = (typeof f.enabled !== "boolean") ? '<span class="tag warn" title="config.json enabled is missing or not a boolean \\u2014 enable/disable will write a proper value">\\u26a0 enabled?</span>' : "";

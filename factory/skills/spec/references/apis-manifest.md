@@ -101,7 +101,10 @@ cited path — including ones nothing scans today — so a later refactor
 into a scanned shape is already sourced instead of newly failing. The
 lint verifies the careless case: a missing or nonexistent `source`
 FAILS; a URL citation WARNS (vendor a snapshot); a cited file that
-never names the path WARNS. Entries are inert on runtimes older than
+never names the path WARNS. The citation check is checkout-relative by
+design — a sparse checkout or a `git archive` without the vendored tree
+fails on citations that are perfectly real; a citation the gate cannot
+read is not a citation. Entries are inert on runtimes older than
 the lint (unknown manifest keys are ignored), so manifests can land
 ahead of a fleet deploy.
 

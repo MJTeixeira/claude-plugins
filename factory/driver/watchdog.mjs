@@ -21,7 +21,7 @@ import * as os from "node:os";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import { stateDir, writeJsonAtomic, readJson } from "./paths.mjs";
-import { telegramCreds, sendTelegram } from "./notify.mjs";
+import { telegramCreds, sendTelegramWithRetry } from "./notify.mjs";
 
 const execFileP = promisify(execFile);
 const DRIVER = fileURLToPath(new URL("factory.mjs", import.meta.url));
@@ -49,25 +49,32 @@ const doctorOne = async ([project, meta]) => {
 
   let ok = false;
   let fails = [];
+  let warns = [];
+  // doctor prints " ✗ name — detail" for fails and " ! name — detail" for
+  // warns; warns don't flip the exit code, so both paths harvest them (T-019
+  // — the dashboard tile is the only place a warning is ever seen).
+  const warnLines = (out) => String(out ?? "").split("\n").filter((l) => l.trim().startsWith("!")).map((l) => l.trim().slice(1).trim());
   if (!fs.existsSync(path.join(project, ".factory"))) {
     fails = ["no .factory/ — factory work data missing or moved"];
   } else {
     try {
-      await execFileP(process.execPath, [DRIVER, "doctor", "--project", project], {
+      const r = await execFileP(process.execPath, [DRIVER, "doctor", "--project", project], {
         timeout: 180_000, encoding: "utf8",
       });
       ok = true;
+      warns = warnLines(r.stdout);
     } catch (e) {
       // doctor exits 1 on problems and prints " ✗ name — detail" lines
       const out = `${e.stdout ?? ""}`;
       fails = out.split("\n").filter((l) => l.trim().startsWith("✗")).map((l) => l.trim().slice(1).trim());
+      warns = warnLines(out);
       if (!fails.length) fails = [`doctor did not run: ${String(e.message ?? e).split("\n")[0].slice(0, 160)}`];
     }
   }
 
   try {
     writeJsonAtomic(path.join(sd, "log", "doctor.json"), {
-      ts: new Date().toISOString(), ok, source: "watchdog", fails,
+      ts: new Date().toISOString(), ok, source: "watchdog", fails, warns,
     });
   } catch { /* unwritable state dir is itself a failure state, already reported */ }
 
@@ -97,7 +104,7 @@ if (failures.length && telegram) {
   const text =
     `🩺 watchdog: ${failures.length}/${Object.keys(reg.factories).length} factory(ies) failing doctor\n` +
     failures.map((f) => `• ${f.name}: ${f.fails.slice(0, 3).join("; ").slice(0, 250)}`).join("\n");
-  await sendTelegram(telegram, `[fleet] ${text}`, { log });
+  await sendTelegramWithRetry(telegram, `[fleet] ${text}`, { log });
 } else if (failures.length) {
   log("failures found but no Telegram creds in any factory's .env — log only");
 }

@@ -18,7 +18,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { stateDir, readJson, execGit } from "./paths.mjs";
-import { telegramCreds, sendTelegram } from "./notify.mjs";
+import { telegramCreds, sendTelegramWithRetry } from "./notify.mjs";
 import { expectedOrigin, sameOrigin } from "./distribution.mjs";
 
 const RUNTIME = path.join(os.homedir(), ".factory", "runtime");
@@ -42,7 +42,7 @@ const git = (args, cwd = RUNTIME) => execGit(cwd, args, { timeoutMs: 120_000 });
 const notify = async (registry, text) => {
   const creds = telegramCreds(registry?.factories ?? {});
   if (!creds) return;
-  await sendTelegram(creds, `[runtime] ${text}`, { log });
+  await sendTelegramWithRetry(creds, `[runtime] ${text}`, { log });
 };
 
 const registry = readJson(path.join(os.homedir(), ".factory", "registry.json"));

@@ -26,7 +26,7 @@ import { readJson, readEnvLines, machineEnvFile, firstLine } from "./paths.mjs";
 import { buildSessionSettings, detectStack, detectEngines, missingGitignoreEntries, misspelledGitignoreEntries } from "./workspace.mjs";
 import { SCHEDULE_KINDS, normalizeSchedule, validateDeclaration, compareInstalled } from "./schedule.mjs";
 import { nativeTrackerCheck } from "./forge.mjs";
-import { parseMilestones, unparsedMilestoneHeadings, parseBacklogTasks as parseTasksInDir, lintVerify } from "./backlog-index.mjs";
+import { parseMilestones, unparsedMilestoneHeadings, parseBacklogTasks as parseTasksInDir, lintVerify, MILESTONE_STATUSES } from "./backlog-index.mjs";
 import { jiraTracker } from "./jira.mjs";
 import { expectedOrigin, sameOrigin } from "./distribution.mjs";
 
@@ -285,6 +285,21 @@ export const runDoctor = (ctx) => {
     const r = nativeTrackerCheck(forge);
     check(r.level, r.name, r.detail);
   }
+  // Non-native trackers get the same filing-surface probe (T-021): their
+  // authCheck proves credentials, not that filings can land — jira's probes
+  // /myself, and a wrong project key still queues every question forever.
+  // Warn, never fail, for nativeTrackerCheck's own reason: doctor is the
+  // scheduled preflight, and a closed mailbox must not cancel a window that
+  // would otherwise ship working code.
+  if (tracker !== forge) {
+    const name = `${cfg.tracker} tracker reachability`;
+    try {
+      tracker.issueListOpen();
+      check("ok", name, "filing surface reachable");
+    } catch (e) {
+      check("warn", name, `could not read the tracker — needs-human questions will queue and retry: ${firstLine(e)}`);
+    }
+  }
 
   // 8. timers active + linger (Linux)
   if (process.platform === "linux" && resolveCmd("systemctl")) {
@@ -507,8 +522,11 @@ export const runDoctor = (ctx) => {
     const drift = unparsedMilestoneHeadings(text);
     const parsed = parseMilestones(text);
     if (drift.length) {
+      // The status vocabulary is named here because the heading shape alone
+      // was not enough: real factories carried headings with the right SHAPE
+      // and an off-vocabulary status, equally invisible to promote.
       check("warn", "milestone headings",
-        `${drift.length} heading(s) in backlog/index.md do not parse, so promote and the dashboard cannot see them — use \`## M<n>: <title> — <status>\`: ${drift.map((d) => d.trim()).join(" | ").slice(0, 120)}`);
+        `${drift.length} heading(s) in backlog/index.md do not parse, so promote and the dashboard cannot see them — use \`## M<n>: <title> — <status>\` with status one of ${[...MILESTONE_STATUSES].join("|")}: ${drift.map((d) => d.trim()).join(" | ").slice(0, 120)}`);
     } else if (parsed.length) {
       const active = parsed.filter((m) => m.status === "active").map((m) => m.id);
       check("ok", "milestone headings", `${parsed.length} parse clean${active.length ? ` (active: ${active.join(", ")})` : " (none active)"}`);
@@ -540,13 +558,17 @@ export const runDoctor = (ctx) => {
   //     shipping (fleet incident 2026-07-07: 12 sessions merged into dev
   //     totally ungated; 2026-07-23: live Bitbucket factories, zero CI).
   if ((cfg.autonomy ?? "").startsWith("auto-merge") || cfg.autonomy === "milestone-gates") {
-    const wf = path.join(project, ".github", "workflows");
-    const hasCi = fs.existsSync(wf) && fs.readdirSync(wf).some((f) => /\.ya?ml$/.test(f));
+    // The forge owns what "CI config present" means on its platform
+    // (github: .github/workflows/*.ya?ml; bitbucket: bitbucket-pipelines.yml)
+    // — reading .github/ here regardless of forge made every Bitbucket
+    // factory's real Pipelines invisible, passing only via gateCommand.
+    // Filesystem-only by contract: no network call, no PR rollup.
+    const ci = forge.hasCiConfig(project);
     const hasSuite = Boolean(cfg.gateCommand);
-    check(hasCi || hasSuite ? "ok" : "fail", "CI under auto-merge",
-      hasCi ? `workflows present${hasSuite ? " + gateCommand" : ""}`
+    check(ci || hasSuite ? "ok" : "fail", "CI under auto-merge",
+      ci ? `${ci}${hasSuite ? " + gateCommand" : ""}`
         : hasSuite ? `gateCommand: ${cfg.gateCommand}`
-          : "no CI and no gateCommand — the gate refuses to auto-merge; add workflows or set gateCommand in config.json");
+          : "no CI and no gateCommand — the gate refuses to auto-merge; add CI config or set gateCommand in config.json");
   }
 
   // 16. risk tiers must be well-formed — the gate reads a malformed shape as

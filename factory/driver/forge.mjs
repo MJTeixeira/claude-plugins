@@ -9,6 +9,11 @@
 // shapes the driver already consumes — a new forge maps its API to these):
 //   kind                    "github" | ...
 //   bin                     binary the doctor/preflight PATH checks look for
+//   hasCiConfig(dir)        evidence string ("workflows present" /
+//                           "pipelines present") when the checkout carries
+//                           this forge's CI config, else null. Filesystem
+//                           only — doctor calls it, and doctor rows must
+//                           never need the network.
 //   prListText()            human-readable open-PR list for the repo snapshot
 //   prListOpen()            [{number, url, title, headRefName, isDraft}] —
 //                           isDraft is how the driver tells a human's task
@@ -53,6 +58,8 @@
 // async namespace is the dashboard's resolve-never-reject contract.
 
 import { execFile, execFileSync } from "node:child_process";
+import * as fs from "node:fs";
+import * as path from "node:path";
 import { bitbucketForge } from "./bitbucket.mjs";
 import { jiraTracker } from "./jira.mjs";
 import { discordTracker } from "./discord.mjs";
@@ -79,6 +86,12 @@ const githubForge = ({ project, env = {} }) => {
   return {
     kind: "github",
     bin: "gh",
+    hasCiConfig: (dir) => {
+      const wf = path.join(dir, ".github", "workflows");
+      let files;
+      try { files = fs.readdirSync(wf); } catch { return null; }
+      return files.some((f) => /\.ya?ml$/.test(f)) ? "workflows present" : null;
+    },
 
     // Repo-snapshot options kept verbatim from the pre-forge driver: 30s cap
     // (the died-session wrap-up path must not stall a full minute) and

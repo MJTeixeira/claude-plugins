@@ -18,6 +18,7 @@ import { fileURLToPath } from "node:url";
 import { factoryKey, stateDir, writeJsonAtomic, readEnvFile, readJson, execGit, pidAlive, firstLine, TRUST_FLAGS } from "./paths.mjs";
 import { runMcpServer, SETTLED_STATUSES } from "./mcp-server.mjs";
 import { runDoctor as runDoctorChecks } from "./doctor.mjs";
+import { createHash } from "node:crypto";
 import { sendTelegram } from "./notify.mjs";
 import { makeNotifiers } from "./notify-route.mjs";
 import { senseMachineFacts, recordOutcome, threadTitle } from "./machine-threads.mjs";
@@ -2023,7 +2024,11 @@ const telegramLane = async (text) => {
     notifyWarned = true;
     return;
   }
-  await sendTelegram({ token, chatId }, `[${factoryName}] ${text}`,
+  // Return the transport's verdict: false = the send itself failed, which
+  // is what lets the KEEP lane mirror an emergency to the tracker (T-020).
+  // Telegram-off and creds-missing return undefined — configured-off is
+  // not a failed send.
+  return sendTelegram({ token, chatId }, `[${factoryName}] ${text}`,
     { timeoutMs: 5_000, log: (m) => log(`notify: ${m} — continuing`) });
 };
 const { notify, notifyActivity, notifyDigest } = makeNotifiers({
@@ -2074,9 +2079,14 @@ if (scheduled) {
   const results = runDoctor();
   senseMachine(results);
   const fails = results.filter((r) => r.level === "fail");
+  // warns ride beside fails so the dashboard tile can show them (T-019):
+  // measured 2026-08-06, 11 live warnings fleet-wide and every one invisible
+  // — a doctor warning was only ever seen by someone running doctor by hand.
+  const warns = results.filter((r) => r.level === "warn");
   fs.writeFileSync(path.join(logDir, "doctor.json"), JSON.stringify({
     ts: new Date().toISOString(), ok: !fails.length, source: "scheduled-preflight",
     fails: fails.map((r) => `${r.name}${r.detail ? ` — ${r.detail}` : ""}`),
+    warns: warns.map((r) => `${r.name}${r.detail ? ` — ${r.detail}` : ""}`),
   }, null, 2) + "\n");
   if (fails.length) {
     for (const r of fails) log(`scheduled preflight: ✗ ${r.name}${r.detail ? ` — ${r.detail}` : ""}`);
@@ -2526,7 +2536,24 @@ const processQuestions = async (newQuestions, context) => {
   if (s.pendingQuestions.length) {
     const summary = `${s.pendingQuestions.length} question(s) could not be filed — the tracker rejected them; queued, will retry next session: ${s.pendingQuestions.map((q) => q.title).join("; ")}`;
     log(`questions: ${summary}`);
-    await notify(`⚠ ${summary}`);
+    // Announce only when the stuck SET changes (T-021): a permanently dead
+    // tracker retried every session produced an unbounded stream of
+    // identical warnings (573 retries, 111 Telegram warnings for 20
+    // questions, 2026-07-23→28). The retry itself stays unbounded — only
+    // the announcement dedupes, on a hash of the set's content, so a new
+    // question (or a partially drained queue) announces again.
+    const stuckHash = createHash("sha256").update(JSON.stringify(
+      s.pendingQuestions.map((q) => [q.title, q.body ?? "", q.taskId ?? null]).sort()
+    )).digest("hex");
+    if (s.stuckQuestionsAnnounced === stuckHash) {
+      log("questions: same stuck set as the last announcement — retrying silently");
+    } else {
+      await notify(`⚠ ${summary}`);
+      s.stuckQuestionsAnnounced = stuckHash;
+    }
+  } else {
+    // Queue drained: the next failure is news again.
+    delete s.stuckQuestionsAnnounced;
   }
   writeState(s);
   return filed;

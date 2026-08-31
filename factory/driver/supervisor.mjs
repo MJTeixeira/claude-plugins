@@ -28,7 +28,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { stateDir, writeJsonAtomic, readJson, pidAlive } from "./paths.mjs";
-import { telegramCreds as scanTelegramCreds, sendTelegram } from "./notify.mjs";
+import { telegramCreds as scanTelegramCreds, sendTelegramWithRetry } from "./notify.mjs";
 import { generateSupervisorUnits, defaultPathLine } from "./schedule.mjs";
 
 const DRIVER = fileURLToPath(new URL("factory.mjs", import.meta.url));
@@ -170,7 +170,7 @@ const escalate = async ({ project, name, type, detail, key }) => {
   log(`escalation: ${name} ${type} — ${detail}`);
   const creds = telegramCreds();
   if (creds) {
-    await sendTelegram(creds, `[supervisor] 🚨 ${name}: ${type}\n${detail}`,
+    await sendTelegramWithRetry(creds, `[supervisor] 🚨 ${name}: ${type}\n${detail}`,
       { log: (m) => log(`${m} — outbox record stands`) });
   }
   return true;
