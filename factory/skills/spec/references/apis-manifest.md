@@ -39,6 +39,16 @@ Vendoring rules:
   lint maps spec→generation by that segment), and the project spec +
   manifest name which generation NEW code targets.
 - Oracle files live under `docs/apis/<api>/`.
+- Upstream versioning that lives in `servers` rather than `paths` (how
+  OpenAPI normally versions): prefix every path with the generation
+  segment at vendoring time — the lint matches whole request paths, so
+  an unprefixed bundle fails every call. Path-level `$ref`-only specs:
+  inline one level so methods are present in the vendored JSON (deeper
+  schema refs stay as-is). Record each transform in an
+  `x-vendored-note` field.
+- Mechanical transforms belong in a committed owner-side vendoring
+  script (upstream pin as an argument) so a refresh is reproducible —
+  the script is owner-side, exactly like the refresh.
 
 ## `docs/apis.json`
 
@@ -73,7 +83,27 @@ Optional per entry, consumed by the endpoint lint: `hosts` — the API's
 request host(s), required for sdk-rung enforcement (a raw HTTP call
 naming one fails: it bypasses the SDK); `claims` — path prefixes this
 API owns, when the default claim set (the oracle's first path segments
-plus the `generations` keys) misses part of its surface.
+plus the `generations` keys) misses part of its surface; `documented` —
+real endpoints the vendor documents only OUTSIDE its machine-readable
+spec (OAuth token endpoints are the norm, not a quirk): a list of
+`{"path": "/oauth/token", "source": "<doc path or URL>", "note": "..."}`
+— `note` optional but wanted: why this path cannot be in the oracle and
+where it is used, the judgement a reviewer cannot reconstruct from
+bytes. Unknown keys anywhere in the manifest are ignored by design
+(the property that lets manifests land ahead of a runtime). The lint
+treats an exact path match as sourced (method-agnostic) while a
+near-miss still fails — typo protection without demanding the path
+appear in a spec that does not cover it; response-shape evidence stays
+grader-citation via the named source. Like everything in this file,
+`documented` is owner-side: the lint flags session diffs of
+`docs/apis.json` itself. Intended use is proactive: list every real,
+cited path — including ones nothing scans today — so a later refactor
+into a scanned shape is already sourced instead of newly failing. The
+lint verifies the careless case: a missing or nonexistent `source`
+FAILS; a URL citation WARNS (vendor a snapshot); a cited file that
+never names the path WARNS. Entries are inert on runtimes older than
+the lint (unknown manifest keys are ignored), so manifests can land
+ahead of a fleet deploy.
 
 ## Provenance (what makes an oracle a source)
 
