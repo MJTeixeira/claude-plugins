@@ -102,6 +102,16 @@ key), and a live session tickets it.
   = only the owner clears it (there is an open question or a human gate).
   Never downgrade `needs-human` to `blocked`; flip it to `todo` only when
   the owner's answer/approval is actually in.
+- **A park is a dossier the owner can decide from alone.** Whenever you park
+  — an `open_question`, or a task you author straight to `needs-human` (its
+  `Notes:` carry the same content) — write four parts, in this order: the
+  ask in one line (shape per the owner-message format,
+  `factory/specs/owner-message-format.md`: decision first, evidence after);
+  the closable question — the exact decision only the owner can take,
+  phrased so a one-word reply resolves it; the evidence; and your own
+  recommendation with its reason. Any risk the note names also names who resolves it (owner, next
+  session, a peer). A one-liner park is a defect: it forces the owner to
+  re-derive the problem before they can clear it.
 - A `- Retried:` line on a parked task is the driver's stale-parked retry
   record: an escalated session already re-tested the recorded blocker, once and
   only once per park. `recovered` means the task is back in the working pool;
