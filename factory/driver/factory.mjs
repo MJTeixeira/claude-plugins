@@ -515,6 +515,41 @@ const recordUsage = ({ factoryDir, sessionLogPath, mode, taskId, status, model, 
 // ledger; metrics.jsonl feeds plan correction and the no-progress breaker
 // (chunk 6). Called from recordUsage so every session that exists in the
 // spend ledger has a metrics row — a new mode can't add one and miss the other.
+// Denial detail beside the count (issue 01, zeroone near-miss 2026-08-31):
+// grouped per tool with redacted heads — the allow-rule-shaped prefix a
+// reader needs to widen the dontAsk baseline — never argument text, which
+// is where credential-shaped input sits (curl -H tokens, inline env
+// values, URL query strings). A Bash head drops leading VAR= assignments
+// whole (value included) and stops at the first word that isn't a plain
+// token, so quoted strings and URLs never reach the row.
+const PLAIN_WORD = /^[A-Za-z0-9._/@-]+$/;
+const denialHead = (input) => {
+  if (typeof input?.command === "string") {
+    const words = input.command.trim().split(/\s+/);
+    while (words.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[0])) words.shift();
+    const head = [];
+    for (const w of words) {
+      if (head.length === 3 || !PLAIN_WORD.test(w)) break;
+      head.push(w);
+    }
+    return head.join(" ") || null;
+  }
+  return typeof input?.file_path === "string" ? input.file_path : null;
+};
+const summariseDenials = (list) => {
+  if (!Array.isArray(list) || !list.length) return null;
+  const by = new Map();
+  for (const d of list) {
+    const tool = d?.tool_name ?? "unknown";
+    const e = by.get(tool) ?? { tool, n: 0, heads: [] };
+    e.n++;
+    const head = denialHead(d?.tool_input);
+    if (head && e.heads.length < 3 && !e.heads.includes(head)) e.heads.push(head);
+    by.set(tool, e);
+  }
+  return [...by.values()].map(({ tool, n, heads }) => (heads.length ? { tool, n, heads } : { tool, n }));
+};
+
 const recordMetrics = ({ factoryDir, sessionLogPath, mode, taskId, status, model }) => {
   const { result, trajectory, tools, billed } = parseSessionStream(sessionLogPath);
   // A result event names its own end; without one, surviving assistant
@@ -532,6 +567,7 @@ const recordMetrics = ({ factoryDir, sessionLogPath, mode, taskId, status, model
     peakContext: trajectory.length ? Math.max(...trajectory.map((t) => t.context)) : null,
     trajectory,
     denials: Array.isArray(result?.permission_denials) ? result.permission_denials.length : null,
+    deniedTools: summariseDenials(result?.permission_denials),
     tools,
   };
   fs.appendFileSync(path.join(factoryDir, "log", "metrics.jsonl"), JSON.stringify(row) + "\n");
@@ -3053,6 +3089,13 @@ const failingNote = ({ pr, taskId, head }) =>
   `Your first job: checkout ${head}, reproduce and fix the failures, push. ` +
   `The driver merges once checks are green — do NOT merge yourself.`;
 
+const silentCiNote = ({ pr, taskId, head }) =>
+  `PR ${pr}${taskId ? ` (task ${taskId})` : ""} has NO check results on branch ${head}, yet the repo ` +
+  `carries CI workflow files — CI exists but never reported, and absence of green never counts as green. ` +
+  `Likely causes: path filters that skip this diff, a workflow that doesn't trigger on pull requests, or a dead runner. ` +
+  `Your first job: diagnose why no check reported on ${head}, fix the workflow (or flag the runner at needs-human), push. ` +
+  `The driver merges once checks are green — do NOT merge yourself.`;
+
 // The gate floor (autonomy epic): run the repo's own suite (config
 // `gateCommand`) against the merged tree sitting uncommitted in the meta
 // worktree. Branch-side tests proved the branch; only this proves the
@@ -3527,8 +3570,18 @@ const landMerge = async ({ pr, view, taskId }) => {
 // not clearly settled — in-flight, queued, unknown states — is "wait".
 const ROLLUP_FAIL = new Set(["FAILURE", "ERROR", "TIMED_OUT", "STARTUP_FAILURE", "CANCELLED", "ACTION_REQUIRED"]);
 const ROLLUP_PASS = new Set(["SUCCESS", "NEUTRAL", "SKIPPED"]);
-const rollupState = (checks) => {
-  if (!checks?.length) return "none"; // repo without CI — nothing to wait for
+// An empty rollup is only "no CI" when the repo truly carries no CI config
+// (`forge.hasCiConfig` — the forge owns what that means, same read as
+// doctor's `CI under auto-merge` row; it sees the driver-owned project
+// checkout, clean and on base at every boundary, so a PR that deletes the
+// workflows cannot talk its own gate down). With CI config present, empty
+// means CI never REPORTED — path filters, a PR-less trigger, a dead runner
+// — and that is blindness, not green (T-045; mithril-cicd's 0.31.0 scar:
+// "absence of green never counts as green"). An unreadable dir reads as
+// no-CI, which only degrades to the pre-T-045 floor (gateCommand or the
+// refusal below), never to a merge on nothing.
+const rollupState = (checks, ciExpected) => {
+  if (!checks?.length) return ciExpected ? "silent" : "none"; // silent = CI configured but no check reported; none = repo without CI
   let pending = false;
   for (const c of checks) {
     const s = String(c.conclusion ?? c.state ?? "").toUpperCase(); // CheckRun.conclusion | StatusContext.state
@@ -3540,6 +3593,7 @@ const rollupState = (checks) => {
 
 const gatePass = async ({ pr, taskId }, budgetMs) => {
   const deadline = Date.now() + budgetMs;
+  const ciExpected = Boolean(forge.hasCiConfig(project)); // once per gate pass — CI config doesn't move under a wait loop
   while (true) { // always at least one pass — zero-budget callers (no-wait sweeps) still get a verdict
     let view;
     try {
@@ -3578,17 +3632,24 @@ const gatePass = async ({ pr, taskId }, budgetMs) => {
       log(`merge-gate: ${pr} is CONFLICTING with ${cfg.baseBranch} — leaving for the next session`);
       return conflictNote({ pr, taskId, head: view.headRefName });
     }
-    const checks = rollupState(view.statusCheckRollup);
+    const checks = rollupState(view.statusCheckRollup, ciExpected);
     if (checks === "fail") {
       // A failing PR needs a session to fix it, same as a conflicting one
       // (a fleet PR, #50, sat failing with no instruction to anyone).
       log(`merge-gate: checks FAILING on ${pr} — leaving for the next session`);
       return failingNote({ pr, taskId, head: view.headRefName });
     }
-    if (checks === "pending") {
+    if (checks === "pending" || checks === "silent") {
+      // "silent" waits like pending — the rollup may just not have its first
+      // check yet — but at the deadline it leaves the diagnose note instead
+      // of falling through to a later pass: never a merge on blindness.
       if (Date.now() + 20_000 <= deadline) {
         await sleep(20_000); // checks still running
         continue;
+      }
+      if (checks === "silent") {
+        log(`merge-gate: no check results on ${pr} but the repo carries CI workflow files — silent CI, leaving the diagnose note`);
+        return silentCiNote({ pr, taskId, head: view.headRefName });
       }
       log(`merge-gate: checks still pending on ${pr} — leaving it for a later gate pass`);
       return null;

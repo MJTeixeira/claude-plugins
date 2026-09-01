@@ -101,6 +101,18 @@ summary.
 - Respect the escalation rule strictly: ~3 failed attempts with no new
   information → call `open_question` with the question and your findings,
   report status `blocked`, and end the session.
+- **A park is a dossier, not a distress signal.** The owner must be able to
+  decide from the note alone. Every `open_question` that parks a task
+  carries four parts, in this order: the ask in one line (the
+  owner-message format — `factory/specs/owner-message-format.md` — governs
+  the shape: lead with the decision, evidence after, never the reverse);
+  the closable question — the exact decision only the owner can take,
+  phrased so a one-word reply resolves it; the evidence (what you tried
+  and what you saw, verbatim per the re-testable rule below); and your own
+  recommendation with its reason — you chewed the problem, never hand it
+  back raw. If the note names risks or follow-ups, each one names who
+  resolves it (owner, next session, a peer) — a problem without an
+  explicit owner does not exist.
 - **A recorded blocker must be re-testable.** When the blocker is an
   environment or permission failure, your question and summary carry the
   EXACT command that failed and its verbatim first error line — never a

@@ -261,7 +261,13 @@ between `git merge --no-commit` and the push; red aborts the merge and
 leaves a fix note). A repo with NEITHER CI checks nor a `gateCommand`: the
 gate refuses to auto-merge and doctor fails (`CI under auto-merge`). The
 session's branch-side tests never stand in for either — they proved the
-branch, not the combination with base.
+branch, not the combination with base. The rollup verdict is three-state
+(T-045): green merges, red leaves the fix note, and absent-but-expected —
+an empty rollup while the repo carries CI config (`forge.hasCiConfig`,
+the same read as doctor's row) — is blindness, not "no CI": the gate waits
+its budget, then leaves a diagnose note naming the silent-CI condition,
+never a merge. Only a repo with genuinely no CI config reaches the
+gateCommand-as-floor path.
 
 **Risk tiers (autonomy epic, 1.10.0):** some paths are the owner's to
 judge no matter what the checks say. A PR touching a prefix listed in
@@ -901,8 +907,14 @@ the real ones.
   records only — the one number a turn budget may be set against, since
   `--max-turns` never counts subagent turns), `peakContext`, per-turn `trajectory`
   (`{output, context}` per assistant message), permission-`denials` count
-  (null when no result event recorded it), and a `tools` name→count
-  histogram. Written wherever a usage row is written — one ledger row and
+  (null when no result event recorded it) plus `deniedTools` — the same
+  denials grouped per tool as `{tool, n, heads}`, where `heads` (up to 3,
+  distinct) are redacted prefixes: a Bash command's leading `VAR=`
+  assignments dropped whole and the first three plain words kept, stopping
+  at any quoted/URL/operator token, so a silent dontAsk denial names the
+  capability it blocked (`gh pr merge`) without ever persisting argument
+  text; file tools contribute their `file_path`, other tools count only —
+  and a `tools` name→count histogram. Written wherever a usage row is written — one ledger row and
   one metrics row per session, every mode. usage.jsonl stays the spend
   ledger; metrics.jsonl feeds plan correction and the no-progress breaker
   (chunk 6). Dev rows carry a `taskId`: a settled report's id verbatim
@@ -991,6 +1003,19 @@ merge commit; a CONFLICTING PR is left with an exact rebase instruction for
 the next session, and at window end a sweep gives every still-open green
 factory PR one more gate pass. Poll budget:
 `config.json → mergeGateMinutes` (default 10).
+
+The rollup verdict is three-state (§Architecture & contracts, gate floor):
+green merges, red leaves the fix note, and absent-but-expected is
+blindness, not green. An empty rollup only means "repo without CI" when
+`forge.hasCiConfig` finds no CI config — the forge owns what that means
+(github: `.github/workflows/*.yml|yaml`; bitbucket:
+`bitbucket-pipelines.yml`), read from the driver-owned project checkout;
+with CI config present it means CI never reported — path filters, a
+workflow that doesn't trigger on pull requests, a dead runner — so the gate
+waits its budget like pending, then leaves a diagnose note naming the
+silent-CI condition and never falls through to a merge (T-045; adopted from
+mithril-cicd's scar: absence of green never counts as green). Only a repo
+with genuinely no CI reaches the gateCommand-as-floor path below.
 
 The gate floor rides the same local merge: set `config.json → gateCommand`
 (e.g. `"npm ci --silent && npm test"`) and the driver runs it on the merged
