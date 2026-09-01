@@ -47,6 +47,7 @@ export const runMcpServer = async ({ project, eventsPath, stateDir, loadConfig }
           status: { type: "string", enum: REPORT_STATUSES },
           summary: { type: "string", description: "2-3 sentences: what happened, what's next" },
           pr: { type: ["string", "null"], description: "PR url once one exists" },
+          friction: { type: ["string", "null"], description: "optional, ≤3 lines (truncated at 300 chars): what fought you this session — tooling, prompts, environment — not the task's own difficulty; skip it when nothing did" },
         },
         required: ["status", "summary"],
       },
@@ -54,7 +55,10 @@ export const runMcpServer = async ({ project, eventsPath, stateDir, loadConfig }
         if (!REPORT_STATUSES.includes(a.status)) return { error: `status must be one of: ${REPORT_STATUSES.join(", ")}` };
         const summary = str(a.summary, 2000);
         if (!summary) return { error: "summary (non-empty string) is required" };
-        const row = { taskId: str(a.taskId, 80), status: a.status, summary, pr: str(a.pr, 300) };
+        // friction (T-050): free text for a future retro pass — recorded with
+        // the row, read by nothing in the driver; over-length truncates, never
+        // rejects (a session must not lose its report over a long complaint).
+        const row = { taskId: str(a.taskId, 80), status: a.status, summary, pr: str(a.pr, 300), friction: str(a.friction, 300) };
         record("report_status", row);
         return { text: `recorded: ${row.taskId ?? "(no task)"} → ${row.status}` };
       },

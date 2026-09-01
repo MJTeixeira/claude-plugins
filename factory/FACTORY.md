@@ -835,7 +835,10 @@ the real ones.
   driver's stdio MCP server (`factory/driver/mcp-server.mjs`; v2 O2: `report_status`, `open_question`,
   `log_progress`, plus `create_pr` since factory 1.7.0,
   `post_daily_log` since 1.8.0 and `promote_milestone` since 2.6.0
-  (triage-only; §Autonomy above) — the driver opens PRs and posts the
+  (triage-only; §Autonomy above); since 2.8.0 `report_status` takes an
+  optional `friction` field (≤300 chars, truncated never rejected) —
+  what fought the session, recorded in its `.mcp.jsonl` row for a future
+  retro pass (docs/retro-criteria.md), read by nothing in the driver — the driver opens PRs and posts the
   daily log itself via the forge/tracker adapters with its own
   credentials, and pre-collects every forge/tracker READ into the
   triage/report prompts' `## Forge inputs` section, so sessions never
