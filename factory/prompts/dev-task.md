@@ -233,6 +233,9 @@ write can talk it past a criterion — make the criteria actually pass.
    spawn another session, whether to watch your PR's checks, and what to
    write into the backlog. (Fallback only if the factory tools are
    missing: write the same fields to `.factory/log/last-session.json`.)
+   If something fought you this session — tooling, prompts, environment,
+   not the task's own difficulty — name it in the optional `friction`
+   field (≤3 lines); skip it when nothing did.
 
 Context filling up mid-task is expected: don't rush — hand off cleanly
 (steps 1-3) and let the next session continue.
