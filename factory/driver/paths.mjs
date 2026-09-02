@@ -47,8 +47,11 @@ export const readEnvLines = (file) => {
 // Machine-shared credentials (spec: machine-credentials, 2026-08-18): creds
 // every factory on the box uses live in ONE file inside the owner's
 // ~/secrets pattern, so rotation edits one file, not one per project. ONLY
-// this file auto-loads — other ~/secrets/*.env are service creds a factory
-// session must never see unless the project opts in explicitly.
+// this file auto-loads into factory sessions — other ~/secrets/*.env are
+// service creds a session must never see unless the project opts in
+// explicitly. (The fleet-publisher daemon reads its own credential from
+// ~/secrets/fleet-publisher.env, but that never reaches a session's env —
+// see fleet-publisher.mjs, T-051.)
 export const machineEnvFile = (home = os.homedir()) =>
   path.join(home, "secrets", "factory-shared.env");
 

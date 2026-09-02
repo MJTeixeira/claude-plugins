@@ -393,16 +393,22 @@ export const inactiveEpics = (indexText) => {
     const out = new Map();
     for (const m of ms) {
       if (m.status === "active" || !m.status) continue;
-      for (const e of m.epics) out.set(e.file.replace(/\.md$/, ""), { id: m.id, status: m.status });
+      for (const e of m.epics) out.set(epicKey(e.file), { id: m.id, status: m.status });
     }
     return out;
   } catch { return new Map(); }
 };
+
+// An epic's key: its file's base name. Tasks carry it as `epic`, milestone
+// entries carry the file — this is the ONE join between them, so the strip
+// lives once (two private copies of it already diverged before this module
+// existed; see the header).
+export const epicKey = (file) => file.replace(/\.md$/, "");
 
 // Every task in a backlog directory. index.md holds milestones, never tasks.
 export const parseBacklogTasks = (backlogDir) => {
   if (!fs.existsSync(backlogDir)) return [];
   return fs.readdirSync(backlogDir)
     .filter((f) => f.endsWith(".md") && f !== "index.md")
-    .flatMap((f) => parseTaskFile(fs.readFileSync(path.join(backlogDir, f), "utf8"), f.replace(/\.md$/, "")));
+    .flatMap((f) => parseTaskFile(fs.readFileSync(path.join(backlogDir, f), "utf8"), epicKey(f)));
 };
