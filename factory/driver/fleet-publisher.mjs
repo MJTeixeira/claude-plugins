@@ -11,6 +11,10 @@
 //   node fleet-publisher.mjs                  # daemon: connect and hold
 //   node fleet-publisher.mjs --once --offline # print the fresh-connection
 //                                             # envelopes as JSONL, no socket
+//   node fleet-publisher.mjs install [--yes]  # install + enable the systemd
+//                                             # unit (T-062); systemd hosts
+//                                             # only, per the fleet-control
+//                                             # spec's Further Notes
 //
 // Config comes from the machine-shared env file the driver already owns
 // (~/secrets/factory-shared.env — the one machine-level config home):
@@ -35,6 +39,9 @@ import { pathToFileURL } from "node:url";
 import { gatherInventory } from "./fleet-inventory.mjs";
 import { claimedProjects, gatherSnapshots } from "./fleet-snapshot.mjs";
 import { machineEnvFile, readEnvLines } from "./paths.mjs";
+import { PLATFORM_SCHEDULER } from "./config.mjs";
+import { generatePublisherUnits, defaultPathLine } from "./schedule.mjs";
+import { installMachineUnit } from "./unit-install.mjs";
 
 // The close code the collector sends for an invalid credential (its
 // ws.close(4401, "invalid credential") after a completed upgrade). An
@@ -219,6 +226,39 @@ export const loadConfig = (home = os.homedir(), env = process.env) => {
 
 const main = async () => {
   const args = process.argv.slice(2);
+
+  // install (T-062): generate the unit beside the supervisor's and install
+  // it through the same installer. The unit execs the ONE gated machine
+  // runtime (deploy-runtime.mjs advances it), never whichever checkout ran
+  // install — same premise as the supervisor's installer. Enrollment order
+  // matters: place the machine env + credential BEFORE installing, or the
+  // daemon's config exit loops into the start limit and pages the owner.
+  if (args[0] === "install") {
+    const extra = args.slice(1).filter((a) => a !== "--yes");
+    if (extra.length) {
+      process.stderr.write(`error: unknown argument: ${extra[0]}\n`);
+      process.exit(2);
+    }
+    const home = os.homedir();
+    const kind = PLATFORM_SCHEDULER[process.platform] ?? "manual";
+    const { files, notes } = generatePublisherUnits(kind, {
+      runtimePublisher: path.join(home, ".factory", "runtime", "factory", "driver", "fleet-publisher.mjs"),
+      nodeBin: process.execPath,
+      pathLine: defaultPathLine(process.execPath, home),
+    });
+    if (notes.length) {
+      process.stderr.write(`error: ${notes.join("; ")}\n`);
+      process.exit(1);
+    }
+    try {
+      await installMachineUnit(kind, files, { yes: args.includes("--yes") });
+    } catch (e) {
+      process.stderr.write(`error: ${e.message}\n`);
+      process.exit(1);
+    }
+    process.exit(0);
+  }
+
   const known = new Set(["--once", "--offline"]);
   const unknown = args.find((a) => !known.has(a));
   if (unknown) {

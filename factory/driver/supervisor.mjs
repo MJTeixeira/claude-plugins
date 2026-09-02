@@ -30,6 +30,7 @@ import { fileURLToPath } from "node:url";
 import { stateDir, writeJsonAtomic, readJson, pidAlive } from "./paths.mjs";
 import { telegramCreds as scanTelegramCreds, sendTelegramWithRetry } from "./notify.mjs";
 import { generateSupervisorUnits, defaultPathLine } from "./schedule.mjs";
+import { installMachineUnit } from "./unit-install.mjs";
 
 const DRIVER = fileURLToPath(new URL("factory.mjs", import.meta.url));
 
@@ -508,44 +509,7 @@ const installUnit = async (yes) => {
     logDir: supDir,
   });
   fs.mkdirSync(supDir, { recursive: true });
-  const run = (cmd, cmdArgs) => execFileSync(cmd, cmdArgs, { encoding: "utf8", timeout: 60_000, stdio: ["ignore", "pipe", "pipe"] });
-  const say = (m) => process.stdout.write(m + "\n");
-  const confirm = async (what) => {
-    if (yes) return;
-    if (!process.stdin.isTTY) fail("not a TTY — rerun with --yes to confirm the install");
-    const readline = await import("node:readline/promises");
-    const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-    const a = (await rl.question(`${what} [y/N]: `)).trim();
-    rl.close();
-    if (!/^y(es)?$/i.test(a)) fail("aborted — nothing changed");
-  };
-
-  if (kind === "systemd") {
-    const dir = path.join(home, ".config", "systemd", "user");
-    const name = "factory-supervisor.service";
-    await confirm(`install + enable ${name} (systemd user unit, Restart=always)?`);
-    fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(path.join(dir, name), files[name]);
-    // The dumb-outer-net companion the unit's OnFailure names — installed
-    // when absent, never overwritten (same rule as schedule --install).
-    const companionSrc = fileURLToPath(new URL("../schedulers/factory-onfailure@.service", import.meta.url));
-    if (!fs.existsSync(path.join(dir, "factory-onfailure@.service")) && fs.existsSync(companionSrc)) {
-      fs.copyFileSync(companionSrc, path.join(dir, "factory-onfailure@.service"));
-    }
-    run("systemctl", ["--user", "daemon-reload"]);
-    run("systemctl", ["--user", "enable", "--now", name]);
-    say(`installed and started ${name} (remember: loginctl enable-linger keeps user units alive after logout)`);
-  } else {
-    const dir = path.join(home, "Library", "LaunchAgents");
-    const name = "com.factory.supervisor.plist";
-    const dest = path.join(dir, name);
-    await confirm(`install + load ${name} (launchd KeepAlive agent)?`);
-    fs.mkdirSync(dir, { recursive: true });
-    if (fs.existsSync(dest)) { try { run("launchctl", ["unload", dest]); } catch { /* was not loaded */ } }
-    fs.writeFileSync(dest, files[name]);
-    run("launchctl", ["load", dest]);
-    say(`installed and loaded ${name}`);
-  }
+  try { await installMachineUnit(kind, files, { yes }); } catch (e) { fail(e.message); }
 };
 
 const [command, ...rest] = process.argv.slice(2);
