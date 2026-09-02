@@ -216,6 +216,30 @@ ${cal}
   return { files, notes };
 };
 
+// One machine-daemon systemd service shape, shared by the supervisor (PR-D)
+// and the fleet-publisher (T-062): always-restarting under an explicit start
+// limit whose OnFailure companion reaches the phone when restarts give up.
+const daemonService = (description, execStart, pathLine) => `[Unit]
+Description=${description}
+# Dumb outer net (O6): fires when restarts give up (start-limit), so a
+# daemon stuck in a crash loop still reaches the phone. The explicit
+# start-limit matters: with Restart=always and systemd's default 10s burst
+# window, RestartSec=10 restarts would never trip it and OnFailure would
+# never fire.
+OnFailure=factory-onfailure@%n.service
+StartLimitIntervalSec=600
+StartLimitBurst=5
+
+[Service]
+Environment=PATH=${pathLine}
+ExecStart=${execStart}
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=default.target
+`;
+
 // Supervisor daemon unit (PR-D): machine-level, one per machine, no project.
 // The OS keeps it alive (systemd Restart=always / launchd KeepAlive) — a
 // supervisor that dies silently is the exact failure it exists to prevent.
@@ -226,26 +250,9 @@ export const generateSupervisorUnits = (kind, ctx) => {
   const files = {};
   const notes = [];
   if (kind === "systemd") {
-    files["factory-supervisor.service"] = `[Unit]
-Description=Factory fleet supervisor (hung-window killer, relaunch directives, escalations)
-# Dumb outer net (O6): fires when restarts give up (start-limit), so a
-# supervisor stuck in a crash loop still reaches the phone. The explicit
-# start-limit matters: with Restart=always and systemd's default 10s burst
-# window, RestartSec=10 restarts would never trip it and OnFailure would
-# never fire.
-OnFailure=factory-onfailure@%n.service
-StartLimitIntervalSec=600
-StartLimitBurst=5
-
-[Service]
-Environment=PATH=${pathLine}
-ExecStart=${nodeBin} ${runtimeSupervisor}
-Restart=always
-RestartSec=10
-
-[Install]
-WantedBy=default.target
-`;
+    files["factory-supervisor.service"] = daemonService(
+      "Factory fleet supervisor (hung-window killer, relaunch directives, escalations)",
+      `${nodeBin} ${runtimeSupervisor}`, pathLine);
   } else if (kind === "launchd") {
     files["com.factory.supervisor.plist"] = `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -267,6 +274,28 @@ WantedBy=default.target
 `;
   } else {
     notes.push(`kind "${kind}" has no keep-alive process manager — the supervisor needs systemd or launchd`);
+  }
+  return { files, notes };
+};
+
+// Fleet-publisher daemon unit (T-062): the same machine-daemon shape as the
+// supervisor's — its own unit, its own process, belonging to no project.
+// systemd ONLY, deliberately: the fleet-control spec (Further Notes, pin
+// a664b4f) ships no launchd branch — the enrolled fleet is systemd machines,
+// and the Mac drives the collector attended with a throwaway id, never an
+// installed daemon. The die-loudly exit on sustained credential rejection
+// (D-009 (7)) relies on this exact start-limit + OnFailure pair: the fatal
+// exit loops into the start limit and the companion pages the owner.
+export const generatePublisherUnits = (kind, ctx) => {
+  const { runtimePublisher, nodeBin, pathLine } = ctx;
+  const files = {};
+  const notes = [];
+  if (kind === "systemd") {
+    files["factory-fleet-publisher.service"] = daemonService(
+      "Fleet-control publisher (machine inventory + board snapshots)",
+      `${nodeBin} ${runtimePublisher}`, pathLine);
+  } else {
+    notes.push(`kind "${kind}" hosts no publisher — it targets systemd machines only (fleet-control spec, Further Notes); drive it attended with --once instead`);
   }
   return { files, notes };
 };

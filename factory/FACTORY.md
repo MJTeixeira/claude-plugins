@@ -90,6 +90,48 @@ updates this section in the same PR.
    the monitor contract below — the product ships the interface, not the
    monitor.
 
+### The fleet publisher (machine daemon)
+
+`factory/driver/fleet-publisher.mjs` is the machine's second daemon beside
+the supervisor, deliberately its own process (fleet-control ADR-0005: the
+supervisor's hang path blocks its own event loop for minutes, and a
+publisher that goes silent whenever the supervisor is busy makes the whole
+fleet surface lie). It holds ONE outbound WebSocket to the fleet-control
+collector, beats the machine inventory every 60s
+(`fleet-inventory.mjs`) and sends one full snapshot per claimed project
+(`fleet-snapshot.mjs`); every wire shape is written in `fleet-wire.mjs`
+and nowhere else.
+
+- **Config**: identity and collector URL from the machine-shared env file
+  (`~/secrets/factory-shared.env`: `FLEET_MACHINE_ID` — explicit, never a
+  hostname derivation — and `FLEET_CONTROL_URL`). The credential lives
+  apart per the secrets discipline (`~/secrets/fleet-publisher.env`:
+  `FLEET_PUBLISHER_SECRET`) and travels only as a bearer header.
+- **Install** (T-062): `fleet-publisher.mjs install [--yes]` — the unit is
+  generated beside the supervisor's in `schedule.mjs`
+  (`generatePublisherUnits`) and installed through the same installer
+  (`unit-install.mjs`), as `factory-fleet-publisher.service`: a
+  machine-level unit belonging to no project, `Restart=always` under an
+  explicit start limit with the `factory-onfailure@` companion, enabled at
+  boot. **systemd hosts only** — the fleet-control spec (Further Notes)
+  ships no launchd branch; a non-enrolled machine drives a collector
+  attended with a throwaway id (`--once` / foreground), never an installed
+  daemon.
+- **Failure posture** (fleet-control D-009): unreachability retries
+  forever with capped backoff and never exits — a collector restarting
+  under its own pull-deploy is normal. Credential rejection sustained past
+  the configured window exits non-zero; the exit loops into the unit's
+  start limit and the OnFailure companion pages the owner — rejection is
+  the one failure invisible to both systemd and the board, so it must die
+  loudly.
+- **Enrollment is attended**: place the env values and the credential
+  BEFORE `install` (a daemon installed with no config exits repeatedly and
+  pages). The enrolled-machine id list is fleet metadata (`~/matrix`
+  `machines.json`, ids only); each machine's secret is placed in that
+  machine's own secret location, and the collector receives the list
+  through its deploy environment on its host — no repo ever holds a
+  secret.
+
 ### The origin-rendezvous invariant
 
 **Origin is the rendezvous point.** Factory sessions start from
