@@ -2696,7 +2696,21 @@ const parkNeedsHuman = (filed, result = null) => {
   if (!park.length) return { applied: [], touched: false };
   const applied = applyFlips(park.map((q) => ({ taskId: q.taskId, status: "needs-human" })));
   let linked = false;
-  for (const q of park) if (q.url && addTaskLinkInFiles(q.taskId, q.url)) linked = true;
+  // parkedBy: "blocked" when THIS question is the one the session filed
+  // while ending that same task at status `blocked` (its own stuck report);
+  // "question" for every other task-tied question (triage, or a mid-session
+  // ask that left the task at some other status). Dedupe on the flip
+  // landing, same as risk/grade-breaker — applyFlips also drains unrelated
+  // pendingFlips, so a bare applied.length would mislabel a park it didn't
+  // just cause.
+  const s = readState();
+  for (const q of park) {
+    if (applied.some((a) => a.startsWith(`${q.taskId} `)) && s.tasks[q.taskId]) {
+      s.tasks[q.taskId].parkedBy = result?.taskId === q.taskId && result?.status === "blocked" ? "blocked" : "question";
+    }
+    if (q.url && addTaskLinkInFiles(q.taskId, q.url)) linked = true;
+  }
+  writeState(s);
   // touched: an uncommitted meta edit dies at the next refreshMeta — the
   // caller must commit even when only the link line changed.
   return { applied, touched: applied.length > 0 || linked };
@@ -4699,6 +4713,10 @@ while (true) {
         // Park even when the tracker rejected the question (it stays queued):
         // a dead tracker must not disable the breaker.
         const applied = applyFlips([{ taskId: bTask, status: "needs-human" }]);
+        if (applied.some((a) => a.startsWith(`${bTask} `))) {
+          const sParked = readState();
+          if (sParked.tasks[bTask]) { sParked.tasks[bTask].parkedBy = "no-progress-breaker"; writeState(sParked); }
+        }
         noteRuntimeStatus(bTask, "needs-human");
         let linked = false;
         for (const q of filed) if (q.taskId === bTask && q.url && addTaskLinkInFiles(bTask, q.url)) linked = true;
