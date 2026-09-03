@@ -1039,6 +1039,27 @@ that starts with zero actionable tasks skips itself BEFORE spawning a paid
 session (logs + notifies "window skipped"); an empty backlog still gets its
 probe session.
 
+A task parked at `needs-human` carries its park's reason on `state.json`'s
+`tasks[id].parkedBy`, so a reader tells a gate from a risk from a question
+from a breaker without re-deriving any of them. Values: `risk` (a green PR
+touching a `riskTiers.high` path), `grade-breaker` (the acceptance grader
+failed a fresh head `gradeFailLimit` times running), `no-progress-breaker`
+(`dev --until-done` burned `noProgressSessions` sessions on a task without
+it settling), `question` (a task-tied `open_question`, filed from triage or
+mid-session, whose owning session did not end that same task at status
+`blocked`), and `blocked` (a session's own `open_question` filed alongside
+ending that task at status `blocked` — sessions never self-report
+`needs-human` directly, so this is how the driver tells "I am stuck" from "I
+found something to ask about while otherwise progressing"). `Gate: human`
+parks are the one exception: the reason is
+derived at check time from the task block's own `Gate:` field and never
+written to `parkedBy` — recording it would invent a state the driver does
+not carry. A hand-placed park (an owner editing `Status: needs-human`
+directly in the backlog) carries no `parkedBy` at all, which stays valid:
+the field is absent, never invented. Values are additive only — `risk` and
+`grade-breaker` keep the meaning every existing equality check already
+gives them.
+
 Under `auto-merge-dev`, a session that ends at status `review` with a PR url
 hands the merge to the driver: it polls the PR's check rollup via `gh pr view`
 (free, no tokens — deliberately NOT `gh pr checks`, which misreads in-flight
