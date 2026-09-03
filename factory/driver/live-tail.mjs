@@ -98,6 +98,23 @@ const PHASES = [
   [/\bdev window starting\b/, () => ({ phase: "starting" })],
 ];
 
+// Which session transcript is the live one, from the same daily log. The log
+// names each dev transcript as it starts — with the plan segment when triage
+// queued the task (the primary shape) and without it for fell-through work.
+// Triage sessions log no path, so their component carries no step line.
+// Scanning BACKWARD, a window/triage start marker before any session line
+// means THIS window has no session yet — returning the previous window's
+// finished transcript would render its stale events as seconds-old (the daily
+// 11:30 second-window shape).
+export const activeTranscript = (logLines) => {
+  for (let i = logLines.length - 1; i >= 0; i--) {
+    const m = logLines[i].match(/session \d+ starting(?: \(plan: ([^,)]+)[^)]*\))? — (.+)$/u);
+    if (m) return { file: m[2].trim(), taskId: m[1] ?? null };
+    if (/dev window starting:|triage session starting/.test(logLines[i])) return null;
+  }
+  return null;
+};
+
 export const deriveComponent = (logLines, lockAlive) => {
   if (!lockAlive) return { phase: "idle" };
   for (let i = logLines.length - 1; i >= 0; i--) {
