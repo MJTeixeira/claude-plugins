@@ -124,6 +124,33 @@ and nowhere else.
   start limit and the OnFailure companion pages the owner — rejection is
   the one failure invisible to both systemd and the board, so it must die
   loudly.
+- **Forge reads** (T-055): every beat reads PR state through the driver's
+  own forge client, for tasks at `review` or `needs-human` carrying a PR url
+  and no others — a narrow scope because these are synchronous `gh`/`curl`
+  spawns that block the daemon's event loop while they run. A forge with no
+  client reads `unsupported`, one that refuses or times out `unreachable`;
+  neither is ever conflated with a PR that is merely not green.
+- **Heartbeat** (T-056): a third send on its own 20s tick
+  (`fleet-heartbeat.mjs`), emitted ONLY while a project's window lock is
+  held by a live pid — its absence is the idle signal, so it never rides
+  the slower beat or any conditional path. The body carries the window's
+  identity as the driver's own stamp (the lock's `startedAt`, second
+  precision), mode, task, session, turn count and last event with its age
+  as a local duration; `component` and `activity` are the publisher's
+  labelled INFERENCE from the daily log and the session transcript — the
+  driver types neither (ADR-0006: activity is exactly `task-work`,
+  `mcp-call` or `unobserved`, read from the tool name alone). The drive
+  mode gains `--fixture-window` (with `--once`): a recorded window written
+  to disk as the driver writes one, so the heartbeat path runs on a
+  machine with no live window.
+- **Host facts** (T-065): the inventory's host block carries what the
+  machine IS beside how full it is — absolute memory and disk as
+  `{ total, used }` bytes (one statfs read with the percent, df's
+  convention), CPU model and count, the OS string, load averages, and a
+  configured `role` line (`FLEET_MACHINE_ROLE`, the same env home as the
+  machine id). Every field is absent-capable and none is judged or
+  thresholded — they are readings aging with the block, gathered from Node
+  built-ins by this process; nothing reads a box's own admin tooling.
 - **Enrollment is attended**: place the env values and the credential
   BEFORE `install` (a daemon installed with no config exits repeatedly and
   pages). The enrolled-machine id list is fleet metadata (`~/matrix`
@@ -880,7 +907,9 @@ the real ones.
   (triage-only; §Autonomy above); since 2.8.0 `report_status` takes an
   optional `friction` field (≤300 chars, truncated never rejected) —
   what fought the session, recorded in its `.mcp.jsonl` row for a future
-  retro pass (docs/retro-criteria.md), read by nothing in the driver — the driver opens PRs and posts the
+  retro pass (docs/retro-criteria.md), read by nothing in the driver —
+  and since 2.14.0 an optional `suiteVerdict` (the suite-verdict
+  contract below) — the driver opens PRs and posts the
   daily log itself via the forge/tracker adapters with its own
   credentials, and pre-collects every forge/tracker READ into the
   triage/report prompts' `## Forge inputs` section, so sessions never
@@ -1059,6 +1088,30 @@ directly in the backlog) carries no `parkedBy` at all, which stays valid:
 the field is absent, never invented. Values are additive only — `risk` and
 `grade-breaker` keep the meaning every existing equality check already
 gives them.
+
+**The suite verdict (2.14.0).** A session that runs a test suite says how it
+went on `report_status`'s optional `suiteVerdict`, typed `pass | fail |
+no-verdict`, and the driver persists it on `state.json`'s
+`tasks[id].suiteVerdict` — where it outlives the session log a reader would
+otherwise have to string-match. `no-verdict` is the TEST RUNNER that was
+rate-limited, killed or never ran: NOT a failing suite, and never collapsed
+into one. A session that ran no suite at all sends nothing and the field
+stays absent — never checked is its own state, and absence must never render
+as a pass. The driver never writes a verdict on a session's behalf, so a
+session killed before it attests leaves the field absent too: the record says
+what a session said, never what the driver inferred. The value is that
+session's own attestation, is kept per task (a session that tests one task
+and settles on another hands the second nothing), and is dropped when a later
+session on that task reports without one rather than being re-read as fresh —
+which is what keeps the verdict exactly as fresh as the record's `updatedAt`,
+so a reader ageing the row can never show a verdict older than the age beside
+it; an untyped value is dropped at both entry points (the
+tool answers `recorded: … (suiteVerdict "x" ignored — …)` rather than
+rejecting a closing act, and the unvalidated `last-session.json` fallback is
+re-checked on the way in). It is **self-attested and load-bearing for
+nothing**: no gate, merge decision or park reads it, which is why the
+independent acceptance grader (§ its own lane, `state.json`'s `grades`)
+exists and stays a separate record with a separate meaning.
 
 Under `auto-merge-dev`, a session that ends at status `review` with a PR url
 hands the merge to the driver: it polls the PR's check rollup via `gh pr view`

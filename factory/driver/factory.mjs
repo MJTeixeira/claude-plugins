@@ -16,7 +16,7 @@ import * as path from "node:path";
 import * as os from "node:os";
 import { fileURLToPath } from "node:url";
 import { factoryKey, stateDir, writeJsonAtomic, readEnvFile, readJson, execGit, pidAlive, firstLine, TRUST_FLAGS } from "./paths.mjs";
-import { runMcpServer, SETTLED_STATUSES } from "./mcp-server.mjs";
+import { runMcpServer, SETTLED_STATUSES, SUITE_VERDICTS } from "./mcp-server.mjs";
 import { runDoctor as runDoctorChecks } from "./doctor.mjs";
 import { createHash } from "node:crypto";
 import { sendTelegram } from "./notify.mjs";
@@ -300,7 +300,11 @@ const readSessionResult = (factoryDir) => {
     // validates; this fallback file does not): a result without a settled
     // status is not a result — the caller derives the session status from
     // it unguarded, and a truthy-but-statusless one crashes the window.
-    return typeof r?.status === "string" && r.status ? r : null;
+    if (!(typeof r?.status === "string" && r.status)) return null;
+    // Same reason the typed suite verdict (T-057) is re-checked here: this
+    // file is session-authored prose, and an untyped value written onto the
+    // task record would be the string-matching guess the field exists to end.
+    return { ...r, suiteVerdict: SUITE_VERDICTS.includes(r.suiteVerdict) ? r.suiteVerdict : null };
   } catch {
     return null;
   }
@@ -997,15 +1001,22 @@ const readState = () => {
 };
 const writeState = (s) => writeJsonAtomic(statePath(), s);
 
-const noteRuntimeStatus = (taskId, status, prUrl) => {
+const noteRuntimeStatus = (taskId, status, prUrl, suiteVerdict) => {
   if (!taskId || !status) return;
   const s = readState();
-  s.tasks[taskId] = {
+  const rec = {
     ...(s.tasks[taskId] ?? {}), // keep markers (parkedBy) across session reports
     status,
     pr: prUrl ?? s.tasks[taskId]?.pr ?? null,
     updatedAt: new Date().toISOString(),
   };
+  // The suite verdict (T-057) is the REPORTING session's own attestation, not
+  // a marker: a write that carries none means this session attested nothing,
+  // so the previous one's verdict is dropped rather than re-read as fresh.
+  // Absent is its own state — never checked — and must never render as a pass.
+  if (SUITE_VERDICTS.includes(suiteVerdict)) rec.suiteVerdict = suiteVerdict;
+  else delete rec.suiteVerdict;
+  s.tasks[taskId] = rec;
   writeState(s);
 };
 
@@ -1637,6 +1648,13 @@ const readMcpEvents = (eventsPath) => {
   if (!eventsPath) return out;
   let text;
   try { text = fs.readFileSync(eventsPath, "utf8"); } catch { return out; }
+  // The suite verdict (T-057) is the session's, not any one report's: a
+  // session that attests a green suite on its `review` report and then makes
+  // a shorter closing call has still attested it. Last typed value wins PER
+  // TASK — a session that reports on two tasks must not hand the second one
+  // the first one's suite — and the shape is re-checked here because the
+  // events file is session-writable.
+  const suiteVerdicts = new Map();
   for (const line of text.split("\n")) {
     const t = line.trim();
     if (!t) continue;
@@ -1644,6 +1662,7 @@ const readMcpEvents = (eventsPath) => {
     try { e = JSON.parse(t); } catch { continue; }
     if (e.event === "report_status") {
       const rec = { taskId: e.taskId ?? null, status: e.status, summary: e.summary ?? "", pr: e.pr ?? null };
+      if (SUITE_VERDICTS.includes(e.suiteVerdict)) suiteVerdicts.set(e.taskId ?? null, e.suiteVerdict);
       if (SETTLED_STATUSES.includes(e.status)) out.report = rec;
       else out.inProgress = rec;
     } else if (e.event === "open_question") {
@@ -1667,6 +1686,7 @@ const readMcpEvents = (eventsPath) => {
       if (typeof e.milestone === "string" && e.milestone.trim()) out.promotions.push(e.milestone.trim());
     }
   }
+  for (const rec of [out.report, out.inProgress]) if (rec) rec.suiteVerdict = suiteVerdicts.get(rec.taskId) ?? null;
   return out;
 };
 
@@ -4544,7 +4564,7 @@ while (true) {
   // hand-flips a parked status) and a later triage could then flip to todo.
   const retryDowngrade = Boolean(retryingId && result?.taskId === retryingId &&
     result.status === "blocked" && retryParkedStatus === "needs-human");
-  if (result?.taskId && result.status && !retryDowngrade) noteRuntimeStatus(result.taskId, result.status, result.pr ?? null);
+  if (result?.taskId && result.status && !retryDowngrade) noteRuntimeStatus(result.taskId, result.status, result.pr ?? null, result.suiteVerdict);
   // Durable flips the driver owns (NOTES item 24): blocked and reconciled-
   // done get their own (rare) metadata commits; done-via-merge rides the
   // gate's merge commit below.
@@ -4647,7 +4667,7 @@ while (true) {
     // window sees a bare todo (window 4 recovered only emergently). The
     // stale-retry lane already broke out above, so a dead retry can never
     // un-park through here; real deaths keep the breaker as their signal.
-    if (!realDeath && taskId) noteRuntimeStatus(taskId, "in-progress", mcp.inProgress?.pr ?? null);
+    if (!realDeath && taskId) noteRuntimeStatus(taskId, "in-progress", mcp.inProgress?.pr ?? null, mcp.inProgress?.suiteVerdict);
     if (realDeath && exitCode !== 0) {
       const prev = path.join(logDir, `.silent-death`);
       if (fs.existsSync(prev)) {

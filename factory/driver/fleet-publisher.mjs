@@ -36,8 +36,10 @@
 import * as os from "node:os";
 import * as path from "node:path";
 import { pathToFileURL } from "node:url";
+import { createHeartbeatSource, gatherHeartbeats, HEARTBEAT_TICK_MS, writeFixtureWindow } from "./fleet-heartbeat.mjs";
 import { gatherInventory } from "./fleet-inventory.mjs";
 import { claimedProjects, gatherSnapshots } from "./fleet-snapshot.mjs";
+import { snapshotChangeShape } from "./fleet-wire.mjs";
 import { machineEnvFile, readEnvLines } from "./paths.mjs";
 import { PLATFORM_SCHEDULER } from "./config.mjs";
 import { generatePublisherUnits, defaultPathLine } from "./schedule.mjs";
@@ -98,12 +100,14 @@ export const createPublisher = (settings, deps = {}) => {
     fatal = (msg) => { process.stderr.write(msg + "\n"); process.exit(1); },
     log = () => {},
     gather = gatherAll,
+    heartbeats = createHeartbeatSource(),
   } = deps;
   const floor = settings.backoffFloorMs ?? BACKOFF_FLOOR_MS;
   const cap = settings.backoffCapMs ?? BACKOFF_CAP_MS;
   const grace = settings.acceptGraceMs ?? ACCEPT_GRACE_MS;
   const limit = settings.rejectionLimit ?? REJECTION_LIMIT;
   const beat = settings.beatMs ?? INVENTORY_BEAT_MS;
+  const tick = settings.heartbeatMs ?? HEARTBEAT_TICK_MS;
 
   let backoff = 0;
   let rejections = 0;
@@ -112,6 +116,7 @@ export const createPublisher = (settings, deps = {}) => {
   let graceTimer = null;
   let reconnectTimer = null;
   let beatTimer = null;
+  let tickTimer = null;
 
   // Send-on-change memory (REQ-115), per CONNECTION by construction: it is
   // reset on every fresh send, so a reconnect resends every snapshot and a
@@ -121,16 +126,14 @@ export const createPublisher = (settings, deps = {}) => {
   // migration leftover) don't share a slot and flap each other every beat.
   let sentSnapshots = new Map();
 
-  // What counts as change: everything except the two age-of-thing fields
-  // that tick on every gather (heldSeconds, copyAgeSeconds) — counting them
-  // would degenerate send-on-change into send-always for any project with a
-  // hold or a meta worktree. A hold appearing/leaving and the divergence
-  // COUNTS moving still count; the header's ts never does (body only).
-  const changeKey = (body) => JSON.stringify({
-    ...body,
-    stopHeld: body.stopHeld ? { ...body.stopHeld, heldSeconds: 0 } : undefined,
-    metaDivergence: body.metaDivergence ? { ...body.metaDivergence, copyAgeSeconds: 0 } : undefined,
-  });
+  // What counts as change: everything except the age fields that tick on
+  // every gather — counting them would degenerate send-on-change into
+  // send-always for any project with a hold, a meta worktree or an open PR.
+  // Which fields those are belongs to the shape, so `snapshotChangeShape`
+  // owns the flattening; a hold appearing/leaving, the divergence COUNTS
+  // moving and a PR's STATE moving all still count, and the header's ts
+  // never does (body only).
+  const changeKey = (body) => JSON.stringify(snapshotChangeShape(body));
 
   // Gathering is async (the forge probe is a network call), so the send is
   // pinned to the socket it was gathered for: a connection that turned over
@@ -162,6 +165,27 @@ export const createPublisher = (settings, deps = {}) => {
     }, beat);
   };
 
+  // The heartbeat's own tick (T-056), three times a minute and independent of
+  // the 60-second beat: it is the only thing on this connection whose ABSENCE
+  // is the message (REQ-122), so it can never ride a slower or a conditional
+  // path. Its gather is synchronous local-file reading, and a machine with no
+  // live window sends nothing at all.
+  const beatHeartbeats = (sock) => {
+    try {
+      for (const e of heartbeats(settings)) sock.send(JSON.stringify(e));
+    } catch (e) {
+      log(`heartbeat failed: ${e}`);
+    }
+  };
+
+  const scheduleTick = (sock) => {
+    tickTimer = setTimer(() => {
+      if (sock !== ws || stopped) return;
+      beatHeartbeats(sock);
+      scheduleTick(sock);
+    }, tick);
+  };
+
   const connect = () => {
     ws = makeSocket(wsUrl(settings.url), {
       authorization: `Bearer ${settings.machineId}:${settings.secret}`,
@@ -170,6 +194,7 @@ export const createPublisher = (settings, deps = {}) => {
       log("connected");
       gatherAndSend(ws, true);
       scheduleBeat(ws);
+      scheduleTick(ws);
       // Rejection arrives as an immediate close after the upgrade; a
       // connection still open past the grace was authenticated, so only
       // then do the rejection count and the backoff reset.
@@ -179,6 +204,7 @@ export const createPublisher = (settings, deps = {}) => {
     ws.onclose = (ev) => {
       clearTimer(graceTimer);
       clearTimer(beatTimer);
+      clearTimer(tickTimer);
       ws = null; // a gather in flight for this socket now has nowhere to land
       if (stopped) return;
       if (ev?.code === REJECTED_CLOSE_CODE) {
@@ -198,6 +224,7 @@ export const createPublisher = (settings, deps = {}) => {
       clearTimer(graceTimer);
       clearTimer(reconnectTimer);
       clearTimer(beatTimer);
+      clearTimer(tickTimer);
       try { ws?.close(); } catch { /* already closed */ }
     },
   };
@@ -212,6 +239,9 @@ export const loadConfig = (home = os.homedir(), env = process.env) => {
   const num = (key) => (all[key] ? Number(all[key]) : undefined);
   return {
     machineId: all.FLEET_MACHINE_ID,
+    // The machine's one-line human description (T-065) — same env home as
+    // the id, optional where the id is not.
+    role: all.FLEET_MACHINE_ROLE,
     url: all.FLEET_CONTROL_URL,
     secret: all.FLEET_PUBLISHER_SECRET,
     // The configured rejection window (D-009 (7) leaves the number to this
@@ -259,17 +289,20 @@ const main = async () => {
     process.exit(0);
   }
 
-  const known = new Set(["--once", "--offline"]);
+  const known = new Set(["--once", "--offline", "--fixture-window"]);
   const unknown = args.find((a) => !known.has(a));
   if (unknown) {
     process.stderr.write(`error: unknown argument: ${unknown}\n`);
     process.exit(2);
   }
-  // --offline qualifies --once; alone it would be a daemon that never
-  // connects, which is no mode at all.
-  if (args.includes("--offline") && !args.includes("--once")) {
-    process.stderr.write("error: --offline requires --once\n");
-    process.exit(2);
+  // Both flags qualify --once: --offline alone would be a daemon that never
+  // connects, and a fixture window on a daemon would publish a run that is
+  // not happening. Neither is a mode at all.
+  for (const flag of ["--offline", "--fixture-window"]) {
+    if (args.includes(flag) && !args.includes("--once")) {
+      process.stderr.write(`error: ${flag} requires --once\n`);
+      process.exit(2);
+    }
   }
   const settings = loadConfig();
   // Identity is checked before anything else: no connection, no output,
@@ -282,8 +315,22 @@ const main = async () => {
   if (args.includes("--once")) {
     // --offline reaches the gather too: no socket means no forge probe.
     const once = { ...settings, offline: args.includes("--offline") };
-    for (const e of await freshConnectionEnvelopes(once)) {
-      process.stdout.write(JSON.stringify(e) + "\n");
+    const print = (e) => process.stdout.write(JSON.stringify(e) + "\n");
+    for (const e of await freshConnectionEnvelopes(once)) print(e);
+    // The heartbeat is not part of the fresh-connection set — it rides its
+    // own 20s tick — but it IS an envelope this process sends, so the drive
+    // prints one per live window rather than pretending the mode is complete
+    // without them. --fixture-window swaps this machine's windows for a
+    // recorded one, which is what makes the path runnable with none running.
+    if (args.includes("--fixture-window")) {
+      const fixture = writeFixtureWindow();
+      try {
+        for (const e of gatherHeartbeats(once, { home: fixture.home, claims: [fixture.claim] })) print(e);
+      } finally {
+        fixture.cleanup();
+      }
+    } else {
+      for (const e of gatherHeartbeats(once)) print(e);
     }
     process.exit(0);
   }

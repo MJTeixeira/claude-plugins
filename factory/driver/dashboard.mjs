@@ -33,7 +33,7 @@ import { normalizeSchedule, nextFire } from "./schedule.mjs";
 import { deriveFactoryStatus } from "./status.mjs";
 import { createForge, createTracker } from "./forge.mjs";
 import { parseMilestones, parseBacklogTasks } from "./backlog-index.mjs";
-import { tailFile, parseSessionEvents, deriveComponent } from "./live-tail.mjs";
+import { activeTranscript, tailFile, parseSessionEvents, deriveComponent } from "./live-tail.mjs";
 
 // ---------- config: file < flags, each setting tracks its source ----------
 const CONFIG_PATH = path.join(os.homedir(), ".factory", "dashboard.json");
@@ -333,22 +333,6 @@ const refreshVersion = async () => {
 // cost proportional to NEW bytes (REQ-2).
 const LIVE_REFRESH_MS = Number(process.env.LIVE_REFRESH_MS ?? 4000);
 const liveCache = new Map(); // project -> { file, tail:{offset}, sess:{turns,…}, at }
-
-const activeTranscript = (logLines) => {
-  // The daily log names each dev transcript as it starts — with the plan
-  // segment when triage queued the task (the primary shape) and without it
-  // for fell-through work. Triage sessions log no path, so component shows
-  // "triage" without a step line. Scanning BACKWARD, a window/triage start
-  // marker before any session line means THIS window has no session yet —
-  // returning the previous window's finished transcript would render its
-  // stale events as seconds-old (the daily 11:30 second-window shape).
-  for (let i = logLines.length - 1; i >= 0; i--) {
-    const m = logLines[i].match(/session \d+ starting(?: \(plan: ([^,)]+)[^)]*\))? — (.+)$/u);
-    if (m) return { file: m[2].trim(), taskId: m[1] ?? null };
-    if (/dev window starting:|triage session starting/.test(logLines[i])) return null;
-  }
-  return null;
-};
 
 const refreshLive = (project) => {
   const S = stateDir(project);

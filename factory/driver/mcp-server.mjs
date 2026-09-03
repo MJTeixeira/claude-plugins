@@ -28,6 +28,14 @@ import { readEnvFile, readJson, firstLine } from "./paths.mjs";
 const REPORT_STATUSES = ["in-progress", "review", "completed", "incomplete", "blocked", "no-tasks"];
 export const SETTLED_STATUSES = REPORT_STATUSES.filter((s) => s !== "in-progress");
 
+// The session's own account of its test suite (T-057). Three values and not a
+// boolean: a runner that was rate-limited, killed or never ran produced NO
+// verdict, which is not a failing suite — collapsing the two is exactly the
+// string-matching guesswork this field exists to replace. A session that ran
+// no suite at all sends nothing and the field stays absent, which is a fourth
+// state again: never checked.
+export const SUITE_VERDICTS = ["pass", "fail", "no-verdict"];
+
 export const runMcpServer = async ({ project, eventsPath, stateDir, loadConfig }) => {
   const record = (event, fields) => {
     fs.mkdirSync(path.dirname(eventsPath), { recursive: true });
@@ -48,6 +56,7 @@ export const runMcpServer = async ({ project, eventsPath, stateDir, loadConfig }
           summary: { type: "string", description: "2-3 sentences: what happened, what's next" },
           pr: { type: ["string", "null"], description: "PR url once one exists" },
           friction: { type: ["string", "null"], description: "optional, ≤3 lines (truncated at 300 chars): what fought you this session — tooling, prompts, environment — not the task's own difficulty; skip it when nothing did" },
+          suiteVerdict: { type: ["string", "null"], enum: [...SUITE_VERDICTS, null], description: "did YOUR test suite pass? send it on every report once you have run one: 'pass' all green, 'fail' a real failure, 'no-verdict' the runner was killed, rate-limited or never ran (never 'fail' for that). Omit it only if this session ran no suite at all" },
         },
         required: ["status", "summary"],
       },
@@ -58,9 +67,18 @@ export const runMcpServer = async ({ project, eventsPath, stateDir, loadConfig }
         // friction (T-050): free text for a future retro pass — recorded with
         // the row, read by nothing in the driver; over-length truncates, never
         // rejects (a session must not lose its report over a long complaint).
-        const row = { taskId: str(a.taskId, 80), status: a.status, summary, pr: str(a.pr, 300), friction: str(a.friction, 300) };
+        // suiteVerdict (T-057) is typed, so a value outside the enum cannot be
+        // truncated into meaning — it is dropped and named back in the answer.
+        // Rejecting the whole call instead would cost a session its report,
+        // which is the one thing a closing act must never do.
+        const askedVerdict = str(a.suiteVerdict, 40);
+        const suiteVerdict = SUITE_VERDICTS.includes(askedVerdict) ? askedVerdict : null;
+        const row = { taskId: str(a.taskId, 80), status: a.status, summary, pr: str(a.pr, 300), friction: str(a.friction, 300), suiteVerdict };
         record("report_status", row);
-        return { text: `recorded: ${row.taskId ?? "(no task)"} → ${row.status}` };
+        const dropped = askedVerdict && !suiteVerdict
+          ? ` (suiteVerdict ${JSON.stringify(askedVerdict)} ignored — must be one of: ${SUITE_VERDICTS.join(", ")})`
+          : "";
+        return { text: `recorded: ${row.taskId ?? "(no task)"} → ${row.status}${dropped}` };
       },
     },
     open_question: {

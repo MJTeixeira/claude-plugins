@@ -110,16 +110,20 @@ const readRuntime = (home, now) => {
 };
 
 // df's convention — used / (used + available), reserved blocks excluded —
-// so the number matches what the box's own df would say rather than
-// running ~5% high on it.
-const diskUsedPercent = (home) => {
+// so the numbers match what the box's own df would say rather than running
+// ~5% high on it. One statfs read feeds both the percentage and the
+// absolute bytes (T-065), so they can never tell two stories.
+const diskFacts = (home) => {
   try {
     const f = fs.statfsSync(home);
     const used = f.blocks - f.bfree;
-    if (used + f.bavail <= 0) return null;
-    return Math.round((used / (used + f.bavail)) * 100);
+    if (used + f.bavail <= 0) return { diskUsedPercent: null, diskBytes: null };
+    return {
+      diskUsedPercent: Math.round((used / (used + f.bavail)) * 100),
+      diskBytes: { total: (used + f.bavail) * f.bsize, used: used * f.bsize },
+    };
   } catch {
-    return null;
+    return { diskUsedPercent: null, diskBytes: null };
   }
 };
 
@@ -170,11 +174,26 @@ export const gatherInventory = async (settings, deps = {}) => {
     );
   }
 
+  // T-065: what the machine IS, beside how full it is — absolute readings,
+  // unjudged, from the same Node built-ins as every other host fact (D-011
+  // (4)). Each is absent when the platform cannot state it: an empty
+  // os.cpus() drops model and count, and Windows' loadavg is a hardwired
+  // zero — a guess, so it does not travel.
+  const cpus = os.cpus();
   const host = {
     factories: registryReadable ? { installed: projectPaths.length, enabled } : null,
-    diskUsedPercent: diskUsedPercent(home),
+    ...diskFacts(home),
     memoryUsedPercent: Math.round((1 - os.freemem() / os.totalmem()) * 100),
+    memoryBytes: { total: os.totalmem(), used: os.totalmem() - os.freemem() },
     uptimeSeconds: Math.round(os.uptime()),
+    model: cpus[0]?.model?.trim() || null,
+    cpus: cpus.length || null,
+    os: `${os.type()} ${os.release()}`,
+    loadAvg: os.platform() === "win32" ? null : os.loadavg().map((n) => Math.round(n * 100) / 100),
+    // The one configured fact: the machine's one-line description, from the
+    // same env home as the machine id (FLEET_MACHINE_ROLE) — absent rather
+    // than invented when unset.
+    role: typeof settings.role === "string" && settings.role ? settings.role : null,
     runtime: readRuntime(home, now()),
     forges,
     doctor: foldDoctor(doctorRecords),
