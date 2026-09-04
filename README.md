@@ -33,25 +33,32 @@ repos use an Atlassian API token instead.
 ## Just the status line
 
 Want the status line without either plugin — no marketplace, nothing
-installed? Grab one file.
-
-**1. Save the script** to `~/.claude/statusline.cjs`:
+installed? One command:
 
 ```sh
 # macOS / Linux
-curl -fsSL https://raw.githubusercontent.com/MJTeixeira/claude-plugins/main/statusline/statusline.cjs -o ~/.claude/statusline.cjs
+curl -fsSL https://raw.githubusercontent.com/MJTeixeira/claude-plugins/main/statusline/install.cjs -o /tmp/cf-statusline-install.cjs && node /tmp/cf-statusline-install.cjs
 ```
 
 ```powershell
 # Windows (PowerShell)
-iwr https://raw.githubusercontent.com/MJTeixeira/claude-plugins/main/statusline/statusline.cjs -OutFile "$env:USERPROFILE\.claude\statusline.cjs"
+iwr https://raw.githubusercontent.com/MJTeixeira/claude-plugins/main/statusline/install.cjs -OutFile "$env:TEMP\cf-statusline-install.cjs"; node "$env:TEMP\cf-statusline-install.cjs"
 ```
 
-Or open [`statusline/statusline.cjs`](statusline/statusline.cjs) and save it
-yourself — it's one plain file, nothing to inspect that isn't right there.
+It downloads `statusline.cjs` to `~/.claude/statusline.cjs` and merges the
+`statusLine` key into `~/.claude/settings.json` — every other key in that
+file is left exactly as it was, and if you've already got a *different*
+`statusLine` configured, it leaves that alone too and just tells you where
+the script landed. Safe to run more than once. Requirements: **Node.js ≥
+18** and **git** — nothing else, no npm dependencies. Start a new Claude
+Code session (or restart this one) to see it — `statusLine` is read at
+session start.
 
-**2. Point Claude Code at it** — merge this into `~/.claude/settings.json`
-(merge the key in if the file already has other settings; don't overwrite it):
+Prefer not to pipe a download straight into `node`? Read
+[`statusline/install.cjs`](statusline/install.cjs) first, or skip it
+entirely: save [`statusline/statusline.cjs`](statusline/statusline.cjs) to
+`~/.claude/statusline.cjs` yourself and add the same key to
+`~/.claude/settings.json` by hand:
 
 ```json
 {
@@ -62,16 +69,12 @@ yourself — it's one plain file, nothing to inspect that isn't right there.
 }
 ```
 
-Requirements: **Node.js ≥ 18** and **git** — nothing else. It's plain Node
-(no npm dependencies, no `jq`, no bash) so the same file runs unmodified on
-macOS, Linux and Windows, and it reads git state itself rather than
-shelling out to anything that might not be installed.
-
-Two lines: model + effort, branch and dirty-file counts, context size and
-percentage (flagged past 200k tokens), and the open PR's number and review
-state on top; repo name, input/output token counts, 5-hour and 7-day
-rate-limit usage, and the active output style underneath. Nothing is
-injected into your project and there's nothing to set up per-repo.
+Either way you get the same two lines: model + effort, branch and
+dirty-file counts, context size and percentage (flagged past 200k tokens),
+and the open PR's number and review state on top; repo name, input/output
+token counts, 5-hour and 7-day rate-limit usage, and the active output
+style underneath. Nothing is injected into your project and there's
+nothing to set up per-repo.
 
 ## Using the skillset
 

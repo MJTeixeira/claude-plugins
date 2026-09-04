@@ -9,7 +9,7 @@
     {
       "name": "code4food-skillset",
       "description": "Live sessions with a human in the room. A typed flow — chart, grill, spec, tickets, implement — that terminates in factory-runnable backlog tasks, plus the method skills the flow names at its seams. Skills only: no injected contract, no hooks, no agents.",
-      "version": "2.1.0",
+      "version": "2.1.1",
       "license": "MIT",
       "keywords": [
         "workflow",
