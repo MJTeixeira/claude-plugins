@@ -30,6 +30,49 @@ Requirements: **Node.js ≥ 18**, **git**, and the **Claude Code CLI** logged in
 also need the **GitHub CLI** logged in (`gh auth login`); Bitbucket Cloud
 repos use an Atlassian API token instead.
 
+## Just the status line
+
+Want the status line without either plugin — no marketplace, nothing
+installed? Grab one file.
+
+**1. Save the script** to `~/.claude/statusline.cjs`:
+
+```sh
+# macOS / Linux
+curl -fsSL https://raw.githubusercontent.com/MJTeixeira/claude-plugins/main/statusline/statusline.cjs -o ~/.claude/statusline.cjs
+```
+
+```powershell
+# Windows (PowerShell)
+iwr https://raw.githubusercontent.com/MJTeixeira/claude-plugins/main/statusline/statusline.cjs -OutFile "$env:USERPROFILE\.claude\statusline.cjs"
+```
+
+Or open [`statusline/statusline.cjs`](statusline/statusline.cjs) and save it
+yourself — it's one plain file, nothing to inspect that isn't right there.
+
+**2. Point Claude Code at it** — merge this into `~/.claude/settings.json`
+(merge the key in if the file already has other settings; don't overwrite it):
+
+```json
+{
+  "statusLine": {
+    "type": "command",
+    "command": "node ~/.claude/statusline.cjs"
+  }
+}
+```
+
+Requirements: **Node.js ≥ 18** and **git** — nothing else. It's plain Node
+(no npm dependencies, no `jq`, no bash) so the same file runs unmodified on
+macOS, Linux and Windows, and it reads git state itself rather than
+shelling out to anything that might not be installed.
+
+Two lines: model + effort, branch and dirty-file counts, context size and
+percentage (flagged past 200k tokens), and the open PR's number and review
+state on top; repo name, input/output token counts, 5-hour and 7-day
+rate-limit usage, and the active output style underneath. Nothing is
+injected into your project and there's nothing to set up per-repo.
+
 ## Using the skillset
 
 Run **`/code4food-skillset:setup`** once per repo: it configures the backlog
