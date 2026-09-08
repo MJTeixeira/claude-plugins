@@ -199,11 +199,10 @@ write can talk it past a criterion — make the criteria actually pass.
   works; on a Bitbucket origin leave the branch pushed and report
   `blocked`.
 - `pr-only`: that's it. Humans merge.
-- `auto-merge-dev` / `milestone-gates`: that's it too — **never merge, never
-  poll CI**. The driver watches checks, merges on green, and flips the
-  backlog status inside the merge commit. Checks already green when you
-  look? Still end at `review`; the driver's merge is minutes away. At a
-  milestone boundary follow the gate procedure in the `code4food-factory:backlog` skill.
+- `auto-merge-dev`: that's it too — **never merge, never poll CI**. The
+  driver watches checks, merges on green, and flips the backlog status inside
+  the merge commit. Checks already green when you look? Still end at `review`;
+  the driver's merge is minutes away.
 - Keep PR bodies tight: what/why/how-verified in ~20 lines. A PR essay
   written at turn 79 is how finished work gets bookkept as a death.
 - No remote configured (local-only repo): commit on the branch, report

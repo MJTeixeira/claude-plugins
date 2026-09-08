@@ -149,8 +149,9 @@ Enter accepts every default. The two answers worth thinking about are
 **autonomy** (start at `pr-only` — every task becomes a PR and you merge) and
 **schedule** (`manual` while you're still watching it, which is a valid, declared
 end state — doctor checks that what you declared matches what's installed).
-See FACTORY.md §Setup for what each question means, and §Configuration
-reference for every knob you can tune afterwards.
+Every question sets one `config.json` key, so FACTORY.md §Configuration
+reference is the one place that explains them — and every other knob you can
+tune afterwards.
 
 Then: specs into `.factory/spec/`, compile the backlog
 (`cat ~/.factory/runtime/factory/prompts/compile-spec.md | claude`, run from

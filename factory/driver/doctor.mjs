@@ -557,7 +557,7 @@ export const runDoctor = (ctx) => {
   //     gate refuses to merge, so this state means the factory silently stops
   //     shipping (fleet incident 2026-07-07: 12 sessions merged into dev
   //     totally ungated; 2026-07-23: live Bitbucket factories, zero CI).
-  if ((cfg.autonomy ?? "").startsWith("auto-merge") || cfg.autonomy === "milestone-gates") {
+  if ((cfg.autonomy ?? "").startsWith("auto-merge")) {
     // The forge owns what "CI config present" means on its platform
     // (github: .github/workflows/*.ya?ml; bitbucket: bitbucket-pipelines.yml)
     // — reading .github/ here regardless of forge made every Bitbucket
@@ -614,7 +614,7 @@ export const runDoctor = (ctx) => {
   //     feeds anyone's text into triage prompts. The posture (forge-inputs
   //     trust labels) marks it UNTRUSTED, but a private tracker removes the
   //     surface entirely; the owner should know it exists. Warn, not fail.
-  if ((cfg.autonomy ?? "").startsWith("auto-merge") || cfg.autonomy === "milestone-gates") {
+  if ((cfg.autonomy ?? "").startsWith("auto-merge")) {
     let pub = null;
     try { pub = (cfg.tracker ?? "github") === "jira" ? false : forge.repoIsPublic(); } catch { pub = null; }
     if (pub === null) check("skip", "injection surface", "repo visibility unprobeable — check yourself whether the tracker is publicly writable");
