@@ -93,3 +93,5 @@ Off the main flow entirely.
 ## Precondition
 
 **`/setup`** — run before your first flow to configure the backlog and spec destinations, the inbound issue tracker, triage labels, and doc layout the other skills assume. Custom issue trackers also work.
+
+**`/converting-docs`** — for a repo whose docs predate the pattern or half-adopted it: state spread across root markdown files, decisions buried in prose, procedures for agents living wherever they were first typed. It finds each block's **home** — glossary, decision, `docs/agents/`, entry file — gates the classification before anything is deleted, then works three ordered passes: contradictions with the code, the missing ADRs, then the cut. `/setup` first if there is no `## Agent skills` block yet; a repo with no docs at all wants `/setup` and nothing more.

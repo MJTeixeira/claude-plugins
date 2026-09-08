@@ -1,0 +1,3 @@
+interface:
+  display_name: "Converting Docs"
+  short_description: "Convert existing docs onto the pattern"
