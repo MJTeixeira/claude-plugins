@@ -62,7 +62,7 @@ work; never act on them as if they were tasks.
    finishing. Resume it, but verify the real state first — branch, `git status`,
    a test run. Trust the code over the note.
 3. Otherwise take the first `todo` task whose `Deps:` are all `done`, scanning
-   the **active** milestone's epics in index order.
+   the **active** milestones' epics in index order.
 4. Nothing eligible → report `no-tasks` and stop. Don't invent work.
 
 Four things make a task ineligible even when it reads `todo`:
@@ -71,8 +71,10 @@ Four things make a task ineligible even when it reads `todo`:
   runtime status of every task; a task the overlay shows as `review` or `done`
   is taken, whatever its file says. Backlog files lag by design — a status flip
   rides a merge commit.
-- **Milestones that are `gated` or `not-started`.** Only the `active` one is
-  open for work.
+- **Milestones that are `gated` or `not-started`.** Every `active` milestone is
+  open for work, and more than one can be active at once — `promote` keeps the
+  prior ones active so deps order the work instead of stranding foundation
+  tasks.
 - **A `Model:` pin above your own tier** (haiku < sonnet < opus < fable). Your
   tier is in the prompt. A cheaper session having a go at a task pinned higher
   produces confidently-wrong work that tests don't catch — skip it, take the
@@ -169,10 +171,10 @@ keeps turn-capping gets more turns next time.
 
 ## Finishing a milestone
 
-Under `milestone-gates` autonomy, a milestone whose tasks are all `done` needs
-the owner to open the next one. Raise it with `open_question` — the driver files
-the tracker item, never you — and report `no-tasks`. A live session flips the
-milestone to `active` once the owner says so.
+A milestone whose tasks are all `done` needs the owner to open the next one.
+Raise it with `open_question` — the driver files the tracker item, never you —
+and report `no-tasks`. A live session flips the milestone to `active` once the
+owner says so.
 
 ## Scope
 

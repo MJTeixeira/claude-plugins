@@ -94,7 +94,7 @@ const gatherAnswers = async () => {
   const rl = pipedAnswers ? null : readline.createInterface({ input: process.stdin, output: process.stdout });
   process.stdout.write(`Factory setup for ${project}\n(enter = accept default)\n\n`);
   a.stack = await ask(rl, "Stack (node/python/rust/go/dotnet/other)", a.stack);
-  a.autonomy = await ask(rl, "Autonomy (pr-only/auto-merge-dev/milestone-gates)", a.autonomy);
+  a.autonomy = await ask(rl, "Autonomy (pr-only/auto-merge-dev)", a.autonomy);
   a.baseBranch = await ask(rl, "Base branch for factory PRs", a.baseBranch);
   a.model = await ask(rl, "Default session model (sonnet/opus/haiku)", a.model);
   a.schedule = await ask(rl, `Schedule (${PLATFORM_SCHEDULER[process.platform] ?? "manual"}/cron/manual — manual = you start windows yourself)`, a.schedule);

@@ -13,7 +13,7 @@ export const PLATFORM_SCHEDULER = { darwin: "launchd", linux: "systemd" };
 
 export const DEFAULTS = {
   stack: "node",           // node | python | rust | go | dotnet | other
-  autonomy: "pr-only",     // pr-only | auto-merge-dev | milestone-gates
+  autonomy: "pr-only",     // pr-only | auto-merge-dev
   baseBranch: "dev",
   model: "sonnet",         // per-session default; plan entries override
   windowHours: 4,

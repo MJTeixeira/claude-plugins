@@ -107,9 +107,9 @@ export const claimedProjects = (home, report = () => {}) => {
 // driver-side fact into the named value the contract carries, so that when a
 // row is wrong there is exactly one place to look.
 
-// The park fold: the driver's five recorded park reasons (FACTORY.md
-// §Architecture & contracts, widened by T-054) onto the contract's four task
-// parks. The two breakers are one park to the owner — nothing is formally
+// The park fold: the driver's five recorded park reasons (the writers below in
+// factory.mjs are their home; widened by T-054) onto the contract's four task
+// parks (ADR-0005). The two breakers are one park to the owner — nothing is formally
 // asked of them either way — and a session's own `blocked` park is a question
 // park, because what clears it is the owner answering the thread the session
 // filed. A value this table does not name travels AS ITSELF (REQ-30): the
