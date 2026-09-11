@@ -91,9 +91,13 @@ export const bitbucketForge = ({ project, env = {} }) => {
     isDraft: p.draft ?? false,
   }));
 
-  // Dashboard transport: async, resolve-{data|error}, never rejects — even
-  // on sync throws (missing keys, non-bitbucket origin).
-  const reqAsync = (url) => new Promise((resolve) => {
+  // Async transport: resolve-{data|error}, never rejects — even on sync
+  // throws (missing keys, non-bitbucket origin). The dashboard's cap is the
+  // default because a row must degrade fast; the publisher's verbs pass their
+  // own, and nothing else about the call changes between the two. The
+  // credential never rides the child's environment either way: `cred()`
+  // resolves it in this process and writes it on stdin.
+  const reqAsync = (url, opts, { timeoutMs = 15_000 } = {}) => new Promise((resolve) => {
     let settled = false;
     const done = (v) => { if (!settled) { settled = true; resolve(v); } };
     // Resolve credential problems BEFORE spawning: curl blocks on `-K -`
@@ -101,14 +105,17 @@ export const bitbucketForge = ({ project, env = {} }) => {
     // meaningless 15s-timeout "curl exit null" instead of the real message.
     let config;
     try { config = cred(); } catch (e) { done({ error: String(e.message ?? e).split("\n")[0].slice(0, 120) }); return; }
-    const child = spawn("curl", curlArgs(url), { cwd: project, timeout: 15_000 });
+    const child = spawn("curl", curlArgs(url, opts), { cwd: project, timeout: timeoutMs });
     const out = [], errBuf = [];
     child.stdout.on("data", (d) => out.push(d));
     child.stderr.on("data", (d) => errBuf.push(d));
     child.on("error", (e) => done({ error: e.code === "ENOENT" ? "curl not installed" : String(e.message).split("\n")[0].slice(0, 120) }));
     child.on("close", (code) => {
       if (code !== 0) { done({ error: (Buffer.concat(errBuf).toString().trim() || `curl exit ${code}`).split("\n")[0].slice(0, 120) }); return; }
-      try { done({ data: JSON.parse(Buffer.concat(out).toString()) }); } catch { done({ error: "unparseable curl output" }); }
+      const text = Buffer.concat(out).toString();
+      // A merge answers with a body this side never reads; only the exit code
+      // matters there, so an unparseable success is a success.
+      try { done({ data: text ? JSON.parse(text) : true }); } catch { done({ error: "unparseable curl output" }); }
     });
     try { child.stdin.write(config); child.stdin.end(); } catch { /* EPIPE on a dead child — close/error handles it */ }
   });
@@ -195,7 +202,20 @@ export const bitbucketForge = ({ project, env = {} }) => {
       return rows;
     },
 
+    // The publisher's two verbs (T-060) share the async transport for the
+    // reason the dashboard has it — the fleet daemon must not block its event
+    // loop, its heartbeat being the only thing saying this machine is alive —
+    // but a merge is an act rather than a row, so it waits the sync path's
+    // minute rather than the dashboard's fifteen seconds.
     async: {
+      prState: async (pr) => {
+        const { data, error } = await safe(() => reqAsync(`${base()}/pullrequests/${prId(pr)}?fields=state`, undefined, { timeoutMs: 60_000 }));
+        return error ? { error } : { data: mapPrState(data?.state) };
+      },
+      prMerge: async (pr) => {
+        const { error } = await safe(() => reqAsync(`${base()}/pullrequests/${prId(pr)}/merge`, { method: "POST", body: {} }, { timeoutMs: 60_000 }));
+        return error ? { error } : { data: true };
+      },
       prList: () => safe(async () => {
         const r = await reqAsync(`${base()}/pullrequests?state=OPEN&pagelen=30`);
         if (r.error) return r;

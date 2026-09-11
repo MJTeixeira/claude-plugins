@@ -24,6 +24,11 @@ export const factoryKey = (project) =>
 export const stateDir = (project, home = os.homedir()) =>
   path.join(home, ".factory", "projects", factoryKey(project));
 
+// The one doctor record for a project, wherever its state dir is. Every
+// context that runs a doctor writes here and every reader reads here — see
+// ADR-0028 for why the verdict is typed on the way out rather than stored.
+export const doctorRecordPath = (sd) => path.join(sd, "log", "doctor.json");
+
 // Tolerant JSON state read: absent, torn, or malformed all read as null —
 // callers treat "no state" and "unreadable state" identically.
 export const readJson = (p) => {

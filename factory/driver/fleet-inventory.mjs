@@ -13,7 +13,7 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { readJson, stateDir } from "./paths.mjs";
+import { doctorRecordPath, readJson, stateDir } from "./paths.mjs";
 import { claimRemote, normalizeProjectIdentity } from "./fleet-snapshot.mjs";
 import { envelope, inventoryBody } from "./fleet-wire.mjs";
 
@@ -55,13 +55,15 @@ export const probeForge = async (host) => {
 // instead of being skipped, because four passing projects must not render
 // as a healthy machine while a fifth has never been looked at. With no
 // readings at all the fold is null — the field stays absent and the surface
-// renders `never checked`, which today (pre-T-064, nothing persists a
-// verdict) is every machine's correct output.
-// Rank order for worst-of. The driver's doctor speaks ok|warn|fail (and
-// the grader lane pass|fail), so both healthy spellings rank best; an
-// unlisted verdict ranks WORST — an unknown verdict is never health, and
-// it is emitted as itself rather than mapped onto a known value.
-const DOCTOR_RANK = { pass: 3, ok: 3, warn: 2, unchecked: 1 };
+// renders `never checked`, which stays the only way a machine says it has
+// not been looked at.
+// Rank order for worst-of. A persisted record types as pass |
+// pass-with-warnings | fail; ok and warn are the driver doctor's own
+// spellings, ranked beside them because the fold outlives any one writer.
+// A fail ranks bottom, and so does an unlisted verdict — an unknown verdict
+// is never health, and it is emitted as itself rather than mapped onto a
+// known value.
+const DOCTOR_RANK = { pass: 3, ok: 3, "pass-with-warnings": 2, warn: 2, unchecked: 1, fail: 0 };
 export const foldDoctor = (records) => {
   const readings = records.filter(Boolean);
   if (readings.length === 0) return null;
@@ -85,19 +87,25 @@ const secondsSince = (iso, now) => {
   return Number.isFinite(at) ? Math.max(0, Math.round((now - at) / 1000)) : null;
 };
 
-// One project's persisted doctor record (written by T-064 as
-// <stateDir>/doctor.json: { verdict, at, fails? }). A record that cannot
-// be aged is no record — it must demote the fold, not date it.
+// One project's persisted doctor record, as every context that runs a doctor
+// writes it: <stateDir>/log/doctor.json, { ts, ok, source, fails[], warns[] }.
+// The typed verdict the wire carries (REQ-127) is derived HERE rather than
+// stored — the disk shape is ours and free to evolve, the wire shape is
+// fleet-control's, and the one reader that conflated the two read a file
+// shaped like a wire message and found nothing for months. `ok` alone would
+// fold a warning into a pass, which is how 11 live fleet warnings stayed
+// invisible (2026-08-06), so a passing run carrying warnings is its own
+// verdict. A record that cannot be aged is no record — it must demote the
+// fold, not date it.
+const verdictOf = (rec) => rec.ok ? (rec.warns?.length ? "pass-with-warnings" : "pass") : "fail";
+
 const readDoctorRecord = (sd, now) => {
-  const rec = readJson(path.join(sd, "doctor.json"));
-  if (!rec || typeof rec.verdict !== "string" || !rec.verdict) return null;
-  const ageSeconds = secondsSince(rec.at, now);
+  const rec = readJson(doctorRecordPath(sd));
+  if (!rec || typeof rec.ok !== "boolean") return null;
+  const ageSeconds = secondsSince(rec.ts, now);
   if (ageSeconds === null) return null;
-  return {
-    verdict: rec.verdict,
-    ageSeconds,
-    ...(typeof rec.fails === "string" && rec.fails ? { fails: rec.fails } : {}),
-  };
+  const fails = (Array.isArray(rec.fails) ? rec.fails : []).filter(Boolean).join("; ");
+  return { verdict: verdictOf(rec), ageSeconds, ...(fails ? { fails } : {}) };
 };
 
 // The deployed runtime, read from the receipt deploy-runtime.mjs writes.

@@ -4,11 +4,18 @@
 // globals, stdlib only — so the dashboard's background refresher composes
 // them and tests exercise them directly.
 import * as fs from "node:fs";
+import { StringDecoder } from "node:string_decoder";
 
 // Read bytes appended since cache.offset. A file smaller than the stored
 // offset was truncated or rotated: reset and read from the start — stale
 // offsets must never silently mute the tail. Missing/unreadable files are a
 // normal dashboard condition (window not started yet), never a throw.
+//
+// The read boundary is a byte count and a transcript is UTF-8, so a chunk can
+// end in the middle of a character. The decoder lives in the caller's cache and
+// holds those bytes back until the rest of them arrive: decoding each chunk on
+// its own would corrupt that line, and a corrupt line is a whole JSON record
+// dropped — which for the last chunk of a session is its result record.
 export const tailFile = (file, cache) => {
   let size;
   try {
@@ -17,7 +24,10 @@ export const tailFile = (file, cache) => {
     cache.offset = 0;
     return "";
   }
-  if (cache.offset === undefined || size < cache.offset) cache.offset = 0;
+  if (cache.offset === undefined || size < cache.offset) {
+    cache.offset = 0;
+    cache.decoder = null; // a rotated file is a new stream, half a character and all
+  }
   if (size === cache.offset) return "";
   let fd;
   try {
@@ -25,7 +35,8 @@ export const tailFile = (file, cache) => {
     const buf = Buffer.alloc(size - cache.offset);
     const read = fs.readSync(fd, buf, 0, buf.length, cache.offset);
     cache.offset += read;
-    return buf.subarray(0, read).toString("utf8");
+    cache.decoder = cache.decoder ?? new StringDecoder("utf8");
+    return cache.decoder.write(buf.subarray(0, read));
   } catch {
     return "";
   } finally {
@@ -36,7 +47,7 @@ export const tailFile = (file, cache) => {
 // One tool_use block, one human-scannable line. Preference order mirrors what
 // a reader wants to know: the tool's own description, else the file it
 // touched, else the command head.
-const summarizeBlock = (block) => {
+export const summarizeBlock = (block) => {
   if (block.type === "tool_use") {
     const input = block.input ?? {};
     const arg = input.description ?? input.file_path ?? (typeof input.command === "string" ? input.command.slice(0, 60) : "");

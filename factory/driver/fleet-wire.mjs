@@ -89,6 +89,10 @@ export const inventoryBody = (projects, host) => {
 //   autonomy          string when the machine's config carries one
 //   milestones/tasks  arrays stored as sent, or null for "could not read" —
 //                     null renders `not published`, [] a real empty backlog
+//   clone             { behindOrigin } — REQ-73's input, and the far end's
+//                     guard on the two verbs that CAUSE work. Absent means
+//                     unknown there, never current, so it travels only where
+//                     this machine could actually measure it (T-060)
 //   stopHeld          { heldSeconds, by? } — placer optional (their ruling
 //                     2026-09-02), both ages of the THING aged from receipt
 //                     on their side (pin 8c769a1)
@@ -105,12 +109,13 @@ export const inventoryBody = (projects, host) => {
 //                     that sends it, so nothing dates it but receipt.
 // Optionals are absent, never null — the same absent-capable stance as the
 // host block above.
-export const snapshotBody = ({ remote, enabled, autonomy, milestones, tasks, stopHeld, metaDivergence, ages }) => ({
+export const snapshotBody = ({ remote, enabled, autonomy, milestones, tasks, clone, stopHeld, metaDivergence, ages }) => ({
   remote,
   enabled,
   ...(autonomy != null ? { autonomy } : {}),
   milestones,
   tasks,
+  ...(clone != null ? { clone } : {}),
   ...(stopHeld != null ? { stopHeld } : {}),
   ...(metaDivergence != null ? { metaDivergence } : {}),
   ...(ages != null ? { ages } : {}),
@@ -127,7 +132,12 @@ export const snapshotBody = ({ remote, enabled, autonomy, milestones, tasks, sto
 //              `YYYY-MM-DDTHH-MM-SSZ` with colons dashed, so a URL on screen
 //              and a filename on disk name the same run
 //   mode       the window lock's mode, verbatim
-//   tSeconds   seconds since the window began, on THIS machine (REQ-123)
+//   t          seconds since the window began, on THIS machine (REQ-123).
+//              The collector's `parseHeartbeat` reads this name and nothing
+//              else: it orders the window's chain by it and dates a stored
+//              tape's end from it, so a name it does not know is not a
+//              missing field but a window that never advances past second
+//              zero
 //   session    which session this tick belongs to; null is the driver's own
 //              time — starting up, or sweeping between sessions
 //   taskId     the task that session is on, when the daily log named one
@@ -139,11 +149,11 @@ export const snapshotBody = ({ remote, enabled, autonomy, milestones, tasks, sto
 // component and activity are labelled inferred because the driver has no
 // concept of either (REQ-122's fields are this publisher's reading of session
 // output); every other field restates something the driver wrote down.
-export const heartbeatBody = ({ project, windowId, mode, tSeconds, session, taskId, component, activity, turns, lastEvent }) => ({
+export const heartbeatBody = ({ project, windowId, mode, t, session, taskId, component, activity, turns, lastEvent }) => ({
   project,
   windowId,
   mode,
-  tSeconds,
+  t,
   session: session ?? null,
   taskId: taskId ?? null,
   component,

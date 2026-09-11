@@ -15,7 +15,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
 import { fileURLToPath } from "node:url";
-import { factoryKey, stateDir, writeJsonAtomic, readEnvFile, readJson, execGit, pidAlive, firstLine, TRUST_FLAGS } from "./paths.mjs";
+import { factoryKey, stateDir, doctorRecordPath, writeJsonAtomic, readEnvFile, readJson, execGit, pidAlive, firstLine, TRUST_FLAGS } from "./paths.mjs";
 import { runMcpServer, SETTLED_STATUSES, SUITE_VERDICTS } from "./mcp-server.mjs";
 import { runDoctor as runDoctorChecks } from "./doctor.mjs";
 import { createHash } from "node:crypto";
@@ -1319,16 +1319,16 @@ if (mode === "migrate") {
     fail(`a driver is running (pid ${lock.pid}, mode ${lock.mode ?? "?"}) — migrate after the window finishes`);
   }
   const legacyState = ["config.json", ".env", "plan.json", "board.json", "STOP", "log", "tmp"];
-  // A link that already resolves INTO the state dir (the meta worktree's
-  // log/plan.json link, checked out from a metadata commit) is nothing to
-  // move: following it would merge the state dir into itself, "keeping"
-  // every file. The repo cleanup below untracks it.
-  const selfLink = (f) => {
-    const p = path.join(dataDir, f);
-    if (!fs.lstatSync(p, { throwIfNoEntry: false })?.isSymbolicLink()) return false;
-    try { return fs.realpathSync(p) === fs.realpathSync(path.join(stateD, f)); } catch { return false; }
-  };
-  const present = legacyState.filter((f) => fs.existsSync(path.join(dataDir, f)) && !selfLink(f));
+  // A LINK is never state to move, whatever it points at. One that resolves
+  // back INTO the state dir (the meta worktree's log/plan.json link, checked
+  // out from a metadata commit) would merge the state dir into itself,
+  // "keeping" every file; one pointing anywhere ELSE would empty a directory
+  // that was never ours — the move follows the link, and once the state dir
+  // has a real log/ of its own (any doctor run writes one) the two merge
+  // entry by entry. The repo cleanup below drops the link itself.
+  const isLink = (f) =>
+    !!fs.lstatSync(path.join(dataDir, f), { throwIfNoEntry: false })?.isSymbolicLink();
+  const present = legacyState.filter((f) => fs.existsSync(path.join(dataDir, f)) && !isLink(f));
   const say = (m) => process.stdout.write(m + "\n");
 
   // Move preserving anything already machine-side: files/dirs are moved
@@ -1626,11 +1626,33 @@ const runDoctor = () => runDoctorChecks({
   RUNTIME_ROOT, RUNTIME_DRIVER, BOARD_STATUSES,
 });
 
+// Every context that runs a doctor leaves the same record behind, at the one
+// path the dashboard and the fleet publisher read. The record is written by
+// whoever ran the doctor, so the FRESHEST run wins: a failure does not stick
+// once the project has been looked at again, and the reader ages it. Nothing
+// writes it on a run that did not doctor — absence stays the only way a
+// project says it has never been checked, and must never read as a pass.
+// warns ride beside fails (T-019): measured 2026-08-06, 11 live warnings
+// fleet-wide and every one invisible, because a doctor warning was only ever
+// seen by someone running doctor by hand.
+const doctorLine = (r) => `${r.name}${r.detail ? ` — ${r.detail}` : ""}`;
+const persistDoctor = (results, source) => {
+  const of = (level) => results.filter((r) => r.level === level).map(doctorLine);
+  try {
+    fs.mkdirSync(path.dirname(doctorRecordPath(stateD)), { recursive: true });
+    writeJsonAtomic(doctorRecordPath(stateD), {
+      ts: new Date().toISOString(), ok: !results.some((r) => r.level === "fail"), source,
+      fails: of("fail"), warns: of("warn"),
+    });
+  } catch { /* an unwritable state dir is a failure state of its own, already reported */ }
+};
+
 if (mode === "doctor") {
   const results = runDoctor();
+  persistDoctor(results, "doctor");
   const icon = { ok: "✓", warn: "!", fail: "✗", skip: "–" };
   console.log(`factory doctor — ${project}\n`);
-  for (const r of results) console.log(` ${icon[r.level]} ${r.name}${r.detail ? ` — ${r.detail}` : ""}`);
+  for (const r of results) console.log(` ${icon[r.level]} ${doctorLine(r)}`);
   const fails = results.filter((r) => r.level === "fail").length;
   const warns = results.filter((r) => r.level === "warn").length;
   console.log(`\n${fails ? `${fails} problem(s)` : "no problems"}${warns ? `, ${warns} warning(s)` : ""}`);
@@ -2168,16 +2190,8 @@ const senseMachine = (results) => {
 if (scheduled) {
   const results = runDoctor();
   senseMachine(results);
+  persistDoctor(results, "scheduled-preflight");
   const fails = results.filter((r) => r.level === "fail");
-  // warns ride beside fails so the dashboard tile can show them (T-019):
-  // measured 2026-08-06, 11 live warnings fleet-wide and every one invisible
-  // — a doctor warning was only ever seen by someone running doctor by hand.
-  const warns = results.filter((r) => r.level === "warn");
-  fs.writeFileSync(path.join(logDir, "doctor.json"), JSON.stringify({
-    ts: new Date().toISOString(), ok: !fails.length, source: "scheduled-preflight",
-    fails: fails.map((r) => `${r.name}${r.detail ? ` — ${r.detail}` : ""}`),
-    warns: warns.map((r) => `${r.name}${r.detail ? ` — ${r.detail}` : ""}`),
-  }, null, 2) + "\n");
   if (fails.length) {
     for (const r of fails) log(`scheduled preflight: ✗ ${r.name}${r.detail ? ` — ${r.detail}` : ""}`);
     log(`scheduled ${mode} run aborted — doctor found ${fails.length} problem(s)`);
@@ -4064,6 +4078,7 @@ if (mode === "prep") {
     if (cfg.autonomy === "auto-merge-dev") await sweepAndCarryNotes("prep");
     await ensureCleanBase("prep end"); // sweep may have moved base — re-sync
     const results = runDoctor();
+    persistDoctor(results, "prep");
     const fails = results.filter((r) => r.level === "fail");
     log(`prep: done — tree clean on ${cfg.baseBranch} at origin tip; doctor: ${
       fails.length ? `${fails.length} problem(s) — ${fails.map((r) => r.name).join("; ")}` : "no problems"}`);
