@@ -11,6 +11,11 @@
 //   node fleet-publisher.mjs                  # daemon: connect and hold
 //   node fleet-publisher.mjs --once --offline # print the fresh-connection
 //                                             # envelopes as JSONL, no socket
+//        …--fixture-window                    # + a recorded window's heartbeat
+//        …--fixture-window --subscribe        # + what a watcher would see of it
+//        …--fixture-window --tape             # + the tape that window becomes
+//        …--command <verb>                    # + that verb, against a recorded
+//                                             #   window, answered on stdout
 //   node fleet-publisher.mjs install [--yes]  # install + enable the systemd
 //                                             # unit (T-062); systemd hosts
 //                                             # only, per the fleet-control
@@ -38,7 +43,11 @@ import * as path from "node:path";
 import { pathToFileURL } from "node:url";
 import { createHeartbeatSource, gatherHeartbeats, HEARTBEAT_TICK_MS, writeFixtureWindow } from "./fleet-heartbeat.mjs";
 import { gatherInventory } from "./fleet-inventory.mjs";
+import { retainWindow } from "./fleet-retention.mjs";
 import { claimedProjects, gatherSnapshots } from "./fleet-snapshot.mjs";
+import { answerCommand, commandResult, createCommandLog, driveCommand } from "./fleet-command.mjs";
+import { applyTapeAck, driveTape, gatherTapes } from "./fleet-tape.mjs";
+import { createLeases, createTranscriptSource, driveSubscription, TRANSCRIPT_TICK_MS } from "./fleet-transcript.mjs";
 import { snapshotChangeShape } from "./fleet-wire.mjs";
 import { machineEnvFile, readEnvLines } from "./paths.mjs";
 import { PLATFORM_SCHEDULER } from "./config.mjs";
@@ -72,8 +81,9 @@ export const wsUrl = (base) => {
 // cycle, not once per gather.
 export const gatherAll = async (settings, deps = {}) => {
   const { home = os.homedir(), report = (msg) => process.stderr.write(msg + "\n") } = deps;
-  const claims = claimedProjects(home, report);
+  const claims = deps.claims ?? claimedProjects(home, report);
   return {
+    claims,
     inventory: await gatherInventory(settings, { ...deps, claims }),
     snapshots: await gatherSnapshots(settings, { ...deps, claims }),
   };
@@ -101,6 +111,11 @@ export const createPublisher = (settings, deps = {}) => {
     log = () => {},
     gather = gatherAll,
     heartbeats = createHeartbeatSource(),
+    leases = createLeases(),
+    transcripts = createTranscriptSource(leases),
+    home = os.homedir(),
+    commands = createCommandLog(home),
+    tapes = gatherTapes,
   } = deps;
   const floor = settings.backoffFloorMs ?? BACKOFF_FLOOR_MS;
   const cap = settings.backoffCapMs ?? BACKOFF_CAP_MS;
@@ -108,6 +123,7 @@ export const createPublisher = (settings, deps = {}) => {
   const limit = settings.rejectionLimit ?? REJECTION_LIMIT;
   const beat = settings.beatMs ?? INVENTORY_BEAT_MS;
   const tick = settings.heartbeatMs ?? HEARTBEAT_TICK_MS;
+  const stream = settings.streamMs ?? TRANSCRIPT_TICK_MS;
 
   let backoff = 0;
   let rejections = 0;
@@ -117,6 +133,14 @@ export const createPublisher = (settings, deps = {}) => {
   let reconnectTimer = null;
   let beatTimer = null;
   let tickTimer = null;
+  let streamTimer = null;
+
+  // The claim list, read on the 60-second beat and shared by every tick between
+  // them. Identifying a project costs a `git` spawn, and the two tick paths run
+  // three and thirty times a minute: reading it there instead would pay that
+  // spawn per project per tick, which is the shape of the spawn storm this
+  // suite has already been bitten by once.
+  let claims = [];
 
   // Send-on-change memory (REQ-115), per CONNECTION by construction: it is
   // reset on every fresh send, so a reconnect resends every snapshot and a
@@ -125,6 +149,14 @@ export const createPublisher = (settings, deps = {}) => {
   // stable, and two checkouts of one remote on one machine (a dormant
   // migration leftover) don't share a slot and flap each other every beat.
   let sentSnapshots = new Map();
+
+  // Which windows' tapes have been sent down THIS connection. A tape is
+  // uploaded once (REQ-128) and the ack is what finally clears the window, so
+  // without this the beat would re-send an unacked tape every 60 seconds. It is
+  // per connection on purpose: a publisher that died mid-upload sends the tape
+  // again from chunk zero, and the collector abandons the half it held rather
+  // than merging it into a tape that never existed.
+  let sentTapes = new Set();
 
   // What counts as change: everything except the age fields that tick on
   // every gather — counting them would degenerate send-on-change into
@@ -142,9 +174,14 @@ export const createPublisher = (settings, deps = {}) => {
   // and only the snapshots whose body changed since this connection last
   // sent them.
   const gatherAndSend = (sock, fresh) =>
-    gather(settings)
-      .then(({ inventory, snapshots }) => {
+    gather(settings, { home })
+      .then(({ inventory, snapshots, claims: read }) => {
+        claims = read; // the ticks between beats identify nothing themselves
         if (sock !== ws || stopped) return;
+        // Sent from HERE because this is where the claim list lands: called at
+        // connect it would run against an empty one and quietly send nothing,
+        // and a window that ended before the connection would wait a beat.
+        sendTapes(sock);
         if (fresh) sentSnapshots = new Map();
         sock.send(JSON.stringify(inventory));
         snapshots.forEach((s, i) => {
@@ -156,6 +193,44 @@ export const createPublisher = (settings, deps = {}) => {
         });
       })
       .catch((e) => log(`gather failed: ${e}`));
+
+  // Every answer this publisher owes, said on whatever connection it has now.
+  // The collector never re-issues a command, so a result lost to a reconnect is
+  // a command ageing on the owner's log forever — and it is only marked as said
+  // once the socket has actually taken it.
+  const sendResults = (sock) => {
+    if (sock !== ws || stopped) return;
+    for (const { commandId, result } of commands.unsent()) {
+      try {
+        sock.send(JSON.stringify(commandResult(settings.machineId, commandId, result)));
+      } catch (e) {
+        return log(`command result for ${commandId} could not be sent: ${e}`);
+      }
+      commands.markSent(commandId);
+    }
+  };
+
+  // A finished window this machine still owes the surface, rebuilt from disk
+  // and sent once. It rides the 60-second beat rather than a tick of its own:
+  // a tape is not a liveness signal, and the window it is about has already
+  // ended — nothing about it will change while it waits.
+  const sendTapes = (sock) => {
+    if (sock !== ws || stopped) return;
+    try {
+      // `sentTapes` goes IN, so a window already sent on this connection is
+      // never rebuilt again — it is owed until the ack lands, and rebuilding it
+      // every minute would read all of its transcripts to throw the result away.
+      // It is only added to once the socket has taken every chunk of that
+      // window: a send that throws on chunk 5 of 100 must leave the window owed
+      // on the next beat, not wait for a reconnect to be noticed again.
+      for (const { key, envelopes } of tapes(settings, { home, claims, sent: sentTapes, report: log })) {
+        for (const e of envelopes) sock.send(JSON.stringify(e));
+        sentTapes.add(key);
+      }
+    } catch (e) {
+      log(`tape failed: ${e}`);
+    }
+  };
 
   const scheduleBeat = (sock) => {
     beatTimer = setTimer(() => {
@@ -172,7 +247,15 @@ export const createPublisher = (settings, deps = {}) => {
   // live window sends nothing at all.
   const beatHeartbeats = (sock) => {
     try {
-      for (const e of heartbeats(settings)) sock.send(JSON.stringify(e));
+      for (const e of heartbeats(settings, { claims, home })) {
+        sock.send(JSON.stringify(e));
+        // Told the surface about this window, so this machine now owes it a
+        // tape and the window's logs must outlive it (REQ-131). Recorded on
+        // the SEND rather than in the gather: a machine that published nothing
+        // owes nothing, and a dry run must not leave a debt behind it.
+        const claim = claims.find((c) => c.remote === e.body.project);
+        if (claim) retainWindow(claim.dir, home, e.body.windowId, e.header.ts);
+      }
     } catch (e) {
       log(`heartbeat failed: ${e}`);
     }
@@ -186,25 +269,83 @@ export const createPublisher = (settings, deps = {}) => {
     }, tick);
   };
 
+  // The watched transcript (T-058). Its own tick, because it is the one thing
+  // here a human watches in real time — and it is cheap by construction: with
+  // no lease held it reads nothing at all, which is also what makes "no
+  // transcript for a window nobody is subscribed to" true rather than
+  // asserted.
+  const scheduleStream = (sock) => {
+    streamTimer = setTimer(() => {
+      if (sock !== ws || stopped) return;
+      try {
+        for (const e of transcripts(settings, { claims, home })) sock.send(JSON.stringify(e));
+      } catch (e) {
+        log(`transcript failed: ${e}`);
+      }
+      scheduleStream(sock);
+    }, stream);
+  };
+
+  // The ONE inbound path: the collector's lease (ADR-0016), re-sent on its own
+  // clock while a viewer is attached. Nothing cancels a lease — the collector
+  // simply stops renewing — so there is no stop message to lose here, and a
+  // publisher that misses one still falls silent when the lease lapses.
+  const onMessage = (data) => {
+    let inbound;
+    try {
+      inbound = JSON.parse(typeof data === "string" ? data : new TextDecoder().decode(data));
+    } catch {
+      return log("dropped an inbound message that is not JSON");
+    }
+    if (inbound?.kind === "transcript") {
+      if (!leases.grant(inbound.body, Date.now())) log("dropped a transcript lease naming no project, window or duration");
+      return;
+    }
+    if (inbound?.kind === "tape-ack") {
+      // The ack is what makes machine-side pruning safe, so only an `ok` one
+      // drops the window: a refused tape stays owed, and its logs stay with it.
+      applyTapeAck(inbound.body, { home, claims, report: log });
+      return;
+    }
+    if (inbound?.kind !== "command") return;
+    // Answered exactly once, and never queued (ADR-0004): a verb this publisher
+    // cannot perform right now is refused, not held. The answer is owed
+    // durably and said on whatever connection this publisher has when it is
+    // ready — the collector never re-issues a command, so a result dropped at
+    // a reconnect would be a command ageing on the owner's log forever.
+    answerCommand(inbound.body, settings, { home, claims: claims.length ? claims : undefined, commands, log })
+      .then(() => sendResults(ws))
+      .catch((e) => log(`command failed: ${e}`));
+  };
+
   const connect = () => {
     ws = makeSocket(wsUrl(settings.url), {
       authorization: `Bearer ${settings.machineId}:${settings.secret}`,
     });
     ws.onopen = () => {
       log("connected");
+      // Per connection, and reset HERE rather than inside the gather: the tape
+      // send is disk-only and immediate, so a reset that waited for the gather
+      // to resolve would wipe the marks it had already made and send every
+      // tape twice.
+      sentTapes = new Set();
       gatherAndSend(ws, true);
+      sendResults(ws); // anything answered while there was nowhere to say it
       scheduleBeat(ws);
       scheduleTick(ws);
+      scheduleStream(ws);
       // Rejection arrives as an immediate close after the upgrade; a
       // connection still open past the grace was authenticated, so only
       // then do the rejection count and the backoff reset.
       graceTimer = setTimer(() => { rejections = 0; backoff = 0; }, grace);
     };
+    ws.onmessage = (ev) => onMessage(ev?.data);
     ws.onerror = () => {}; // close always follows; retry lives there
     ws.onclose = (ev) => {
       clearTimer(graceTimer);
       clearTimer(beatTimer);
       clearTimer(tickTimer);
+      clearTimer(streamTimer);
       ws = null; // a gather in flight for this socket now has nowhere to land
       if (stopped) return;
       if (ev?.code === REJECTED_CLOSE_CODE) {
@@ -225,6 +366,7 @@ export const createPublisher = (settings, deps = {}) => {
       clearTimer(reconnectTimer);
       clearTimer(beatTimer);
       clearTimer(tickTimer);
+      clearTimer(streamTimer);
       try { ws?.close(); } catch { /* already closed */ }
     },
   };
@@ -251,6 +393,7 @@ export const loadConfig = (home = os.homedir(), env = process.env) => {
     // keep the 1s floor and the 60s beat.
     backoffFloorMs: num("FLEET_BACKOFF_FLOOR_MS"),
     beatMs: num("FLEET_BEAT_MS"),
+    streamMs: num("FLEET_STREAM_MS"),
   };
 };
 
@@ -289,8 +432,18 @@ const main = async () => {
     process.exit(0);
   }
 
-  const known = new Set(["--once", "--offline", "--fixture-window"]);
-  const unknown = args.find((a) => !known.has(a));
+  const known = new Set(["--once", "--offline", "--fixture-window", "--subscribe", "--tape", "--command"]);
+  // `--command <verb>` is the one flag carrying a value, so its argument is not
+  // a flag to be recognised: it is consumed here and checked by the verb table,
+  // which is the only thing that knows what a verb is.
+  const commandAt = args.indexOf("--command");
+  const commandVerb = commandAt === -1 ? null : args[commandAt + 1] ?? null;
+  if (commandAt !== -1 && (!commandVerb || commandVerb.startsWith("--"))) {
+    process.stderr.write("error: --command needs a verb\n");
+    process.exit(2);
+  }
+  const flags = commandAt === -1 ? args : args.filter((_, i) => i !== commandAt + 1);
+  const unknown = flags.find((a) => !known.has(a));
   if (unknown) {
     process.stderr.write(`error: unknown argument: ${unknown}\n`);
     process.exit(2);
@@ -298,7 +451,7 @@ const main = async () => {
   // Both flags qualify --once: --offline alone would be a daemon that never
   // connects, and a fixture window on a daemon would publish a run that is
   // not happening. Neither is a mode at all.
-  for (const flag of ["--offline", "--fixture-window"]) {
+  for (const flag of ["--offline", "--fixture-window", "--subscribe", "--tape", "--command"]) {
     if (args.includes(flag) && !args.includes("--once")) {
       process.stderr.write(`error: ${flag} requires --once\n`);
       process.exit(2);
@@ -326,12 +479,22 @@ const main = async () => {
       const fixture = writeFixtureWindow();
       try {
         for (const e of gatherHeartbeats(once, { home: fixture.home, claims: [fixture.claim] })) print(e);
+        if (args.includes("--subscribe")) for (const e of driveSubscription(once, fixture)) print(e);
+        // --tape ends the recorded window, which is what makes a tape owed at all.
+        if (args.includes("--tape")) for (const e of await driveTape(once, fixture)) print(e);
       } finally {
         fixture.cleanup();
       }
     } else {
       for (const e of gatherHeartbeats(once)) print(e);
+      // Without a fixture window there is nothing recorded to watch: a real
+      // machine's own windows are streamed by the daemon, on its lease.
+      if (args.includes("--subscribe")) process.stderr.write("note: --subscribe prints nothing without --fixture-window\n");
     }
+    // A verb, driven by hand against a recorded window — never against this
+    // machine's own projects: a drive that stopped a real factory would be a
+    // drive nobody could run twice.
+    if (commandVerb) print(await driveCommand(once, commandVerb));
     process.exit(0);
   }
 

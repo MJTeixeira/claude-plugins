@@ -120,6 +120,24 @@ credential lives apart in `~/secrets/fleet-publisher.env`
 (`FLEET_PUBLISHER_SECRET`) and travels only as a bearer header. Each machine's
 secret stays in that machine's own secret location — no repo ever holds one.
 
+**Driving it by hand.** `--once` prints what a fresh connection would send and
+exits; `--offline` keeps it off the network. Two flags add the paths that need a
+window to exist, and both require `--once`: `--fixture-window` writes a recorded
+window to disk so the heartbeat runs on a machine with none, and `--subscribe`
+streams that window's transcript the way a viewer watching it would see it —
+from the moment of subscription, never a replay. All of them still need
+`FLEET_MACHINE_ID` set: identity is checked before anything is printed.
+`--tape` ends that recorded window and prints the tape it becomes.
+`FLEET_STREAM_MS` overrides the transcript's own 2-second tick (tests only).
+`--command <verb>` performs one verb against that recorded window and prints the
+answer — never against this machine's own projects, so it is safe to run twice.
+
+The daemon keeps one file of its own, `~/.factory/fleet-commands.json`: the
+commands it has been given, written down before each is performed and aged out
+after thirty days. It is what stops a restart from performing a command twice
+and what makes an answer survive a reconnect. Deleting it is safe for a machine
+with nothing in flight and is otherwise how you get a command run twice.
+
 Failure posture worth knowing before it pages you: unreachability retries
 forever with capped backoff and never exits, because a collector restarting
 under its own deploy is normal. A sustained credential REJECTION exits
@@ -138,10 +156,12 @@ green over every registered factory, or plugin content changed without a
 version bump. A failed gate leaves the runtime exactly where it was.
 
 After an advance it names any long-lived unit still running old code, with the
-restart command: it asks systemd `--user` and launchd which units exec a module
-out of this runtime, walks each one's local imports transitively, and reports
-the unit stale when the deploy's diff touched anything it reaches — so a change
-to a module the dashboard merely imports is named too. Only RUNNING processes
+restart command. Running that command is yours: the deploy hints and never
+restarts what it superseded — the supervisor and the fleet publisher alike. It
+asks systemd `--user` and launchd which units exec a module out of this
+runtime, walks each one's local imports transitively, and reports the unit
+stale when the deploy's diff touched anything it reaches — so a change to a
+module the dashboard merely imports is named too. Only RUNNING processes
 qualify; timers and the per-factory `@dev`/`@triage`/`@report` oneshots re-exec
 per fire and self-heal, and restarting one of those would launch a window.
 
@@ -657,6 +677,10 @@ service, `factory-onfailure@.service`) live in `factory/schedulers/`.
   rotation, scheduler edit, feature enable. It is cheaper than losing a window.
   Warnings are not failures: a disabled factory is a legitimate state and
   doctors GREEN with its timer checks skipped.
+  Every run — this command, the `--scheduled` preflight, `prep` and the fleet
+  watchdog — records its verdict at `<state>/log/doctor.json`, freshest run
+  wins. A project with no record has never been checked, which is not a pass:
+  the dashboard tile and the fleet publisher's machine row both read it there.
   Scheduler entries pass `--scheduled`, which runs the same checks as a
   preflight and aborts + Telegrams rather than half-running. On Discord-tracker
   factories the preflight also files ONE `[<machine>] <fact>` thread per

@@ -278,6 +278,33 @@ const readBacklog = (dir) => {
   }
 };
 
+// The clone's own drift, measured the way the driver measures it: commits on
+// the last-known origin ref that this checkout does not have. No fetch — the
+// answer is as fresh as the machine's last one, which is what a machine can
+// honestly say without turning a guard into a network call. Unknown is not
+// stale: a checkout with no origin, or an unreadable one, guards nothing.
+export const behindOrigin = (dir, home) => {
+  const base = readJson(path.join(stateDir(dir, home), "config.json"))?.baseBranch ?? "dev";
+  try {
+    const behind = Number(execGit(dir, ["rev-list", "--count", `${base}..origin/${base}`], { timeoutMs: 10_000 }));
+    return Number.isFinite(behind) ? behind > 0 : null;
+  } catch {
+    // No origin ref to compare against, or not a repo at all. Unknown, and it
+    // must travel as unknown: `false` here would render a clone this machine
+    // could not measure as one it measured and found current, which is exactly
+    // the case the guard exists for.
+    return null;
+  }
+};
+
+// REQ-73's input, absent where this machine could not measure it: the far end
+// reads an absent `clone` as unknown and guards nothing, which is the honest
+// reading and never the one that quietly withdraws a verb.
+const cloneState = (dir, home) => {
+  const behind = behindOrigin(dir, home);
+  return behind === null ? null : { behindOrigin: behind };
+};
+
 // The stop hold, read from the STOP file's OWN contents — a convention this
 // publisher owns on both ends (T-059 writes {placedBy, at}; the driver only
 // ever checks that the file exists). A hand-placed hold — empty, or any
@@ -376,6 +403,7 @@ export const snapshotBody = (dir, remote, home, now, deps = {}) => {
     autonomy: typeof cfg?.autonomy === "string" ? cfg.autonomy : null,
     milestones: milestones && milestones.map((m) => wireMilestone(m, tasks ?? [])),
     tasks: wireTasks,
+    clone: cloneState(dir, home),
     stopHeld: readStopHeld(dir, home, at),
     metaDivergence: metaDivergence(dir, home, at),
     ages: prAges.length ? { pr: prAges } : null,

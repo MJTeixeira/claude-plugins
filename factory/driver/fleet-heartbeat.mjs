@@ -63,12 +63,31 @@ export const inferActivity = (component, lastEvent) => {
   return lastEvent.startsWith("mcp__") ? ACTIVITY.mcp : ACTIVITY.work;
 };
 
-const dailyLogLines = (logDir, at) => {
-  const file = path.join(logDir, `factory-${new Date(at).toISOString().slice(0, 10)}.log`);
-  try {
-    return fs.readFileSync(file, "utf8").trim().split("\n");
-  } catch {
-    return []; // a window that started before today's log exists is not a fault
+// The driver writes one daily log per DAY, named by the day it writes into, so
+// a window that crosses midnight leaves its start line — the line naming the
+// session transcript everything here reads — in yesterday's file while today's
+// narration goes into today's. Reading only today's is how a live window goes
+// silent at 00:00 UTC: no session line, no transcript, no component.
+//
+// So the read spans the window's own days. The span is capped rather than
+// trusted: `from` comes off a lock, and a lock left behind by a crash months
+// ago must not turn one tick into months of file opens.
+export const MAX_LOG_DAYS = 3;
+
+export const dailyLogLines = (logDir, from, at) => {
+  const dayOf = (ms) => new Date(ms).toISOString().slice(0, 10);
+  const last = dayOf(at);
+  const lines = [];
+  const start = Math.max(Number.isFinite(from) ? from : at, at - (MAX_LOG_DAYS - 1) * 86400_000);
+  for (let ms = start; ; ms += 86400_000) {
+    const day = dayOf(ms);
+    try {
+      const text = fs.readFileSync(path.join(logDir, `factory-${day}.log`), "utf8");
+      for (const line of text.split("\n")) if (line.trim()) lines.push(line);
+    } catch {
+      // a day with no log is a day nothing wrote one, never a fault
+    }
+    if (day >= last) return lines;
   }
 };
 
@@ -91,7 +110,7 @@ export const windowHeartbeat = (dir, remote, { home, now, caches, report }) => {
     return null;
   }
   const at = now();
-  const logLines = dailyLogLines(path.join(sd, "log"), at);
+  const logLines = dailyLogLines(path.join(sd, "log"), Date.parse(lock.startedAt), at);
   const component = deriveComponent(logLines, true); // the lock is alive: checked above
   const active = activeTranscript(logLines);
   const cache = caches.get(dir) ?? {};
@@ -119,7 +138,7 @@ export const windowHeartbeat = (dir, remote, { home, now, caches, report }) => {
     project: remote,
     windowId,
     mode,
-    tSeconds: Math.max(0, Math.round((at - Date.parse(lock.startedAt)) / 1000)),
+    t: Math.max(0, Math.round((at - Date.parse(lock.startedAt)) / 1000)),
     session: component.session ?? null,
     taskId: active?.taskId ?? null,
     component: component.phase,
@@ -225,6 +244,14 @@ export const writeFixtureWindow = (at = Date.now()) => {
   return {
     home,
     claim: { dir, remote: "https://github.com/MJTeixeira/fixture-window.git" },
+    windowId: windowStamp(startedAt),
+    startedAt,
+    // What arrives while a viewer is watching (T-058). The transcript drive
+    // appends AFTER it has subscribed, because that is the only honest way to
+    // exercise a stream whose whole rule is that it never replays: turns
+    // written before the lease are exactly the ones it must not send.
+    appendTurns: (turns) =>
+      fs.appendFileSync(transcript, turns.map((e) => JSON.stringify(e)).join("\n") + "\n"),
     cleanup: () => fs.rmSync(home, { recursive: true, force: true }),
   };
 };

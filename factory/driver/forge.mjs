@@ -54,8 +54,14 @@
 //                            statusCheckRollup}]} | {error} — never rejects
 //   async.issueList()       {data: [{number, title, url, labels}]} | {error}
 //   async.remoteBranchSha(base) -> head sha of origin's base branch, or null
+//   async.prState(pr)       {data: "OPEN" | "MERGED" | "CLOSED"} | {error} —
+//                           the sync prState's vocabulary, unchanged: the
+//                           publisher compares against it and a forge that
+//                           answers in its own casing is read as "not merged"
+//   async.prMerge(pr)       {data: true} | {error} — merge an open PR
 // Sync methods throw on failure (callers' try/catch is load-bearing); the
-// async namespace is the dashboard's resolve-never-reject contract.
+// async namespace is the resolve-never-reject contract — the dashboard's
+// rows and the fleet publisher's two verbs both take it.
 
 import { execFile, execFileSync } from "node:child_process";
 import * as fs from "node:fs";
@@ -80,6 +86,21 @@ const githubForge = ({ project, env = {} }) => {
         return;
       }
       try { resolve({ data: JSON.parse(stdout) }); } catch { resolve({ error: "unparseable gh output" }); }
+    });
+  });
+
+  // The publisher's own transport (T-060): async like the dashboard's, and for
+  // a sharper version of the same reason — the fleet daemon holds the only
+  // liveness beat this fleet has, and a 60-second blocking `gh` call stops the
+  // heartbeat, which the board reads as the machine having gone silent. Unlike
+  // the dashboard's rows this one carries the project's env, because merging
+  // needs the credential the row-listing never did.
+  const runAsync = (args) => new Promise((resolve) => {
+    execFile("gh", args, { cwd: project, env: { ...process.env, ...env }, timeout: 60_000, maxBuffer: 4 * 1024 * 1024 }, (err, stdout, stderr) => {
+      if (!err) return resolve({ data: stdout });
+      const reason = err.code === "ENOENT" ? "gh not installed"
+        : (String(stderr ?? "").trim() || err.message || "gh failed").split("\n")[0].slice(0, 120);
+      resolve({ error: reason });
     });
   });
 
@@ -152,6 +173,16 @@ const githubForge = ({ project, env = {} }) => {
       prList: () => jsonAsync(["pr", "list", "--state", "open", "--json", "number,title,url,isDraft,headRefName,statusCheckRollup"]),
       issueList: () => jsonAsync(["issue", "list", "--state", "open", "--json", "number,title,url,labels"]),
       remoteBranchSha: async (base) => (await jsonAsync(["api", `repos/{owner}/{repo}/branches/${base}`])).data?.commit?.sha ?? null,
+      prState: async (pr) => {
+        const { data, error } = await runAsync(["pr", "view", pr, "--json", "state"]);
+        if (error) return { error };
+        try { return { data: String(JSON.parse(data).state ?? "") }; }
+        catch { return { error: "unparseable gh output" }; }
+      },
+      prMerge: async (pr) => {
+        const { error } = await runAsync(["pr", "merge", pr, "--merge"]);
+        return error ? { error } : { data: true };
+      },
     },
   };
 };
