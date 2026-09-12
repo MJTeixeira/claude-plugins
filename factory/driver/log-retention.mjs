@@ -1,5 +1,7 @@
 // Log retention (T-082) — the one thing on a machine that deletes a factory's
-// own files, and the reason ADR-0029's guard was written a task early.
+// own files, and the reason ADR-0029's guard was written a task early. Every
+// window the driver claims a lock for runs it at that lock (T-083), which is
+// what makes a box shed bytes without anybody running a repair verb on it.
 //
 // Nothing in the driver had ever pruned `<state>/log/`: measured 2026-08-17, a
 // fleet box held 366 MB across 576 dev transcripts, the oldest three months
@@ -34,13 +36,25 @@ import { stateDir } from "./paths.mjs";
 // by default — the same span the tape ledger and the command ledger use.
 export const LOG_RETENTION_DAYS = 30;
 
-// A retention window is a positive whole number of days and nothing else is
-// one. Each rejected shape is a config typo that would read as "delete more"
-// if it were quietly coerced: a string compares as text, zero and negatives
-// put the horizon at or past now, a fraction is a day count nobody wrote.
-// Malformed fails doctor and turns the sweep OFF, the way a malformed
-// `riskTiers` turns the risk floor off rather than guessing a floor.
-export const validRetentionDays = (v) => Number.isInteger(v) && v > 0;
+// `logRetentionDays` has THREE states, not two (T-083):
+//
+//   "on"       a positive whole number of days — the window to keep.
+//   "off"      zero, the owner saying "keep everything" in the one place a
+//              retention window is written. It is a choice, not a fault, so
+//              doctor reads it green and the sweep simply does not run.
+//   "invalid"  every other shape, each a config typo that would read as
+//              "delete more" if it were quietly coerced: a string compares as
+//              text, a negative puts the horizon past now, a fraction is a day
+//              count nobody wrote. Malformed fails doctor and turns the sweep
+//              OFF, the way a malformed `riskTiers` turns the risk floor off
+//              rather than guessing a floor.
+//
+// Off has to travel as its own state rather than folded into either of the
+// others: folded in with the typos it would be a red row on a healthy box,
+// folded in with the windows the horizon arithmetic would inherit it and put
+// the cutoff at `now` — which deletes the whole directory.
+export const retentionMode = (v) =>
+  v === 0 ? "off" : Number.isInteger(v) && v > 0 ? "on" : "invalid";
 
 // The two shapes a sweep may touch: a session's files, and the driver's own
 // dated daily log.
@@ -67,8 +81,12 @@ export const pruneLogs = (dir, deps = {}) => {
     days = LOG_RETENTION_DAYS,
     report = (msg) => process.stderr.write(msg + "\n"),
   } = deps;
-  if (!validRetentionDays(days)) {
-    report(`logRetentionDays is not a positive whole number of days (${JSON.stringify(days)}) — nothing was pruned`);
+  const mode = retentionMode(days);
+  // Both answers come BEFORE the horizon is computed — `days: 0` reaching the
+  // arithmetic would put the cutoff at `at` and sweep every candidate there is.
+  if (mode === "off") return { files: 0, bytes: 0 }; // the owner keeps everything
+  if (mode === "invalid") {
+    report(`logRetentionDays is not a non-negative whole number of days (${JSON.stringify(days)}) — nothing was pruned`);
     return { files: 0, bytes: 0, off: true };
   }
   const logDir = path.join(stateDir(dir, home), "log");
@@ -113,7 +131,7 @@ export const pruneLogs = (dir, deps = {}) => {
   return { files, bytes };
 };
 
-// Bytes as an operator reads them, for the one line prep prints.
+// Bytes as an operator reads them, for the one line every sweep prints.
 export const humanBytes = (n) => {
   const units = ["B", "KB", "MB", "GB"];
   let value = n;

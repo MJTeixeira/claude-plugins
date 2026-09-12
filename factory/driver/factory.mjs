@@ -23,7 +23,7 @@ import { sendTelegram } from "./notify.mjs";
 import { makeNotifiers } from "./notify-route.mjs";
 import { senseMachineFacts, recordOutcome, threadTitle } from "./machine-threads.mjs";
 import { materializeWorkspace, isInjectedPath, factorySkillNames, stripFactorySettings, detectEngines, stampFactoryGitignore, stampFactoryReadme } from "./workspace.mjs";
-import { humanBytes, LOG_RETENTION_DAYS, pruneLogs } from "./log-retention.mjs";
+import { humanBytes, LOG_RETENTION_DAYS, pruneLogs, retentionMode } from "./log-retention.mjs";
 import { healConfigSchema } from "./config.mjs";
 import { SCHEDULE_KINDS, SCHEDULE_MODES, normalizeSchedule, validateDeclaration, generateUnits, parseInstalled, compareInstalled, defaultPathLine } from "./schedule.mjs";
 import { deriveFactoryStatus } from "./status.mjs";
@@ -2958,6 +2958,46 @@ const forgeInputsNote = () => {
     `### Recently closed tracker issues, with comments (owner answers land here)\n\n${closed}\n`;
 };
 
+// The only thing on a machine that deletes a factory's own files (T-082). Old
+// session logs go; a window whose tape the surface has not acked keeps every
+// file a rebuild of it would read, whatever its age — the ledger is asked
+// first and its answer is final (ADR-0029).
+//
+// Called at the START of every window the driver claims a lock for (T-083):
+// `prep`, the dev window at its window-lock stamp, and the standalone
+// `triage`/`report` verbs at theirs. That is what makes a healthy box shed
+// bytes — `prep` is a repair verb whose only unattended caller is the
+// supervisor's hung-window recovery, so a box that never hangs never swept.
+//
+// Once per WINDOW, which is why this hangs off the verb rather than off
+// `runSingle`: that function is also the dev window's auto-triage leg and
+// both legs of an --until-done cycle, and those run inside a window that has
+// already swept. One window, one sweep, however many sessions it spawns. It is always under this
+// process's own lock, so a sweep can never race a live window, and the
+// window's own material is safe by age: nothing it is about to write is older
+// than the horizon.
+//
+// One line, the same wherever it ran, so a single grep finds every sweep on a
+// box. A sweep is disk hygiene and never worth a window: if it throws, the
+// window says so and runs its sessions anyway.
+const sweepOldLogs = () => {
+  try {
+    const days = cfg.logRetentionDays ?? LOG_RETENTION_DAYS;
+    // Said, not silent: an operator grepping a box that sheds nothing gets the
+    // reason rather than an absence, and never a "pruned 0" that reads as a
+    // sweep having run.
+    if (retentionMode(days) === "off") {
+      log("log sweep: off (logRetentionDays 0) — every session log is kept");
+      return;
+    }
+    const swept = pruneLogs(project, { days, report: (msg) => log(`log sweep: ${msg}`) });
+    if (swept.off) return; // malformed: it said its own reason, and doctor carries the red row
+    log(`log sweep: pruned ${swept.files} log file(s), ${humanBytes(swept.bytes)} freed`);
+  } catch (e) {
+    log(`log sweep failed (${firstLine(e)}) — continuing`);
+  }
+};
+
 // ---------- single-session modes: triage / report ----------
 const runSingle = async (name) => {
   log(`${name} session starting`);
@@ -3151,6 +3191,7 @@ if (mode === "triage" || mode === "report") {
     await notify(`✗ ${mode} aborted — repo not ready: ${firstLine(e)}`);
     process.exit(1);
   }
+  sweepOldLogs(); // a single claims a lock of its own, and sheds old logs like any window (T-083)
   await single(mode);
 }
 
@@ -4093,18 +4134,6 @@ const replayUnfinishedFinalization = async () => {
   journalFile = null;
 };
 
-// prep-only: the only thing on a machine that deletes a factory's own files
-// (T-082). Old session logs go; a window whose tape the surface has not acked
-// keeps every file a rebuild of it would read, whatever its age — the ledger is
-// asked first and its answer is final (ADR-0029). It runs under prep's own
-// lock, so a sweep can never race a live window.
-const sweepOldLogs = () => {
-  const days = cfg.logRetentionDays ?? LOG_RETENTION_DAYS;
-  const swept = pruneLogs(project, { days, report: (msg) => log(`prep: ${msg}`) });
-  if (swept.off) return; // said its own reason; doctor carries the red row
-  log(`prep: pruned ${swept.files} log file(s), ${humanBytes(swept.bytes)} freed`);
-};
-
 // ---------- prep (NOTES item 32) ----------
 // "I worked in this checkout — make it safe for the next factory window,
 // now." Runs the exact machinery a window start would, spawns no sessions,
@@ -4236,6 +4265,7 @@ const engineSkillNote = () => {
     `This repo contains a ${e === "godot" ? "Godot" : "Unity"} project. Run the \`code4food-factory:${e}\` skill before any engine work (CLI, tests, scenes, builds).`).join("\n") + "\n";
 };
 const promptText = promptFor("dev-task") + FOREGROUND_RULE + TRACEABILITY_RULE + configPromptNote() + engineSkillNote();
+sweepOldLogs(); // this window's share of "the box sheds its old logs" (T-083)
 rmScratch("window start"); // leftovers from a killed window
 // A killed driver strands its session (or grader) worktree — sweep old ones
 // before starting new (disk hygiene; git registrations are pruned on next add).
