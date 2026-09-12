@@ -270,7 +270,7 @@ without its row.
 | `gradeFailLimit` | `2` | consecutive genuine graded fails (fresh heads) a task may take before the gate parks it `needs-human` for re-planning instead of writing another retry note. Only fresh verdicts with genuinely failed criteria count: a cached verdict re-read never double-counts |
 | `staleRetryDays` | `1` | days a parked (`blocked`/`needs-human`) task waits before its ONE escalated retry on idle window capacity (§Stale-parked retry); `0` disables the lane |
 | `staleRetryModel` | `"fable"` | the retry session's model — the escalation IS the point: the task's own pin and the factory default already parked it |
-| `logRetentionDays` | `30` | days `<state>/log/` keeps a session's files before `prep` sweeps them. Candidates are exactly the session transcripts (`dev-`/`triage-`/`report-`/`grade-`, with their `.err`/`.mcp*` siblings) and the dated `factory-<day>.log` — never the lock, the state, the doctor record, the tape ledger, a journal, a `gate-suite-*.log` or a quarantine directory — and never a window whose tape the fleet-control collector has not acked, whatever its age. A malformed value FAILS doctor and prunes NOTHING rather than guessing a window |
+| `logRetentionDays` | `30` | days `<state>/log/` keeps a session's files. Every window the driver claims a lock for sweeps at that lock — a `dev` window, a standalone `triage`/`report` run, and `prep` — once per window, not once per session or per leg, so a box sheds its logs without anybody running a repair verb. Candidates are exactly the session transcripts (`dev-`/`triage-`/`report-`/`grade-`, with their `.err`/`.mcp*` siblings) and the dated `factory-<day>.log` — never the lock, the state, the doctor record, the tape ledger, a journal, a `gate-suite-*.log` or a quarantine directory — and never a window whose tape the fleet-control collector has not acked, whatever its age. `0` turns the sweep OFF (keep everything) and reads green in doctor; any other malformed value FAILS doctor and prunes NOTHING rather than guessing a window |
 | `permissionMode` | `"dontAsk"` | keep it; `"bypassPermissions"` only inside a container/VM you could afford to lose |
 | `claudeCmd` | `"claude"` | binary to launch; set it when the CLI lives off the scheduler's PATH |
 | `forge` | `"github"` | where PRs live: `"github"` (gh CLI) or `"bitbucket"` (Cloud REST) — see §Scheduling → Forge |
@@ -771,10 +771,11 @@ service, `factory-onfailure@.service`) live in `factory/schedulers/`.
   id and new status (ADR-0018). The verb is idempotent and refuses
   `done`/unknown milestones and a live window; triage can ask for the same
   flip itself, which the driver applies at session end.
-- `<state>/log/dev-*.out` — full session transcripts. `prep` sweeps these past
-  `logRetentionDays`; until then nothing ever deleted them, and a fleet box had
-  reached 366 MB of them. **`prep` is the only thing that sweeps**, and it is a
-  repair verb — a box nobody runs it on still grows.
+- `<state>/log/dev-*.out` — full session transcripts. Every window sweeps these
+  past `logRetentionDays` at the lock it claims — a `dev` window, a standalone
+  `triage`/`report` run, and `prep` — so a box that only ever runs windows
+  still sheds them. Until this existed nothing ever deleted them and a fleet
+  box had reached 366 MB. One line, `log sweep: pruned …`, whoever ran it.
 - `<state>/log/window.lock` — the live window's claim. A lock left by a crash
   carries a dead pid, which every reader treats as stale: the fix for a stuck
   window is to run the next one, not to delete the file.
@@ -794,7 +795,7 @@ service, `factory-onfailure@.service`) live in `factory/schedulers/`.
   `git stash pop` to take it back), returns the tree to the base branch at
   origin tip, pushes unpushed commits, drains pending status flips, gives
   leftover green factory PRs one gate pass, sweeps session logs past
-  `logRetentionDays`, ends with a doctor summary.
+  `logRetentionDays` (as every window does), ends with a doctor summary.
   Zero sessions, zero cost. This is a REPAIR verb, not a required handoff:
   the driver never touches your checkout on its own, so you only need prep when
   you've left the checkout dirty or diverged and want it back to a known-good
