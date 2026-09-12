@@ -199,29 +199,40 @@ export const parseTaskFile = (text, epic) => {
   for (const block of String(text ?? "").split(/^## /m).slice(1)) {
     const head = block.match(/^(T-[\w-]+):\s*(.*)/);
     if (!head) continue;
+    const statusLine = block.match(/^-[ \t]+Status:[ \t]*(\S+)/im);
     tasks.push({
       id: head[1],
       title: head[2].trim(),
-      status: block.match(/- Status:\s*(\S+)/)?.[1] ?? "todo",
+      // Lenient by construction: a block with no readable Status: line still
+      // parses as `todo` (a lenient parse must never brick a window), but it
+      // says so — `todo` is in-vocabulary, so without this a task that never
+      // declared a status reads as a healthy one (T-069, folded into T-084).
+      status: (statusLine?.[1] ?? "todo").toLowerCase(),
+      statusDeclared: statusLine !== null,
       acceptance: parseAcceptance(block),
-      verify: block.match(/^-[ \t]+Verify:[ \t]*(\S.*)/m)?.[1]?.trim() ?? null,
-      // `- Gate: human (<reason>)` marks a task whose acceptance needs owner
-      // judgment — the merge-gate never auto-merges it on green.
-      gate: block.match(/- Gate:\s*human\b/) ? "human" : null,
+      verify: block.match(/^-[ \t]+Verify:[ \t]*(\S.*)/im)?.[1]?.trim() ?? null,
+      // `- Gate: human (<reason>)` marks a task whose ACCEPTANCE needs owner
+      // judgment — the merge-gate never auto-merges it on green. `owner-runs`
+      // marks work only the owner can DO (create a credential, run a deploy
+      // only he may run): the driver refuses to hand it to a session at all,
+      // so a PR for one should never exist. The two answer different
+      // questions — who judges the result, who does the work — and only
+      // `human` carries the merge-time meaning (T-084).
+      gate: block.match(/^-[ \t]+Gate:[ \t]*(human|owner-runs)\b/im)?.[1]?.toLowerCase() ?? null,
       epic,
-      model: block.match(/- Model:\s*(\S+)/)?.[1] ?? null,
-      effort: block.match(/- Effort:\s*(\S+)/)?.[1] ?? null,
+      model: block.match(/^-[ \t]+Model:[ \t]*(\S+)/im)?.[1] ?? null,
+      effort: block.match(/^-[ \t]+Effort:[ \t]*(\S+)/im)?.[1] ?? null,
       // `- Deps: T-024, T-020` — tasks this one builds on. Read as the task
       // ids anywhere on the line so both list dialects (commas, spaces) and
       // a prose tail parse; the driver's spawn guard refuses a plan entry
       // whose deps aren't done.
-      deps: [...(block.match(/^-[ \t]+Deps:[ \t]*(\S.*)/m)?.[1] ?? "").matchAll(/T-[\w-]+/g)].map((x) => x[0]),
+      deps: [...(block.match(/^-[ \t]+Deps:[ \t]*(\S.*)/im)?.[1] ?? "").matchAll(/T-[\w-]+/g)].map((x) => x[0]),
       // The issue a session filed for this task (driver writes `- Question:`
       // under the Status line) — the needs-human pill links straight to it.
       // http(s) only: this lands in an href, and backlog files are written
       // by autonomous sessions — a bare \S+ would let a `javascript:` token
       // ride into the owner's click.
-      question: block.match(/- Question:\s*(https?:\/\/\S+)/)?.[1] ?? null,
+      question: block.match(/^-[ \t]+Question:[ \t]*(https?:\/\/\S+)/im)?.[1] ?? null,
       links: [...block.matchAll(/https?:\/\/\S+/g)].map((x) => x[0].replace(/[).,]$/, "")),
     });
   }
@@ -404,6 +415,14 @@ export const inactiveEpics = (indexText) => {
 // lives once (two private copies of it already diverged before this module
 // existed; see the header).
 export const epicKey = (file) => file.replace(/\.md$/, "");
+
+// Tasks whose block never declared a `Status:` line at all. The parse is
+// deliberately lenient (they read `todo`), so the defect is invisible in the
+// parsed shape — `todo` is in-vocabulary and the format check passes. This is
+// the feed that makes it visible: the driver logs it at window start and the
+// doctor's backlog-format row surfaces it (T-084).
+export const undeclaredStatus = (tasks) =>
+  tasks.filter((t) => !t.statusDeclared).map((t) => ({ id: t.id, file: `${t.epic}.md` }));
 
 // Every task in a backlog directory. index.md holds milestones, never tasks.
 export const parseBacklogTasks = (backlogDir) => {

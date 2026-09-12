@@ -28,7 +28,7 @@ import { healConfigSchema } from "./config.mjs";
 import { SCHEDULE_KINDS, SCHEDULE_MODES, normalizeSchedule, validateDeclaration, generateUnits, parseInstalled, compareInstalled, defaultPathLine } from "./schedule.mjs";
 import { deriveFactoryStatus } from "./status.mjs";
 import { createForge, createTracker } from "./forge.mjs";
-import { parseMilestones, parseBacklogTasks as parseTasksInDir, lintVerify, inactiveEpics as inactiveEpicsFromIndex, epicKey } from "./backlog-index.mjs";
+import { parseMilestones, parseBacklogTasks as parseTasksInDir, lintVerify, inactiveEpics as inactiveEpicsFromIndex, epicKey, undeclaredStatus } from "./backlog-index.mjs";
 import { jiraTracker } from "./jira.mjs";
 import { jiraBoardInit, syncJiraBoard } from "./jira-board.mjs";
 import { selectStaleRetry, retryOutcome, appendRetryLine, extractTaskBlock } from "./stale-retry.mjs";
@@ -3195,6 +3195,30 @@ if (mode === "triage" || mode === "report") {
   await single(mode);
 }
 
+// Hand a green PR back to the owner instead of merging it: park the task,
+// say so once, and let the owner's own merge land it (the external-merge path
+// flips it done). Two gates share this — `Gate: human` (the owner judges the
+// result) and `Gate: owner-runs` (only the owner may do the work) — with
+// different words for a different remedy; the READS stay separate on purpose,
+// so an owner-runs task can never inherit the human gate's merge meaning.
+const parkForOwner = async ({ taskId, pr, commitMsg, comment, journalKey, notice, failNote }) => {
+  try {
+    refreshMeta();
+    // Dedupe on THIS task's flip landing — applyFlips also drains
+    // unrelated pendingFlips, so a bare applied.length would re-comment
+    // on every sweep that happens to carry one.
+    const applied = applyFlips([{ taskId, status: "needs-human" }]);
+    if (applied.some((a) => a.startsWith(`${taskId} `))) {
+      commitMetadata(commitMsg);
+      forge.prComment(pr, comment);
+      journal(journalKey, "done", `${pr} (${taskId})`);
+      await notifyActivity(notice);
+    }
+  } catch (e) {
+    log(`merge-gate: ${failNote} failed (${firstLine(e)}) — ${pr} stays open`);
+  }
+};
+
 // ---------- merge gate: check-watching + the gate suite ----------
 // Merge-gate (NOTES items 13, 27): when a session reports `review` with a
 // PR url under auto-merge-dev, the driver — not a paid session — watches
@@ -3781,29 +3805,42 @@ const gatePass = async ({ pr, taskId }, budgetMs) => {
       log(`merge-gate: checks still pending on ${pr} — leaving it for a later gate pass`);
       return null;
     }
+    // Green — but an owner-runs task's PR never auto-merges either, and for a
+    // different reason: `human` says the owner JUDGES the result, `owner-runs`
+    // says only the owner may DO the work (T-084). A PR exists at all only
+    // because the marker landed after the work did, so the gate hands it back
+    // rather than landing work the machine was not allowed to attempt.
+    if (taskId && parseBacklogTasks(runtimeFactoryDir()).find((x) => x.id === taskId)?.gate === "owner-runs") {
+      log(`merge-gate: ${taskId} is Gate: owner-runs — ${pr} never auto-merges; the owner runs and lands this one`);
+      await parkForOwner({
+        taskId, pr,
+        commitMsg: `${taskId} needs-human: owner-runs — the owner lands this PR`,
+        comment:
+          `Checks are green, but ${taskId} is marked \`Gate: owner-runs\` — this is work only you may do, so the ` +
+          `factory will not auto-merge it. Merge or close this PR yourself. The task stays \`needs-human\` either ` +
+          `way: the PR is not the work here, so only you can say when ${taskId} is actually done.`,
+        journalKey: "gate:owner-runs",
+        notice: `🔒 owner-runs PR handed back: ${pr} (${taskId} is work only you may do)`,
+        failNote: "owner-runs handling",
+      });
+      return null;
+    }
     // Green — but a human-gated task's PR never auto-merges: the owner is
     // the acceptance check. Park the task, ask once (the flip landing is the
     // dedupe: repeat sweeps find needs-human already set and stay silent),
     // and let the owner's own merge land it (external-merge path flips done).
     if (taskId && parseBacklogTasks(runtimeFactoryDir()).find((x) => x.id === taskId)?.gate === "human") {
       log(`merge-gate: ${taskId} is human-gated — ${pr} waits for owner review, not auto-merge`);
-      try {
-        refreshMeta();
-        // Dedupe on THIS task's flip landing — applyFlips also drains
-        // unrelated pendingFlips, so a bare applied.length would re-comment
-        // on every sweep that happens to carry one.
-        const applied = applyFlips([{ taskId, status: "needs-human" }]);
-        if (applied.some((a) => a.startsWith(`${taskId} `))) {
-          commitMetadata(`${taskId} needs-human: green PR awaits owner review`);
-          forge.prComment(pr,
-            `Checks are green, but ${taskId} is marked \`Gate: human\` — the factory will not auto-merge. ` +
-            `Review and merge it yourself (your merge marks the task done), or comment what to change.`);
-          journal("gate:human", "done", `${pr} (${taskId})`);
-          await notifyActivity(`👀 owner review requested: ${pr} (${taskId} is human-gated)`);
-        }
-      } catch (e) {
-        log(`merge-gate: human-gate handling failed (${firstLine(e)}) — ${pr} stays open`);
-      }
+      await parkForOwner({
+        taskId, pr,
+        commitMsg: `${taskId} needs-human: green PR awaits owner review`,
+        comment:
+          `Checks are green, but ${taskId} is marked \`Gate: human\` — the factory will not auto-merge. ` +
+          `Review and merge it yourself (your merge marks the task done), or comment what to change.`,
+        journalKey: "gate:human",
+        notice: `👀 owner review requested: ${pr} (${taskId} is human-gated)`,
+        failNote: "human-gate handling",
+      });
       return null;
     }
     // Ungradeable: green, but with no task id there are no Acceptance lines
@@ -4324,6 +4361,14 @@ try {
   process.exit(1);
 }
 
+// A block with no Status: line parses as `todo` — lenient by design, and
+// invisible because `todo` is in-vocabulary. Say it out loud once per window
+// so a task nobody ever gave a status stops reading as a healthy one (T-084).
+// After refreshMeta: before it, the meta worktree may hold no backlog at all.
+for (const u of undeclaredStatus(parseBacklogTasks(runtimeFactoryDir()))) {
+  log(`backlog: ${u.id} (${u.file}) declares no Status: line — parsed as todo`);
+}
+
 // PRs merge between windows — under pr-only that's the ONLY way they merge,
 // and no sweep runs there at all. Close owner-merged PRs' tasks before the
 // skip check and the plan look at statuses, so a settled backlog skips and
@@ -4516,6 +4561,14 @@ while (true) {
         planIdx += 1;
         continue;
       }
+      // Work no machine may attempt (T-084). Unlike `Gate: human`, which is a
+      // merge-time hold on a finished PR, this one has to refuse at SELECTION
+      // — the point is that nothing starts building it.
+      if (task?.gate === "owner-runs") {
+        log(`plan: skipping ${plan[planIdx].taskId} — it is Gate: owner-runs (only the owner may do this work)`);
+        planIdx += 1;
+        continue;
+      }
       break;
     }
   }
@@ -4575,6 +4628,17 @@ while (true) {
   }
   if (claims.size) {
     extra += `\n\n## Claimed tasks (a human holds each via an open PR — NOT eligible, even if the backlog says todo)\n\n${[...claims].map(([id, c]) => `- ${id} — ${c.draft ? "draft " : ""}PR #${c.number}`).join("\n")}\n`;
+  }
+  // The plan queue already refuses these; this is for the session that
+  // self-selects after the plan is exhausted, which the driver hands
+  // selection to and where only prose stands in the way (ADR-0017's weak
+  // form — hence the refusal at the queue AND the merge gate too).
+  {
+    const ownerRuns = effectiveTasks().filter((t) => t.gate === "owner-runs" && t.status !== "done");
+    if (ownerRuns.length) {
+      extra += `\n\n## Owner-runs tasks (\`Gate: owner-runs\` — only the owner may do this work; NOT eligible, even if the backlog says todo)\n\n${
+        ownerRuns.map((t) => `- ${t.id} — ${t.title}`).join("\n")}\n\nDo not pick one of these, and do not open a PR for one.\n`;
+    }
   }
   if (!retryingId) nextSessionNote = null; // the retry prompt never carries driver notes — leave them for the sweep
   // State the GRANTED budget, never the padded cap. The config dump carries
