@@ -26,7 +26,7 @@ import { readJson, readEnvLines, machineEnvFile, firstLine } from "./paths.mjs";
 import { buildSessionSettings, detectStack, detectEngines, missingGitignoreEntries, misspelledGitignoreEntries } from "./workspace.mjs";
 import { SCHEDULE_KINDS, normalizeSchedule, validateDeclaration, compareInstalled } from "./schedule.mjs";
 import { nativeTrackerCheck } from "./forge.mjs";
-import { parseMilestones, unparsedMilestoneHeadings, parseBacklogTasks as parseTasksInDir, lintVerify, MILESTONE_STATUSES } from "./backlog-index.mjs";
+import { parseMilestones, unparsedMilestoneHeadings, parseBacklogTasks as parseTasksInDir, lintVerify, undeclaredStatus, MILESTONE_STATUSES } from "./backlog-index.mjs";
 import { jiraTracker } from "./jira.mjs";
 import { expectedOrigin, sameOrigin } from "./distribution.mjs";
 import { retentionMode } from "./log-retention.mjs";
@@ -505,8 +505,16 @@ export const runDoctor = (ctx) => {
     if (!tasks.length) check("warn", "backlog format", "no tasks parsed from .factory/backlog/*.md");
     else {
       const bad = tasks.filter((t) => !BOARD_STATUSES.includes(t.status));
-      check(bad.length ? "warn" : "ok", "backlog format",
-        bad.length ? `${tasks.length} task(s); off-vocabulary status: ${bad.map((t) => `${t.id}=${t.status}`).join(", ")}` : `${tasks.length} task(s) parse clean`);
+      // An undeclared status is the quiet half of the same defect: the parse
+      // defaults it to `todo`, which IS in-vocabulary, so the row above stays
+      // green on a task nobody ever gave a status (T-084).
+      const undeclared = undeclaredStatus(tasks);
+      const findings = [
+        bad.length ? `off-vocabulary status: ${bad.map((t) => `${t.id}=${t.status}`).join(", ")}` : null,
+        undeclared.length ? `no Status: line (defaulted to todo): ${undeclared.map((t) => `${t.id} (${t.file})`).join(", ")}` : null,
+      ].filter(Boolean);
+      check(findings.length ? "warn" : "ok", "backlog format",
+        findings.length ? `${tasks.length} task(s); ${findings.join("; ")}` : `${tasks.length} task(s) parse clean`);
     }
   }
 

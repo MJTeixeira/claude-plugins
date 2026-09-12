@@ -6,7 +6,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 
 // Pick the OLDEST eligible parked task, or null. Eligibility (all must hold):
-// parked status, parked at least staleRetryDays (a record with no updatedAt
+// parked status, not `Gate: owner-runs`, parked at least staleRetryDays (a record with no updatedAt
 // predates the stamp and counts as old enough), no retry recorded since the
 // current park, not claimed by a human's open PR, and its linked question —
 // when question state is known (openQuestionUrls is a Set) — still open and
@@ -20,6 +20,11 @@ export const selectStaleRetry = ({ tasks, state, now = Date.now(), staleRetryDay
   const eligible = [];
   for (const t of tasks ?? []) {
     if (t.status !== "blocked" && t.status !== "needs-human") continue;
+    // `Gate: owner-runs` is work no machine may attempt (T-084). This lane is
+    // the one place that spawns a session for a PARKED task, and the merge
+    // gate parks exactly these — so without this guard an owner-runs task
+    // would come back through the very skip branch that refused it.
+    if (t.gate === "owner-runs") continue;
     const rec = recs[t.id] ?? {};
     const parkedAt = rec.updatedAt ? Date.parse(rec.updatedAt) : NaN;
     if (Number.isFinite(parkedAt) && parkedAt > cutoff) continue; // too fresh

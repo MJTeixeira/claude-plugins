@@ -137,7 +137,11 @@ const taskPark = (task, rec) => {
   if (task.status !== "needs-human") return null;
   const recorded = rec?.parkedBy;
   if (typeof recorded === "string" && recorded) return PARKS[recorded] ?? recorded;
-  return task.gate === "human" ? "gate" : null;
+  // `gate` says "the owner reviews and merges this PR"; `owner-runs` says
+  // "no machine may attempt this work at all" (T-084). Different remedies,
+  // so they must never collapse onto one verb — an owner-runs task has no PR
+  // to merge, and a board offering one would be offering nothing.
+  return task.gate === "human" ? "gate" : task.gate === "owner-runs" ? "owner-runs" : null;
 };
 
 // The thread a question park travels with (T-080) — fleet-control's ask *A

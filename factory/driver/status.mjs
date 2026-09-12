@@ -21,8 +21,15 @@ export const deriveFactoryStatus = (tasks) => {
   if (!open.length) return { status: "done", detail: "backlog complete — nothing left to build" };
   const statusById = new Map(tasks.map((t) => [t.id, t.status]));
   const parked = (t) => t.status === "blocked" || t.status === "needs-human";
-  if (open.some((t) => !parked(t) && !depBlocked(t, statusById))) return { status: "normal", detail: null };
+  // `Gate: owner-runs` marks work only the owner may DO — creating a
+  // credential, a deploy only he may run (T-084). It is open, but it is not
+  // capacity: a backlog holding nothing else has nothing a session could
+  // touch, and a window that spawned one would burn it confirming that.
+  const ownerRuns = (t) => t.gate === "owner-runs";
+  if (open.some((t) => !parked(t) && !ownerRuns(t) && !depBlocked(t, statusById))) return { status: "normal", detail: null };
   const nh = open.filter((t) => t.status === "needs-human").map((t) => t.id);
-  if (nh.length) return { status: "waiting-on-owner", detail: `waiting on owner (${nh.length}): ${nh.join(", ")}` };
+  const or = open.filter((t) => !parked(t) && ownerRuns(t)).map((t) => `${t.id} (owner-runs)`);
+  const waiting = [...nh, ...or];
+  if (waiting.length) return { status: "waiting-on-owner", detail: `waiting on owner (${waiting.length}): ${waiting.join(", ")}` };
   return { status: "deadlocked", detail: `deadlocked — every open task is dependency-blocked: ${open.map((t) => t.id).join(", ")}` };
 };
