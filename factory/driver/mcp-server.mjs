@@ -149,8 +149,8 @@ export const runMcpServer = async ({ project, eventsPath, stateDir, loadConfig }
       description:
         "TRIAGE ONLY: open the next milestone once every task in the active one is done. The DRIVER " +
         "flips the backlog/index.md heading to active and commits it itself at session end — never " +
-        "edit a heading's status yourself. Refused for done/unknown milestones; prior active " +
-        "milestones are kept.",
+        "edit a heading's status yourself. Refused for done/unknown milestones; any milestone that " +
+        "was active is closed in the same commit (done, or gated if it still holds unfinished tasks).",
       inputSchema: {
         type: "object",
         properties: {

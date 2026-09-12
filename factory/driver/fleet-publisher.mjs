@@ -11,9 +11,15 @@
 //   node fleet-publisher.mjs                  # daemon: connect and hold
 //   node fleet-publisher.mjs --once --offline # print the fresh-connection
 //                                             # envelopes as JSONL, no socket
+//        …--fixture-park                      # + a recorded question park's
+//                                             #   snapshot, thread and all
 //        …--fixture-window                    # + a recorded window's heartbeat
 //        …--fixture-window --subscribe        # + what a watcher would see of it
 //        …--fixture-window --tape             # + the tape that window becomes
+//        …--fixture-window --tape --stale-ledger  # + that window aged past the
+//                                             #   ledger's bound, and let go
+//        …--fixture-window --tape --timings   # + what the rebuild did, on
+//                                             #   stderr
 //        …--command <verb>                    # + that verb, against a recorded
 //                                             #   window, answered on stdout
 //   node fleet-publisher.mjs install [--yes]  # install + enable the systemd
@@ -44,9 +50,9 @@ import { pathToFileURL } from "node:url";
 import { createHeartbeatSource, gatherHeartbeats, HEARTBEAT_TICK_MS, writeFixtureWindow } from "./fleet-heartbeat.mjs";
 import { gatherInventory } from "./fleet-inventory.mjs";
 import { retainWindow } from "./fleet-retention.mjs";
-import { claimedProjects, gatherSnapshots } from "./fleet-snapshot.mjs";
+import { claimedProjects, gatherSnapshots, writeFixturePark } from "./fleet-snapshot.mjs";
 import { answerCommand, commandResult, createCommandLog, driveCommand } from "./fleet-command.mjs";
-import { applyTapeAck, driveTape, gatherTapes } from "./fleet-tape.mjs";
+import { applyTapeAck, driveTape, gatherTapes, newTimings, summarizeTimings } from "./fleet-tape.mjs";
 import { createLeases, createTranscriptSource, driveSubscription, TRANSCRIPT_TICK_MS } from "./fleet-transcript.mjs";
 import { snapshotChangeShape } from "./fleet-wire.mjs";
 import { machineEnvFile, readEnvLines } from "./paths.mjs";
@@ -214,22 +220,37 @@ export const createPublisher = (settings, deps = {}) => {
   // and sent once. It rides the 60-second beat rather than a tick of its own:
   // a tape is not a liveness signal, and the window it is about has already
   // ended — nothing about it will change while it waits.
-  const sendTapes = (sock) => {
+  const sendOwedTapes = async (sock) => {
     if (sock !== ws || stopped) return;
-    try {
-      // `sentTapes` goes IN, so a window already sent on this connection is
-      // never rebuilt again — it is owed until the ack lands, and rebuilding it
-      // every minute would read all of its transcripts to throw the result away.
-      // It is only added to once the socket has taken every chunk of that
-      // window: a send that throws on chunk 5 of 100 must leave the window owed
-      // on the next beat, not wait for a reconnect to be noticed again.
-      for (const { key, envelopes } of tapes(settings, { home, claims, sent: sentTapes, report: log })) {
-        for (const e of envelopes) sock.send(JSON.stringify(e));
-        sentTapes.add(key);
-      }
-    } catch (e) {
-      log(`tape failed: ${e}`);
+    // `sentTapes` goes IN, so a window already sent on this connection is
+    // never rebuilt again — it is owed until the ack lands, and rebuilding it
+    // every minute would read all of its transcripts to throw the result away.
+    // It is only added to once the socket has taken every chunk of that
+    // window: a send that throws on chunk 5 of 100 must leave the window owed
+    // on the next beat, not wait for a reconnect to be noticed again.
+    for (const { key, envelopes } of await tapes(settings, { home, claims, sent: sentTapes, report: log })) {
+      // Re-read after the rebuild: it yields (T-078), so the connection this
+      // tape was gathered for can be gone by the time it is ready. A fresh
+      // connection owes its own tapes and has its own `sentTapes`.
+      if (sock !== ws || stopped) return;
+      for (const e of envelopes) sock.send(JSON.stringify(e));
+      sentTapes.add(key);
     }
+  };
+
+  // The rebuild yields now (T-078), so a beat can arrive while the last one is
+  // still reading a window's transcripts. They are CHAINED rather than dropped:
+  // two rebuilds of one window would both find it unmarked and send it twice,
+  // and a rebuild still in flight when the connection turns over must not make
+  // the FRESH connection skip the tapes it owes. Whichever runs second finds
+  // the window marked, or its socket gone, and does nothing.
+  //
+  // The catch is on the chain rather than inside the send, because this is
+  // where the failure has nowhere left to go: a link that rejected unhandled
+  // would leave the chain rejected, and every tape after it silently unsent.
+  let taping = Promise.resolve();
+  const sendTapes = (sock) => {
+    taping = taping.then(() => sendOwedTapes(sock)).catch((e) => log(`tape failed: ${e}`));
   };
 
   const scheduleBeat = (sock) => {
@@ -432,7 +453,7 @@ const main = async () => {
     process.exit(0);
   }
 
-  const known = new Set(["--once", "--offline", "--fixture-window", "--subscribe", "--tape", "--command"]);
+  const known = new Set(["--once", "--offline", "--fixture-park", "--fixture-window", "--subscribe", "--tape", "--stale-ledger", "--timings", "--command"]);
   // `--command <verb>` is the one flag carrying a value, so its argument is not
   // a flag to be recognised: it is consumed here and checked by the verb table,
   // which is the only thing that knows what a verb is.
@@ -451,11 +472,17 @@ const main = async () => {
   // Both flags qualify --once: --offline alone would be a daemon that never
   // connects, and a fixture window on a daemon would publish a run that is
   // not happening. Neither is a mode at all.
-  for (const flag of ["--offline", "--fixture-window", "--subscribe", "--tape", "--command"]) {
+  for (const flag of ["--offline", "--fixture-park", "--fixture-window", "--subscribe", "--tape", "--stale-ledger", "--timings", "--command"]) {
     if (args.includes(flag) && !args.includes("--once")) {
       process.stderr.write(`error: ${flag} requires --once\n`);
       process.exit(2);
     }
+  }
+  // `--timings` measures a tape rebuild, so without one it has nothing to say —
+  // and a flag that prints nothing reads as a rebuild that did nothing.
+  if (args.includes("--timings") && !args.includes("--tape")) {
+    process.stderr.write("error: --timings requires --tape\n");
+    process.exit(2);
   }
   const settings = loadConfig();
   // Identity is checked before anything else: no connection, no output,
@@ -470,6 +497,19 @@ const main = async () => {
     const once = { ...settings, offline: args.includes("--offline") };
     const print = (e) => process.stdout.write(JSON.stringify(e) + "\n");
     for (const e of await freshConnectionEnvelopes(once)) print(e);
+    // --fixture-park adds a snapshot the way --fixture-window adds a
+    // heartbeat: a recorded park on disk, so the thread a question park
+    // carries can be read on a machine with nothing parked. It prints beside
+    // the real machine's snapshots because that is what it is — one more
+    // project's, from a home this drive owns and deletes.
+    if (args.includes("--fixture-park")) {
+      const fixture = writeFixturePark();
+      try {
+        for (const e of await gatherSnapshots(once, { home: fixture.home, claims: [fixture.claim] })) print(e);
+      } finally {
+        fixture.cleanup();
+      }
+    }
     // The heartbeat is not part of the fresh-connection set — it rides its
     // own 20s tick — but it IS an envelope this process sends, so the drive
     // prints one per live window rather than pretending the mode is complete
@@ -481,7 +521,15 @@ const main = async () => {
         for (const e of gatherHeartbeats(once, { home: fixture.home, claims: [fixture.claim] })) print(e);
         if (args.includes("--subscribe")) for (const e of driveSubscription(once, fixture)) print(e);
         // --tape ends the recorded window, which is what makes a tape owed at all.
-        if (args.includes("--tape")) for (const e of await driveTape(once, fixture)) print(e);
+        if (args.includes("--tape")) {
+          const timings = args.includes("--timings") ? newTimings() : undefined;
+          const opts = { staleLedger: args.includes("--stale-ledger"), timings };
+          for (const e of await driveTape(once, fixture, Date.now(), opts)) print(e);
+          // On STDERR, and only under its own flag: what the rebuild did is a
+          // diagnostic about this process, never anything the collector is
+          // owed, so it must not join the envelope stream on stdout.
+          if (timings) process.stderr.write(JSON.stringify(summarizeTimings(timings)) + "\n");
+        }
       } finally {
         fixture.cleanup();
       }

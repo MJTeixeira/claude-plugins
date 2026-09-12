@@ -38,9 +38,9 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { HEARTBEAT_TICK_MS, inferActivity, windowStamp } from "./fleet-heartbeat.mjs";
-import { ackWindow, retainWindow, retainedWindows } from "./fleet-retention.mjs";
+import { ackWindow, RETAIN_DAYS, retainWindow, retainedWindows } from "./fleet-retention.mjs";
 import { normalizeProjectIdentity } from "./fleet-snapshot.mjs";
-import { transcriptEvents } from "./fleet-transcript.mjs";
+import { eventsFromRecords, transcriptRecords } from "./fleet-transcript.mjs";
 import { envelope, heartbeatBody } from "./fleet-wire.mjs";
 import { activeTranscript, deriveComponent, summarizeBlock } from "./live-tail.mjs";
 import { pidAlive, readJson, stateDir } from "./paths.mjs";
@@ -143,24 +143,51 @@ const sessionTurns = (records, windowStart, fallbackAt) => {
   return turns;
 };
 
-const readRecords = (file) => {
+// One session transcript, opened once and parsed once (T-078). Both derived
+// streams are built from what this returns: the events the live stream typed
+// and the turns a heartbeat counted come from the same records, because they
+// came from the same bytes and there is only one reading of them.
+const readRecords = (file, timings) => {
   let text;
+  timings.reads += 1;
   try {
     text = fs.readFileSync(file, "utf8");
   } catch {
     return null; // a transcript the log named and the disk no longer has
   }
-  const records = [];
-  for (const line of text.split("\n")) {
-    if (!line.trim()) continue;
-    try {
-      records.push(JSON.parse(line));
-    } catch {
-      /* a corrupt line is someone else's bug this rebuild must survive */
-    }
-  }
-  return records;
+  // The live tail holds a partial last line back until its remainder arrives —
+  // right for a growing file, wrong for one being read whole: a transcript that
+  // never got its closing newline would lose its last record, which for a
+  // session is the record saying how it ended.
+  return transcriptRecords(text.endsWith("\n") ? text : `${text}\n`, {});
 };
+
+// Yielding, once per session transcript. `setImmediate` rather than a zero
+// timer: reaching the check phase takes the loop through the timers phase, so
+// every tick due by then has fired before the rebuild resumes.
+//
+// This is the whole second half of T-078. `sendTapes` runs inside the beat's
+// own promise chain, so before this a rebuild held the daemon's event loop for
+// its entire length — and fleet-control's ADR-0007 measures 43 MB of
+// transcripts for 82 sessions on one project. Nothing beat during that, and a
+// heartbeat that stops arriving is exactly how the board says a machine is
+// gone (REQ-122, REQ-130).
+const yieldToLoop = (timings) => {
+  timings.yields += 1;
+  return new Promise((resolve) => setImmediate(resolve));
+};
+
+// What a rebuild did, for the `--timings` drive. Counts rather than
+// milliseconds: the number this is about is reads per session transcript, and
+// a count says the same thing on every machine. Every rebuild fills one,
+// whether or not a caller asked for it — counting into a bag nobody reads is
+// cheaper than a guard at each of the places that count.
+export const newTimings = () => ({ sessions: 0, reads: 0, yields: 0 });
+
+export const summarizeTimings = (timings) => ({
+  ...timings,
+  readsPerSession: timings.sessions ? timings.reads / timings.sessions : 0,
+});
 
 // The sessions this window ran, in the order its log named them.
 const sessionsOf = (lines) => {
@@ -175,7 +202,7 @@ const sessionsOf = (lines) => {
 // The two derived streams. Walked once each: the ticks move forward through the
 // log lines and the turns rather than re-scanning them, because a long window is
 // hundreds of ticks and this runs at the moment a window ends.
-const rebuildStreams = (dir, remote, windowId, { home, at }) => {
+const rebuildStreams = async (dir, remote, windowId, { home, at, timings }) => {
   const logDir = path.join(stateDir(dir, home), "log");
   const windowStart = windowStartMs(windowId);
   if (windowStart === null) return null;
@@ -196,7 +223,11 @@ const rebuildStreams = (dir, remote, windowId, { home, at }) => {
   const transcript = [];
   const turnsByFile = new Map();
   for (const { session, file } of sessions) {
-    const records = readRecords(file);
+    // Before the read, not after it: a window whose transcripts are all missing
+    // still has to let the daemon beat between the opens it attempts.
+    await yieldToLoop(timings);
+    timings.sessions += 1;
+    const records = readRecords(file, timings);
     if (!records) continue;
     let mtime = at;
     try {
@@ -204,14 +235,7 @@ const rebuildStreams = (dir, remote, windowId, { home, at }) => {
     } catch {
       /* read a moment ago; the fallback only dates undated records */
     }
-    // The tail holds a partial last line back until its remainder arrives —
-    // right for a growing file, wrong for one being read whole: a transcript
-    // that never got its closing newline would lose its last record, which for
-    // a session is the record saying how it ended.
-    const text = fs.readFileSync(file, "utf8");
-    transcript.push(
-      ...transcriptEvents(text.endsWith("\n") ? text : `${text}\n`, {}, { at: mtime, windowStart, session }),
-    );
+    transcript.push(...eventsFromRecords(records, {}, { at: mtime, windowStart, session }));
     turnsByFile.set(file, sessionTurns(records, windowStart, mtime));
   }
 
@@ -273,9 +297,9 @@ const rebuildStreams = (dir, remote, windowId, { home, at }) => {
 // heartbeats and the transcript), so an empty one costs nothing and a wrong one
 // would cost the invariant. Filling it honestly means journalling each snapshot
 // as it is sent, which is a change to the sending half and not to this rebuild.
-export const rebuildTape = (dir, remote, windowId, deps = {}) => {
-  const { home = os.homedir(), now = Date.now } = deps;
-  const streams = rebuildStreams(dir, remote, windowId, { home, at: now() });
+export const rebuildTape = async (dir, remote, windowId, deps = {}) => {
+  const { home = os.homedir(), now = Date.now, timings = newTimings() } = deps;
+  const streams = await rebuildStreams(dir, remote, windowId, { home, at: now(), timings });
   return streams && { ...streams, snapshots: [] };
 };
 
@@ -300,15 +324,42 @@ export const chunkTape = (tape, { project, window, maxBytes = CHUNK_BYTES }) => 
   return chunks;
 };
 
+// Every file on disk a rebuild of this window would read: the daily logs its
+// lines were written into, and the session transcripts those lines name.
+//
+// The pruner (T-082) asks HERE rather than deriving it again. What has to
+// survive a sweep is exactly what a rebuild reads, and two derivations of that
+// would drift the first time either changed — the window whose log was swept
+// out from under it is the one nobody notices until its tape comes back empty.
+//
+// A window whose log is gone yields nothing, which is the honest answer: it can
+// no longer be rebuilt, so there is nothing a sweep could preserve for it. What
+// ends that debt is the ledger's own bound (T-079), never a file kept forever.
+export const windowMaterial = (dir, windowId, deps = {}) => {
+  const { home = os.homedir(), at = Date.now() } = deps;
+  const logDir = path.join(stateDir(dir, home), "log");
+  const files = new Set();
+  const windowStart = windowStartMs(windowId);
+  if (windowStart === null) return files;
+  const lines = windowLogLines(logDir, windowStart, at);
+  // The driver writes one log per day, named by the day it writes into, so a
+  // line's own timestamp names the file it is in.
+  for (const { ts } of lines) files.add(path.join(logDir, `factory-${new Date(ts).toISOString().slice(0, 10)}.log`));
+  for (const { file } of sessionsOf(lines)) files.add(file);
+  return files;
+};
+
 // A window this machine owes the surface and is no longer running: the ledger
 // says it is unacked, and the project's lock either is gone or names a
 // different window. A live window is never taped — its tape arrives when it
 // ends, which is what makes an acked tape the only thing on this wire that says
 // a run is over.
-export const finishedWindows = (dir, home) => {
+export const finishedWindows = (dir, home, deps = {}) => {
   const lock = readJson(path.join(stateDir(dir, home), "log", "window.lock"));
   const live = lock && pidAlive(lock.pid) ? windowStamp(lock.startedAt) : null;
-  return retainedWindows(dir, home).filter((id) => id !== live);
+  // The ledger read is where the retention bound is applied (T-079), so the
+  // gather's clock and reporter go in with it.
+  return retainedWindows(dir, home, deps).filter((id) => id !== live);
 };
 
 // The key a sent tape is remembered by. Window ids are the driver's own start
@@ -325,7 +376,7 @@ export const tapeKey = (remote, windowId) => `${remote}\u0000${windowId}`;
 // while the array is still being built loses every remaining chunk of a send
 // that throws halfway, and the window then waits for a reconnect to be
 // noticed again. The caller marks, for the same reason `sendResults` does.
-export const gatherTapes = (settings, deps = {}) => {
+export const gatherTapes = async (settings, deps = {}) => {
   const {
     home = os.homedir(),
     now = Date.now,
@@ -336,21 +387,27 @@ export const gatherTapes = (settings, deps = {}) => {
   const tapes = [];
   for (const { dir, remote } of claims ?? []) {
     if (!remote) continue;
-    for (const windowId of finishedWindows(dir, home)) {
+    for (const windowId of finishedWindows(dir, home, { at: now(), report })) {
       // Checked BEFORE the rebuild, not after it: a tape waiting for an ack is
       // owed for as long as the ack takes, and rebuilding it on every beat
       // would read every one of the window's transcripts whole, every minute,
       // to throw the result away.
       if (sent.has(tapeKey(remote, windowId))) continue;
       try {
-        const tape = rebuildTape(dir, remote, windowId, { ...deps, home, now });
+        const tape = await rebuildTape(dir, remote, windowId, { ...deps, home, now });
         if (!tape) {
           // The window stays owed. Acking it here would be this machine telling
           // itself the surface has the record — which is exactly the lie the
           // ack exists to prevent, and it would unlock the logs that are the
-          // only remaining copy. A window whose material is genuinely gone
-          // costs a line per beat and nothing else.
+          // only remaining copy.
+          //
+          // Marked all the same, exactly as the too-large case below is: there
+          // is nothing to send and nothing a later beat of this connection
+          // would send differently, so the line is said once per connection
+          // rather than once every 60 seconds for the life of the machine
+          // (T-079). What ends the debt is the ledger's own bound.
           report(`fleet-publisher: window ${windowId} in ${dir} cannot be rebuilt — still owed`);
+          tapes.push({ key: tapeKey(remote, windowId), envelopes: [] });
           continue;
         }
         // The raw remote, like every other body: the far end owns the
@@ -403,10 +460,19 @@ export const applyTapeAck = (body, deps = {}) => {
 // machine the daemon does them for it: the lock goes (the driver removes it
 // when the window ends) and the ledger holds the window (the daemon wrote it
 // down when it sent the first heartbeat for it).
-export const driveTape = (settings, fixture, at = Date.now()) => {
+// `--stale-ledger` is a drive-only knob, like the fixture window itself: it
+// dates the ledger entry past the bound so the drive exercises the sweep
+// without waiting thirty days for it.
+export const driveTape = async (settings, fixture, at = Date.now(), { staleLedger = false, timings } = {}) => {
   const { dir } = fixture.claim;
-  retainWindow(dir, fixture.home, fixture.windowId, at);
+  const seenAt = staleLedger ? at - (RETAIN_DAYS + 1) * 86400_000 : at;
+  retainWindow(dir, fixture.home, fixture.windowId, seenAt);
   fs.rmSync(path.join(stateDir(dir, fixture.home), "log", "window.lock"), { force: true });
-  return gatherTapes(settings, { home: fixture.home, now: () => at, claims: [fixture.claim] })
-    .flatMap((t) => t.envelopes);
+  const tapes = await gatherTapes(settings, {
+    home: fixture.home,
+    now: () => at,
+    claims: [fixture.claim],
+    timings,
+  });
+  return tapes.flatMap((t) => t.envelopes);
 };
