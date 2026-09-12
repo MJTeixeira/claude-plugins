@@ -262,12 +262,15 @@ const offsetsFor = (records, cache, { at, windowStart }) => {
   });
 };
 
-// Digest a chunk of session-transcript jsonl into typed events, holding a
-// partial trailing line in the caller's cache exactly as the dashboard's tail
-// does — the chunk boundary is bytes, not lines. The cache also carries what a
-// session has already said (its verdict, its PR, its settled status), which is
-// what keeps a repeated report from reading as a second suite run.
-export const transcriptEvents = (chunk, cache, { at, windowStart, session }) => {
+// The line parse, holding a partial trailing line in the caller's cache exactly
+// as the dashboard's tail does — the chunk boundary is bytes, not lines.
+//
+// Split from the typing below because a rebuild (T-078) needs the SAME records
+// twice: once for the events, once for the turn list a rebuilt heartbeat
+// counts. Reading the file a second time to parse it a second time is what the
+// split removes, and a window carrying a day of session output is tens of
+// megabytes of it.
+export const transcriptRecords = (chunk, cache) => {
   cache.buf = (cache.buf ?? "") + chunk;
   const lines = cache.buf.split("\n");
   cache.buf = lines.pop();
@@ -280,6 +283,13 @@ export const transcriptEvents = (chunk, cache, { at, windowStart, session }) => 
       // a corrupt line is someone else's bug this stream must survive
     }
   }
+  return records;
+};
+
+// Type a batch of parsed records into events. The cache carries what a session
+// has already said (its verdict, its PR, its settled status), which is what
+// keeps a repeated report from reading as a second suite run.
+export const eventsFromRecords = (records, cache, { at, windowStart, session }) => {
   const offsets = offsetsFor(records, cache, { at, windowStart });
   const events = [];
   records.forEach((record, i) => {
@@ -305,6 +315,11 @@ export const transcriptEvents = (chunk, cache, { at, windowStart, session }) => 
   });
   return events;
 };
+
+// Digest a chunk of session-transcript jsonl into typed events: the two halves
+// above, for the live stream that only ever has a chunk.
+export const transcriptEvents = (chunk, cache, opts) =>
+  eventsFromRecords(transcriptRecords(chunk, cache), cache, opts);
 
 // ---------- the gather ----------
 

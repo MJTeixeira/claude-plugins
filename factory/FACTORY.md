@@ -121,13 +121,25 @@ credential lives apart in `~/secrets/fleet-publisher.env`
 secret stays in that machine's own secret location — no repo ever holds one.
 
 **Driving it by hand.** `--once` prints what a fresh connection would send and
-exits; `--offline` keeps it off the network. Two flags add the paths that need a
-window to exist, and both require `--once`: `--fixture-window` writes a recorded
-window to disk so the heartbeat runs on a machine with none, and `--subscribe`
-streams that window's transcript the way a viewer watching it would see it —
-from the moment of subscription, never a replay. All of them still need
-`FLEET_MACHINE_ID` set: identity is checked before anything is printed.
-`--tape` ends that recorded window and prints the tape it becomes.
+exits; `--offline` keeps it off the network. Three flags write the thing a real
+machine usually has none of, and every one of them requires `--once`:
+`--fixture-window` writes a recorded window to disk so the heartbeat runs on a
+machine with none, `--subscribe` streams that window's transcript the way a
+viewer watching it would see it — from the moment of subscription, never a
+replay — and `--fixture-park` writes a throwaway factory with one task parked on
+a question and the tracker thread it filed, printed as one more snapshot, so the
+thread a park carries can be read where nothing is parked. All of them still
+need `FLEET_MACHINE_ID` set: identity is checked before anything is printed.
+`--tape` ends that recorded window and prints the tape it becomes, and
+`--stale-ledger` alongside it dates that window's ledger entry past the thirty
+days a window stays owed, so the sweep that lets a window go can be watched
+without waiting for one. `--timings` alongside `--tape` prints what the rebuild
+did — how many session transcripts it read, how many times it opened each, and
+how often it handed the event loop back — on stderr, so it never joins the
+envelope stream on stdout. One read per session
+is the healthy number; anything above it means a window's transcripts are being
+parsed more than once, which on a day-sized window is tens of megabytes of work
+the daemon does instead of beating.
 `FLEET_STREAM_MS` overrides the transcript's own 2-second tick (tests only).
 `--command <verb>` performs one verb against that recorded window and prints the
 answer — never against this machine's own projects, so it is safe to run twice.
@@ -258,6 +270,7 @@ without its row.
 | `gradeFailLimit` | `2` | consecutive genuine graded fails (fresh heads) a task may take before the gate parks it `needs-human` for re-planning instead of writing another retry note. Only fresh verdicts with genuinely failed criteria count: a cached verdict re-read never double-counts |
 | `staleRetryDays` | `1` | days a parked (`blocked`/`needs-human`) task waits before its ONE escalated retry on idle window capacity (§Stale-parked retry); `0` disables the lane |
 | `staleRetryModel` | `"fable"` | the retry session's model — the escalation IS the point: the task's own pin and the factory default already parked it |
+| `logRetentionDays` | `30` | days `<state>/log/` keeps a session's files before `prep` sweeps them. Candidates are exactly the session transcripts (`dev-`/`triage-`/`report-`/`grade-`, with their `.err`/`.mcp*` siblings) and the dated `factory-<day>.log` — never the lock, the state, the doctor record, the tape ledger, a journal, a `gate-suite-*.log` or a quarantine directory — and never a window whose tape the fleet-control collector has not acked, whatever its age. A malformed value FAILS doctor and prunes NOTHING rather than guessing a window |
 | `permissionMode` | `"dontAsk"` | keep it; `"bypassPermissions"` only inside a container/VM you could afford to lose |
 | `claudeCmd` | `"claude"` | binary to launch; set it when the CLI lives off the scheduler's PATH |
 | `forge` | `"github"` | where PRs live: `"github"` (gh CLI) or `"bitbucket"` (Cloud REST) — see §Scheduling → Forge |
@@ -752,12 +765,16 @@ service, `factory-onfailure@.service`) live in `factory/schedulers/`.
   `node ~/.factory/runtime/factory/driver/factory.mjs promote M3 --project <p>`
   flips that milestone to `active` in `backlog/index.md` and commits it as the
   driver, so no hand-edited PR trips the merge gate's code-only warning.
-  Previously active milestones STAY active — dependencies order the work, and
-  closing one early strands the foundation tasks a later milestone needs.
-  Marking a milestone `done` stays an explicit human or triage edit. The verb
-  is idempotent and refuses `done`/unknown milestones and a live window; triage
-  can ask for the same flip itself, which the driver applies at session end.
-- `<state>/log/dev-*.out` — full session transcripts.
+  Every other heading reading `active` is closed in the same commit — `done`
+  if its epics hold no unfinished task, `gated` if they do — so exactly one
+  milestone is open for work and the success line names each displacement by
+  id and new status (ADR-0018). The verb is idempotent and refuses
+  `done`/unknown milestones and a live window; triage can ask for the same
+  flip itself, which the driver applies at session end.
+- `<state>/log/dev-*.out` — full session transcripts. `prep` sweeps these past
+  `logRetentionDays`; until then nothing ever deleted them, and a fleet box had
+  reached 366 MB of them. **`prep` is the only thing that sweeps**, and it is a
+  repair verb — a box nobody runs it on still grows.
 - `<state>/log/window.lock` — the live window's claim. A lock left by a crash
   carries a dead pid, which every reader treats as stale: the fix for a stuck
   window is to run the next one, not to delete the file.
@@ -776,7 +793,8 @@ service, `factory-onfailure@.service`) live in `factory/schedulers/`.
   uncommitted (copied to `<state>/log/quarantine-<ts>/` and stashed;
   `git stash pop` to take it back), returns the tree to the base branch at
   origin tip, pushes unpushed commits, drains pending status flips, gives
-  leftover green factory PRs one gate pass, ends with a doctor summary.
+  leftover green factory PRs one gate pass, sweeps session logs past
+  `logRetentionDays`, ends with a doctor summary.
   Zero sessions, zero cost. This is a REPAIR verb, not a required handoff:
   the driver never touches your checkout on its own, so you only need prep when
   you've left the checkout dirty or diverged and want it back to a known-good

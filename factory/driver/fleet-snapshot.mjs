@@ -14,7 +14,9 @@
 // contract's four values, and the PR the task produced with the state read
 // through the driver's own forge client, its own age and its forge. Both are
 // read from the task's runtime record in `state.json`, which is where the
-// driver writes them; the backlog block carries neither.
+// driver writes them; the backlog block carries neither. T-080 added the
+// third of them on the same seam — the tracker thread a question park was
+// filed on — and the argument for it is at `taskThread`.
 
 import * as fs from "node:fs";
 import * as os from "node:os";
@@ -138,6 +140,40 @@ const taskPark = (task, rec) => {
   return task.gate === "human" ? "gate" : null;
 };
 
+// The thread a question park travels with (T-080) — fleet-control's ask *A
+// question park must carry the thread it filed*, so its `answer` verb has
+// somewhere to send the owner instead of a claim they have to go and find.
+// The driver already keeps it: `state.json`'s `questionThreads` is a
+// taskId → url map, written when the thread is opened. Read here rather than
+// asked of the driver — the same seam T-055 used for the PR number, and it
+// leaves the driver's state shape untouched.
+//
+// Only a `question` park carries one, and it is the FOLDED park that decides:
+// a session's own `blocked` park is a question park, and its thread is what
+// the owner answers. Only a value that is actually a link travels — the map
+// holds whatever a tracker's create call returned, and a surface that laid a
+// non-URL into a link would be worse than one with nowhere to send the owner
+// (the stance `prNumberFromUrl` takes on `#NaN`, for the same reason). This
+// rule is the collector's own, byte for byte: `threadUrl` in its
+// `src/actions.mjs` drops anything that is not an https string, and both ends
+// judging alike is what ADR-0005 is about.
+//
+// Not the task's own `question` field, which carries the `- Question: <url>`
+// line the driver writes into the BACKLOG BLOCK for the same thread. Two
+// things separate them: that line goes into the driver's meta worktree, so it
+// reaches the checkout this snapshot reads (REQ-116) only once the backlog
+// change merges, and it is written once and never removed, so it outlives the
+// park it names. The map is machine state and readable at once. It is *not*
+// pruned on the answer, though — `processQuestions` drops dead threads only on
+// its next successful filing pass, and returns early when nothing is being
+// asked — so a thread the owner closed can still travel for a while. That is
+// a staleness the far end already survives: the url is a link to a closed
+// thread, never a claim that anything is open.
+const taskThread = (park, recorded) =>
+  park === "question" && typeof recorded === "string" && recorded.startsWith("https://")
+    ? recorded
+    : null;
+
 // The PR's number, derived from the url the driver already recorded rather
 // than asked of the forge (fleet-control's companion request, answered by
 // deriving it here — the COLLECTOR may not parse a forge path, REQ-110, but
@@ -201,10 +237,11 @@ export const prStateReader = (dir, home, kind, make = createForge) => {
 // parks. A task at `review` with no url recorded (what a local-only repo
 // reports) travels with no `pr` at all, which is exactly the absence the
 // collector needs to withhold a verb it could not name an object for.
-const wireTask = (t, rec, { forge, readState, now }) => {
+const wireTask = (t, rec, { forge, readState, now, threads }) => {
   const url = typeof rec?.pr === "string" && rec.pr ? rec.pr : null;
   const number = url ? prNumberFromUrl(url) : null;
   const park = taskPark(t, rec);
+  const thread = taskThread(park, threads[t.id]);
   let pr = null;
   if (url) {
     // When the reading happened, on this machine's clock. `dateReadings`
@@ -240,6 +277,7 @@ const wireTask = (t, rec, { forge, readState, now }) => {
     ...(t.deps.length ? { deps: t.deps } : {}),
     ...(t.question ? { question: t.question } : {}),
     ...(park ? { park } : {}),
+    ...(thread ? { thread } : {}),
     ...(pr ? { pr } : {}),
   };
 };
@@ -385,12 +423,17 @@ export const snapshotBody = (dir, remote, home, now, deps = {}) => {
   const { tasks, milestones } = readBacklog(dir);
   // The park and the PR live on the task's RUNTIME record (state.json under
   // the project's state dir), which is where the driver writes both; the
-  // backlog block carries neither. An unreadable state file leaves every
-  // task without them — absent, never invented.
-  const runtime = readJson(path.join(sd, "log", "state.json"))?.tasks ?? {};
+  // backlog block carries neither. The question threads live in the same
+  // file but one level up — a map of the whole project's live threads, not a
+  // per-task field — which is why it is read beside the records rather than
+  // out of one. An unreadable state file leaves every task without all three
+  // — absent, never invented.
+  const state = readJson(path.join(sd, "log", "state.json"));
+  const runtime = state?.tasks ?? {};
+  const threads = state?.questionThreads ?? {};
   const readState = makeReader(dir, home, forge);
   const wireTasks = dateReadings(
-    tasks && tasks.map((t) => wireTask(t, runtime[t.id], { forge, readState, now })),
+    tasks && tasks.map((t) => wireTask(t, runtime[t.id], { forge, readState, now, threads })),
     now(),
   );
   // Every PR reading's own age, as the list the collector folds to its
@@ -408,6 +451,56 @@ export const snapshotBody = (dir, remote, home, now, deps = {}) => {
     metaDivergence: metaDivergence(dir, home, at),
     ages: prAges.length ? { pr: prAges } : null,
   });
+};
+
+// ---------- the fixture park (`--fixture-park`) ----------
+//
+// A recorded question park, written to disk as the driver would write it, so
+// the thread a park carries is runnable on a machine where nothing is parked
+// — which is every machine, most of the time. Files rather than an injected
+// object, for the reason `writeFixtureWindow` is: the drive is only worth
+// having if it exercises the same reads the daemon does — the checkout's
+// backlog and the state dir's `state.json` — and a stub in front of those
+// would prove the shape while hiding the reading.
+//
+// No git repo and no remote of its own: the drive hands this claim straight
+// to `gatherSnapshots`, which is the same way the fixture window is claimed,
+// so nothing here needs identifying. Its task carries no PR either, which is
+// what keeps the drive off the network: no url, no forge call.
+const FIXTURE_PARK_THREAD = "https://github.com/MJTeixeira/fixture-park/issues/7";
+
+export const writeFixturePark = () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "fleet-fixture-park-"));
+  const dir = path.join(home, "repos", "fixture-park");
+  const backlog = path.join(dir, ".factory", "backlog");
+  fs.mkdirSync(backlog, { recursive: true });
+  fs.writeFileSync(
+    path.join(backlog, "index.md"),
+    "# Backlog\n\n## M1: Only — active\n- [e1](e1.md) — 1 task\n",
+  );
+  fs.writeFileSync(
+    path.join(backlog, "e1.md"),
+    [
+      "## T-001: The task that had to ask",
+      "- Status: needs-human",
+      "- Verify: node --test",
+      "",
+    ].join("\n"),
+  );
+  const logDir = path.join(stateDir(dir, home), "log");
+  fs.mkdirSync(logDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(logDir, "state.json"),
+    JSON.stringify({
+      tasks: { "T-001": { status: "needs-human", parkedBy: "question" } },
+      questionThreads: { "T-001": FIXTURE_PARK_THREAD },
+    }),
+  );
+  return {
+    home,
+    claim: { dir, remote: "https://github.com/MJTeixeira/fixture-park.git" },
+    cleanup: () => fs.rmSync(home, { recursive: true, force: true }),
+  };
 };
 
 // Every claimed project's snapshot (fresh-connection set, REQ-132), each

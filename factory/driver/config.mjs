@@ -69,6 +69,13 @@ export const buildConfig = (a) => ({
   // disables), and the retry session's model — escalation is the point.
   staleRetryDays: 1,
   staleRetryModel: "fable",
+  // Days a factory's own `log/` keeps a session's files before `prep` sweeps
+  // them (T-082). Nothing pruned this before; a fleet box had grown to 366 MB
+  // of transcripts. The sweep never outranks the tape ledger — a window whose
+  // tape the surface has not acked keeps its material whatever this says —
+  // and a value that is not a positive whole number turns the sweep OFF and
+  // fails doctor rather than guessing a window.
+  logRetentionDays: 30,
   permissionMode: "dontAsk",
   claudeCmd: "claude",
 });

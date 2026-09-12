@@ -29,6 +29,7 @@ import { nativeTrackerCheck } from "./forge.mjs";
 import { parseMilestones, unparsedMilestoneHeadings, parseBacklogTasks as parseTasksInDir, lintVerify, MILESTONE_STATUSES } from "./backlog-index.mjs";
 import { jiraTracker } from "./jira.mjs";
 import { expectedOrigin, sameOrigin } from "./distribution.mjs";
+import { validRetentionDays } from "./log-retention.mjs";
 
 export const runDoctor = (ctx) => {
   const {
@@ -587,7 +588,18 @@ export const runDoctor = (ctx) => {
           : "no high-risk prefixes declared");
   }
 
-  // 17. toolchain manifest — `toolchain: [{name, check}]` declares the tools
+  // 17. log retention must be a positive whole number of days — the sweep in
+  //     `prep` reads it, and a typo must never read as "delete more". Same
+  //     stance as riskTiers: malformed turns the thing OFF and says so, rather
+  //     than falling back to a default nobody wrote.
+  if (cfg.logRetentionDays !== undefined) {
+    const ok = validRetentionDays(cfg.logRetentionDays);
+    check(ok ? "ok" : "fail", "log retention",
+      ok ? `prep sweeps session logs older than ${cfg.logRetentionDays} days (never a window the surface has not acked)`
+        : `logRetentionDays is ${JSON.stringify(cfg.logRetentionDays)} — expected a positive whole number of days; until fixed prep prunes nothing and log/ grows forever`);
+  }
+
+  // 18. toolchain manifest — `toolchain: [{name, check}]` declares the tools
   //     this project's sessions depend on; each check runs here and a red row
   //     means the tool is missing. Scheduled runs abort on doctor fails, so
   //     this row IS the preflight that stops a window before it burns
@@ -610,7 +622,7 @@ export const runDoctor = (ctx) => {
     }
   }
 
-  // 18. injection surface — under auto-merge, a publicly writable tracker
+  // 19. injection surface — under auto-merge, a publicly writable tracker
   //     feeds anyone's text into triage prompts. The posture (forge-inputs
   //     trust labels) marks it UNTRUSTED, but a private tracker removes the
   //     surface entirely; the owner should know it exists. Warn, not fail.

@@ -23,11 +23,12 @@ import { sendTelegram } from "./notify.mjs";
 import { makeNotifiers } from "./notify-route.mjs";
 import { senseMachineFacts, recordOutcome, threadTitle } from "./machine-threads.mjs";
 import { materializeWorkspace, isInjectedPath, factorySkillNames, stripFactorySettings, detectEngines, stampFactoryGitignore, stampFactoryReadme } from "./workspace.mjs";
+import { humanBytes, LOG_RETENTION_DAYS, pruneLogs } from "./log-retention.mjs";
 import { healConfigSchema } from "./config.mjs";
 import { SCHEDULE_KINDS, SCHEDULE_MODES, normalizeSchedule, validateDeclaration, generateUnits, parseInstalled, compareInstalled, defaultPathLine } from "./schedule.mjs";
 import { deriveFactoryStatus } from "./status.mjs";
 import { createForge, createTracker } from "./forge.mjs";
-import { parseMilestones, parseBacklogTasks as parseTasksInDir, lintVerify, inactiveEpics as inactiveEpicsFromIndex } from "./backlog-index.mjs";
+import { parseMilestones, parseBacklogTasks as parseTasksInDir, lintVerify, inactiveEpics as inactiveEpicsFromIndex, epicKey } from "./backlog-index.mjs";
 import { jiraTracker } from "./jira.mjs";
 import { jiraBoardInit, syncJiraBoard } from "./jira-board.mjs";
 import { selectStaleRetry, retryOutcome, appendRetryLine, extractTaskBlock } from "./stale-retry.mjs";
@@ -2468,8 +2469,14 @@ if (mode === "sync-board") {
 // backlog/index.md from `— not-started` (or `— gated`) to `— active`,
 // committed and pushed as the driver. Replaces the hand-edited
 // `factory/ops-*` PR that tripped the merge-gate's code-only warning.
-// Keep-prior-active by default: no other heading is touched — closing a
-// finished milestone stays a separate, explicit (human or triage) edit.
+// Promote closes what it replaces (T-081): every other heading reading
+// `active` is flipped away in the same write, so the index never carries two
+// actives for a reader — the driver's own eligibility, the dashboard and
+// fleet-control all ask it which milestone the factory is working. A
+// displaced milestone whose epics hold no unfinished task closes `done`; one
+// that still holds work closes `gated`, never `done`, which would write a
+// false status into a file the owner reads daily — and `gated` is a status
+// promote itself reopens, so the displacement needs no hand edit to undo.
 // The flip itself, shared by the standalone verb and the triage leg
 // (T-027): splice the status token by offset so the heading's dialect
 // (`— active` vs `(active)`) is the author's and survives the flip.
@@ -2492,10 +2499,41 @@ const flipMilestoneActive = (milestoneId) => {
   if (!["not-started", "gated"].includes(hit.status ?? "")) {
     return { ok: false, msg: `${hit.id} is ${hit.status ?? "missing its status suffix"} — promote only opens not-started/gated milestones (a ${hit.status} heading is yours to edit by hand)` };
   }
-  const flipped = hit.line.slice(0, hit.statusStart) + "active" + hit.line.slice(hit.statusEnd);
-  fs.writeFileSync(indexPath, text.slice(0, hit.index) + flipped + text.slice(hit.index + hit.line.length));
-  return { ok: true, id: hit.id, msg: `${hit.id} promoted to active` };
+  // An epic whose file is missing contributes no tasks, so a milestone
+  // nobody wrote tasks for closes `done` — there is no unfinished work to
+  // misreport.
+  const tasks = parseBacklogTasks(runtimeFactoryDir());
+  const holdsOpenWork = (m) => {
+    const keys = new Set(m.epics.map((e) => epicKey(e.file)));
+    return tasks.some((t) => keys.has(t.epic) && t.status !== "done");
+  };
+  const displaced = headings
+    .filter((h) => h !== hit && h.status === "active")
+    .map((h) => ({ h, id: h.id, status: holdsOpenWork(h) ? "gated" : "done" }));
+  // Splice from the end of the file backwards: every heading's offsets were
+  // measured against the original text, and an earlier edit would shift the
+  // ones after it.
+  let out = text;
+  for (const e of [{ h: hit, status: "active" }, ...displaced].sort((a, b) => b.h.index - a.h.index)) {
+    const line = e.h.line.slice(0, e.h.statusStart) + e.status + e.h.line.slice(e.h.statusEnd);
+    out = out.slice(0, e.h.index) + line + out.slice(e.h.index + e.h.line.length);
+  }
+  fs.writeFileSync(indexPath, out);
+  return {
+    ok: true,
+    id: hit.id,
+    displaced: displaced.map(({ id, status }) => ({ id, status })),
+    msg: `${hit.id} promoted to active`,
+  };
 };
+
+// What promote's success line says about the headings it closed. A promote
+// that displaced nothing says so too: silence there reads as "it did not
+// look", which is what the line exists to answer.
+const displacementNote = (displaced) =>
+  displaced?.length
+    ? `(${displaced.map((d) => `${d.id} → ${d.status}`).join(", ")})`
+    : "(no prior active to close)";
 
 if (mode === "promote") {
   const say = (m) => process.stdout.write(m + "\n");
@@ -2508,9 +2546,9 @@ if (mode === "promote") {
   }
   if (isGitRepo()) {
     if (!commitMetadata(`promote ${r.id}: milestone → active`)) fail(`flip produced no staged change in backlog/index.md — index format drift?`);
-    say(`${r.id} promoted to active — committed and pushed as the driver (prior actives kept)`);
+    say(`${r.id} promoted to active — committed and pushed as the driver ${displacementNote(r.displaced)}`);
   } else {
-    say(`${r.id} promoted to active in backlog/index.md`);
+    say(`${r.id} promoted to active in backlog/index.md ${displacementNote(r.displaced)}`);
   }
   process.exit(0);
 }
@@ -3055,7 +3093,7 @@ const runSingle = async (name) => {
               continue;
             }
             if (commitMetadata(`promote ${r.id}: milestone → active (triage)`)) {
-              log(`promote (triage): ${r.id} → active — committed as the driver`);
+              log(`promote (triage): ${r.id} → active — committed as the driver ${displacementNote(r.displaced)}`);
             } else {
               log(`promote (triage): flip of ${r.id} produced no staged change — index format drift?`);
             }
@@ -4055,6 +4093,18 @@ const replayUnfinishedFinalization = async () => {
   journalFile = null;
 };
 
+// prep-only: the only thing on a machine that deletes a factory's own files
+// (T-082). Old session logs go; a window whose tape the surface has not acked
+// keeps every file a rebuild of it would read, whatever its age — the ledger is
+// asked first and its answer is final (ADR-0029). It runs under prep's own
+// lock, so a sweep can never race a live window.
+const sweepOldLogs = () => {
+  const days = cfg.logRetentionDays ?? LOG_RETENTION_DAYS;
+  const swept = pruneLogs(project, { days, report: (msg) => log(`prep: ${msg}`) });
+  if (swept.off) return; // said its own reason; doctor carries the red row
+  log(`prep: pruned ${swept.files} log file(s), ${humanBytes(swept.bytes)} freed`);
+};
+
 // ---------- prep (NOTES item 32) ----------
 // "I worked in this checkout — make it safe for the next factory window,
 // now." Runs the exact machinery a window start would, spawns no sessions,
@@ -4069,6 +4119,7 @@ if (mode === "prep") {
   try {
     log("prep: making the repo safe for the next factory window");
     if (isGitRepo()) pruneStaleLockedWorktrees();
+    sweepOldLogs();
     await ensureCleanBase("prep");
     refreshMeta(); // flips edit the meta worktree — it must exist and be at origin tip
     const applied = applyFlips([]);
