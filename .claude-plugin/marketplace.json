@@ -1,6 +1,6 @@
 {
   "name": "code4food",
-  "description": "code4food studio's Claude Code tooling: the dev Skillset (attention-lean workflow) and the Factory (autonomous spec-driven development).",
+  "description": "code4food studio's Claude Code tooling: the dev Skillset (attention-lean workflow), the Factory (autonomous spec-driven development), and General (the skills both use).",
   "owner": {
     "name": "Marcos Teixeira",
     "url": "https://github.com/MJTeixeira"
@@ -29,6 +29,17 @@
         "factory"
       ],
       "source": "./factory"
+    },
+    {
+      "name": "code4food-general",
+      "description": "Skills that both live sessions and factory sessions use. Today one: review, which makes a working change good against the repository's own standards, its issue's acceptance criteria and its docs, and commits the fixes.",
+      "version": "1.0.0",
+      "license": "MIT",
+      "keywords": [
+        "review",
+        "skills"
+      ],
+      "source": "./general"
     }
   ]
 }

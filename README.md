@@ -1,6 +1,6 @@
 # code4food plugins for Claude Code
 
-Two plugins, one marketplace:
+Three plugins, one marketplace:
 
 - **`code4food-skillset`** — the Live skillset, for sessions with a human in
   the room: a typed flow — chart, grill, spec, tickets, implement — that
@@ -12,8 +12,13 @@ Two plugins, one marketplace:
   a fully-specced product alone in scheduled daily windows and opens pull
   requests for you to review. Ships the skills a factory window loads, the
   attended-side speccing/setup skills, and the driver itself.
+- **`code4food-general`** — skills that live sessions and factory sessions
+  both use. Today one: `/code4food-general:review`, which makes a working
+  change good against the repository's own standards, its issue's acceptance
+  criteria and its docs, and commits the fixes. Built on mattpocock/skills
+  and pstack — see `general/NOTICE.md`.
 
-Use either or both. Everything below is the setup path; the factory's full
+Use any of them. Everything below is the setup path; the factory's full
 manual — configuration, operations, contracts, gotchas — is
 [`factory/FACTORY.md`](factory/FACTORY.md).
 
@@ -23,6 +28,7 @@ manual — configuration, operations, contracts, gotchas — is
 /plugin marketplace add MJTeixeira/claude-plugins
 /plugin install code4food-skillset@code4food     # interactive workflow
 /plugin install code4food-factory@code4food      # autonomous factory
+/plugin install code4food-general@code4food      # review, for both
 ```
 
 Requirements: **Node.js ≥ 18**, **git**, and the **Claude Code CLI** logged in
