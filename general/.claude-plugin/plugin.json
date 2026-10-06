@@ -1,0 +1,17 @@
+{
+  "name": "code4food-general",
+  "displayName": "code4food General",
+  "version": "1.0.0",
+  "description": "Skills that both live sessions and factory sessions use. Today one: review, which makes a working change good against the repository's own standards, its issue's acceptance criteria and its docs, and commits the fixes.",
+  "author": {
+    "name": "Marcos Teixeira",
+    "url": "https://github.com/MJTeixeira"
+  },
+  "repository": "https://github.com/MJTeixeira/claude-plugins",
+  "license": "MIT",
+  "keywords": [
+    "review",
+    "skills"
+  ],
+  "skills": "./skills/"
+}
