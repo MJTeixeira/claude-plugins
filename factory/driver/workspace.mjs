@@ -159,12 +159,16 @@ const git = (cwd, args) => execGit(cwd, args);
 // Every skill name the factory ever deployed into project repos (engine
 // skills and factory-setup included) — the removal list for migrate's repo
 // cleanup AND for scrubbing pre-G3 injected copies out of persistent
-// worktrees: cleanup must catch copies regardless of provenance.
-export const factorySkillNames = (runtimeRoot) => [
-  ...fs.readdirSync(path.join(runtimeRoot, "skills"), { withFileTypes: true })
-    .filter((e) => e.isDirectory()).map((e) => e.name),
-  ...fs.readdirSync(path.join(runtimeRoot, "factory", "skills"), { withFileTypes: true })
-    .filter((e) => e.isDirectory()).map((e) => e.name),
+// worktrees: cleanup must catch copies regardless of provenance. Frozen at
+// the code4food-skillset and code4food-factory rosters they retired with
+// (2026-10-07): the factory stopped copying skills at G3, so no later name
+// was ever deployed.
+export const factorySkillNames = () => [
+  "backlog", "chart", "code-review", "codebase-design", "converting-docs", "diagnosing-bugs",
+  "domain-modeling", "factory-setup", "godot", "grill", "grill-with-docs", "grilling", "handoff",
+  "implement", "improve-codebase-architecture", "prototype", "research", "resolving-merge-conflicts",
+  "route", "setup", "spec", "tdd", "teach", "tickets", "to-questionnaire", "triage", "unity",
+  "verify", "wait-what", "wizard", "writing-for-agents",
 ];
 
 // Surgical removal of factory-added entries from a project .claude/settings.json
@@ -283,7 +287,7 @@ export const materializeWorkspace = ({ worktree, runtimeRoot, config = {} }) => 
   // code4food plugins, never from worktree copies. Persistent worktrees (meta)
   // may still carry pre-G3 injected copies — scrub any untracked ones, or they
   // shadow/duplicate the plugin versions in every triage session.
-  for (const name of factorySkillNames(runtimeRoot)) {
+  for (const name of factorySkillNames()) {
     const rel = `.claude/skills/${name}`;
     const dest = path.join(worktree, ".claude", "skills", name);
     if (fs.existsSync(dest) && !tracked(rel)) fs.rmSync(dest, { recursive: true, force: true });

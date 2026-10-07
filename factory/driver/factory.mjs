@@ -1436,7 +1436,7 @@ if (mode === "migrate") {
       // used to remove them; migrate owns all legacy cleanup now).
       for (const rel of [".factory/hooks", ".factory/spec-template.md", ".factory/schedulers", "factory.yaml",
         ".factory/driver.mjs", ".factory/prompts",
-        ...factorySkillNames(RUNTIME_ROOT).map((n) => `.claude/skills/${n}`),
+        ...factorySkillNames().map((n) => `.claude/skills/${n}`),
         ".claude/agents/code-reviewer.md",
         // install.sh-era per-project tooling — the plugins ship all of it
         // now (G3); the statusline deliberately stays (not plugin-provided).
@@ -4299,7 +4299,7 @@ const engineSkillNote = () => {
   const engines = detectEngines(project).filter((e) => e === "godot" || e === "unity");
   if (!engines.length) return "";
   return `\n\n## Engine note (driver-detected)\n\n` + engines.map((e) =>
-    `This repo contains a ${e === "godot" ? "Godot" : "Unity"} project. Run the \`code4food-factory:${e}\` skill before any engine work (CLI, tests, scenes, builds).`).join("\n") + "\n";
+    `This repo contains a ${e === "godot" ? "Godot" : "Unity"} project. Run the \`code4food-engines:${e}\` skill before any engine work (CLI, tests, scenes, builds).`).join("\n") + "\n";
 };
 const promptText = promptFor("dev-task") + FOREGROUND_RULE + TRACEABILITY_RULE + configPromptNote() + engineSkillNote();
 sweepOldLogs(); // this window's share of "the box sheds its old logs" (T-083)

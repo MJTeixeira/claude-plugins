@@ -1,0 +1,19 @@
+{
+  "name": "code4food-engines",
+  "displayName": "code4food Engines",
+  "version": "1.0.0",
+  "description": "Engine skills for game repositories: godot and unity, the headless invocations and the traps a session without an editor hits. A game repository enables it in its own .claude/settings.json.",
+  "author": {
+    "name": "Marcos Teixeira",
+    "url": "https://github.com/MJTeixeira"
+  },
+  "repository": "https://github.com/MJTeixeira/claude-plugins",
+  "license": "MIT",
+  "keywords": [
+    "godot",
+    "unity",
+    "games",
+    "skills"
+  ],
+  "skills": "./skills/"
+}

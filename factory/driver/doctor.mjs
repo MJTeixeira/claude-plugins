@@ -210,7 +210,7 @@ export const runDoctor = (ctx) => {
     } else if (process.env.FACTORY_DEPLOY_GATE) {
       check("skip", "code4food plugins", "provisioned by the running deploy after the gate");
     } else {
-      const provisionHint = `claude plugin marketplace add ${RUNTIME} && claude plugin install code4food-skillset@code4food code4food-factory@code4food`;
+      const provisionHint = `claude plugin marketplace add ${RUNTIME} && claude plugin install code4food-live@code4food code4food-general@code4food code4food-engines@code4food`;
       const mkt = readJson(path.join(os.homedir(), ".claude", "plugins", "known_marketplaces.json"))?.code4food;
       const installed = readJson(path.join(os.homedir(), ".claude", "plugins", "installed_plugins.json"))?.plugins;
       const mktPath = mkt?.source?.path ?? mkt?.installLocation;
@@ -220,8 +220,9 @@ export const runDoctor = (ctx) => {
         check("fail", "code4food plugins", `marketplace points at ${mktPath ?? "?"}, not the runtime — remove it, then provision: ${provisionHint}`);
       } else {
         for (const [name, rel] of [
-          ["code4food-skillset", path.join(".claude-plugin", "plugin.json")],
-          ["code4food-factory", path.join("factory", ".claude-plugin", "plugin.json")],
+          ["code4food-live", path.join(".claude-plugin", "plugin.json")],
+          ["code4food-general", path.join("general", ".claude-plugin", "plugin.json")],
+          ["code4food-engines", path.join("engines", ".claude-plugin", "plugin.json")],
         ]) {
           const want = readJson(path.join(RUNTIME, rel))?.version;
           const rec = installed?.[`${name}@code4food`]?.[0];
