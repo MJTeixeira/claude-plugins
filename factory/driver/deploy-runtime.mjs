@@ -61,8 +61,11 @@ const refuse = async (why) => {
 // version was bumped; unknown marketplace / uninstalled plugins fall back to
 // add/install. Failures only WARN: by this point the runtime has already
 // advanced (or was current), and doctor flags version drift until a sync
-// lands.
-const PLUGINS = ["code4food-skillset", "code4food-factory"];
+// lands. The retired plugins are uninstalled once the current ones are in, so
+// a machine never runs both a retired skill and its replacement.
+const PLUGINS = ["code4food-live", "code4food-general", "code4food-engines"];
+const RETIRED = ["code4food-skillset", "code4food-factory"];
+const ENGINES = "code4food-engines@code4food";
 const syncPlugins = () => {
   // A runtime that ships no marketplace manifest (pre-G3) has nothing to
   // provision from — stay quiet rather than churn the claude CLI.
@@ -93,6 +96,24 @@ const syncPlugins = () => {
     }
   }
   log(`plugins synced with the runtime (${PLUGINS.join(", ")})`);
+
+  const listed = claude("list", "--json");
+  let installed;
+  try { installed = JSON.parse(listed.stdout); } catch {
+    log(`⚠ retired plugins and engines scope NOT checked — plugin list failed: ${firstLine(listed)}`);
+    return;
+  }
+  for (const { id, scope } of installed.filter((e) => RETIRED.some((r) => e.id === `${r}@code4food`))) {
+    const un = claude("uninstall", id, "--scope", scope);
+    log(un.status === 0 ? `retired plugin uninstalled: ${id}` : `⚠ retired plugin ${id} NOT uninstalled: ${firstLine(un)}`);
+  }
+  // A game repository enables code4food-engines in its own .claude/settings.json;
+  // machine-wide it stays installed but off. `disable` exits 1 on an
+  // already-disabled plugin, so it runs only while the list says enabled.
+  if (installed.some((e) => e.id === ENGINES && e.scope === "user" && e.enabled)) {
+    const off = claude("disable", ENGINES, "--scope", "user");
+    log(off.status === 0 ? `${ENGINES} disabled at user scope — game repositories enable it in their own settings` : `⚠ ${ENGINES} NOT disabled at user scope: ${firstLine(off)}`);
+  }
 };
 
 // ---------- resolve the candidate ----------
@@ -188,7 +209,8 @@ syncPlugins();
   const changed = git(["diff", "--name-only", `${head}..${candidate}`]).split("\n").filter(Boolean);
   const PLUGIN_CONTENT = [
     { manifest: ".claude-plugin/plugin.json", owns: /^(skills|commands|agents|hooks|statusline)\/|^\.claude-plugin\// },
-    { manifest: "factory/.claude-plugin/plugin.json", owns: /^factory\/(skills|commands)\/|^factory\/\.claude-plugin\// },
+    { manifest: "general/.claude-plugin/plugin.json", owns: /^general\// },
+    { manifest: "engines/.claude-plugin/plugin.json", owns: /^engines\// },
   ];
   const stale = [];
   for (const { manifest, owns } of PLUGIN_CONTENT) {

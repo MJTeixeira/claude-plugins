@@ -1,21 +1,18 @@
 ---
 name: implement
-description: "Implement a piece of work based on a backlog task."
+description: "Implement a board issue: tdd, its Verify line, verify, comment cleanup, review, then a PR that closes it."
 disable-model-invocation: true
 ---
 
-Implement the work described by the backlog task the user names.
+Implement the work described by the board issue the user names. Read it with `gh issue view <n>`: its `Acceptance:` bullets are the work, and its `Verify:` line proves it.
 
-Claim it first: open a draft PR with the task id in its title, so other sessions and any factory window route around you.
+Claim it first: assign it to yourself with `gh issue edit <n> --add-assignee @me`. The factory holds any board issue assigned to someone else, so a window routes around you.
 
-Use /tdd where possible, at pre-agreed seams.
+Work in this order:
 
-Run typechecking regularly, single test files regularly, and the full test suite once at the end.
-
-Run the task's `Verify:` line, then use /verify to drive the real product.
-
-Once done, use /code-review to review the work.
-
-Commit your work to the current branch.
-
-Update the task's `Status:` and add a `Notes:` line with the PR link, then take the PR out of draft. A live session is its own driver — nothing else will write it.
+1. Use /tdd where possible, at pre-agreed seams. Run typechecking regularly, single test files regularly, and the full test suite once at the end.
+2. Run the issue's `Verify:` line. A bare `feature <name>` names `.claude/skills/verify-*/features/<name>.md`: drive it through that verify skill. Then use /verify to drive the real product. On a failure, use /diagnosing-bugs.
+3. Commit your work to the current branch.
+4. Call the Skill tool with `pstack:no-comments` to clean up comments.
+5. Call the Skill tool with `code4food-general:review` to review the work.
+6. Call the Skill tool with `pstack:poteto-mode` and follow its "Opening a PR" playbook. The PR body carries `Closes #<n>`, so the issue closes when the PR merges.

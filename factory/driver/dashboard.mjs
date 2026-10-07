@@ -308,11 +308,9 @@ const refreshVersion = async () => {
   const branch = (await gitOut(["rev-parse", "--abbrev-ref", "origin/HEAD"]))?.replace(/^origin\//, "") || "main";
   const deploy = readJson(path.join(os.homedir(), ".factory", "runtime-deploy.json"));
   const lastDeploy = deploy?.ts ?? null;
-  // Human-facing version: the factory plugin's semver from the manifest beside
-  // this checkout. The owner reads "v1.1.0", not a git sha — the sha stays only
-  // in the chip's tooltip. Local read, cheap; null if the manifest is absent.
-  const version = readJson(path.join(CHECKOUT_DIR, "..", ".claude-plugin", "plugin.json"))?.version ?? null;
-  const base = { sha, branch, version, lastDeploy };
+  // The chip shows the sha: the factory plugin whose semver it once showed
+  // retired on 2026-10-07, and no other manifest versions this driver.
+  const base = { sha, branch, lastDeploy };
   if ((await gitOut(["fetch", "origin", branch, "--quiet"])) === null) {
     versionCache = { ...base, error: "fetch failed" };
     return;

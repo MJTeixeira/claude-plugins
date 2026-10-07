@@ -2,21 +2,21 @@
 
 Three plugins, one marketplace:
 
-- **`code4food-skillset`** — the Live skillset, for sessions with a human in
-  the room: a typed flow — chart, grill, spec, tickets, implement — that
-  terminates in factory-runnable backlog tasks, plus the method skills the
-  flow names at its seams (tdd, code-review, verify, diagnosing-bugs, and
-  more). Skills only: no injected contract, no hooks, no agents. Built on
-  [mattpocock/skills](https://github.com/mattpocock/skills) — see NOTICE.md.
-- **`code4food-factory`** — autonomous spec-driven development: Claude builds
-  a fully-specced product alone in scheduled daily windows and opens pull
-  requests for you to review. Ships the skills a factory window loads, the
-  attended-side speccing/setup skills, and the driver itself.
+- **`code4food-live`** — skills for sessions with a human in the room:
+  [mattpocock/skills](https://github.com/mattpocock/skills) retargeted at a
+  factory board (the spec is an issue, each task an issue on the board), one
+  implement path through tdd, verify, review and a PR, and HumanLayer's
+  `show-me` and `visual-pr`. Skills only: no injected contract, no hooks, no
+  agents. See NOTICE.md.
 - **`code4food-general`** — skills that live sessions and factory sessions
   both use. Today one: `/code4food-general:review`, which makes a working
   change good against the repository's own standards, its issue's acceptance
   criteria and its docs, and commits the fixes. Built on mattpocock/skills
   and pstack — see `general/NOTICE.md`.
+- **`code4food-engines`** — `godot` and `unity`, for game repositories. Install
+  it, disable it machine-wide (`claude plugin disable code4food-engines@code4food
+  --scope user`), and enable it in each game repository's own
+  `.claude/settings.json`: `"enabledPlugins": {"code4food-engines@code4food": true}`.
 
 Use any of them. Everything below is the setup path; the factory's full
 manual — configuration, operations, contracts, gotchas — is
@@ -26,9 +26,9 @@ manual — configuration, operations, contracts, gotchas — is
 
 ```
 /plugin marketplace add MJTeixeira/claude-plugins
-/plugin install code4food-skillset@code4food     # interactive workflow
-/plugin install code4food-factory@code4food      # autonomous factory
+/plugin install code4food-live@code4food         # live sessions
 /plugin install code4food-general@code4food      # review, for both
+/plugin install code4food-engines@code4food      # godot and unity
 ```
 
 Requirements: **Node.js ≥ 18**, **git**, and the **Claude Code CLI** logged in
@@ -82,46 +82,34 @@ token counts, 5-hour and 7-day rate-limit usage, and the active output
 style underneath. Nothing is injected into your project and there's
 nothing to set up per-repo.
 
-## Using the skillset
+## Using code4food-live
 
-Run **`/code4food-skillset:setup`** once per repo: it configures the backlog
-and spec destinations, the inbound issue tracker, the triage labels and the
-doc layout the rest of the flow assumes.
-
-Don't remember which skill you want? Type **`/route`** — it's the router over
-everything below, and the only skill whose job is to name the others.
-
-The flow, typed: `/chart` when the effort is too big to hold at once, then
-`/grill` or `/grill-with-docs` → `/spec` → `/tickets` → `/implement` (one per
-fresh window), with `/handoff` when a session stops mid-task. On-ramps:
-`/triage` for inbound issues and external PRs, `/diagnosing-bugs` when
+The flow targets a repository with one linked GitHub Project board titled
+`factory: <repo>`: every issue on that board is a task a factory runs.
+`/wayfinder` when the effort is too big to hold at once, then `/grill-me` →
+`/to-spec` (the spec becomes an issue, kept off the board) → `/to-tickets`
+(each task an issue, added straight to the board) → `/implement` (one board
+issue per fresh window: tdd, its `Verify:` line, verify, comment cleanup,
+`code4food-general:review`, then the PR). On-ramps: `/diagnosing-bugs` when
 something is broken, `/improve-codebase-architecture` for deepening work,
-`/to-questionnaire` when a decision needs someone else's knowledge, `/teach`
-when the project's technology is new to you, `/wait-what` when an explanation
-does not land.
+`/research` before a decision that needs reading, `/retro` to turn sessions
+and reviews into coding standards or lints, `/teach` when the project's
+technology is new to you, `/wait-what` when an explanation does not land.
+`/show-me` and `/visual-pr` run only when you type them.
 
-The method skills — `grilling`, `domain-modeling`, `tdd`, `code-review`,
-`verify`, `prototype`, `research`, `codebase-design`, `diagnosing-bugs`,
-`wizard`, `resolving-merge-conflicts`, `writing-for-agents` — fire on their
-own where the flow names them; you rarely type them.
-
-The flow terminates in `.factory/backlog/` — the same format the Factory
-driver parses, whether or not a factory is registered for the repo. A
-registered factory picks the tasks up unattended; without one, the backlog
-simply has no second consumer yet.
+The method skills — `grilling`, `domain-modeling`, `codebase-design`, `tdd`,
+`verify`, `prototype`, `wizard`, `writing-for-agents` — fire on their own where
+the flow names them; you rarely type them. `implement` calls pstack's
+`no-comments` and `poteto-mode`, so install pstack beside it.
 
 ## Setting up a factory
 
 Your project needs to be a git repo with a GitHub or Bitbucket Cloud remote
 (private is fine). Factories run on **macOS or Linux** — Windows machines can
-use the skillset and pilot a factory repo as a live session, but not host one.
+use code4food-live and pilot a factory repo as a live session, but not host one.
 
-**Start with the specs, before any machinery.** With just the factory plugin
-installed — on any OS, no factory host needed — say *"spec this project"* in
-the repo. The `spec` skill runs deep interview sittings and writes
-`.factory/spec/` files, finishing with a red-team pass that resolves or
-owner-gates every judgment call. This is the highest-leverage hour of the whole
-setup: **the factory builds what the specs say, and nothing more.**
+**Start with the specs, before any machinery**: the factory builds what the
+specs say, and nothing more.
 
 ### 1. Machine setup (once per machine)
 
@@ -131,7 +119,7 @@ node ~/.factory/runtime/factory/driver/deploy-runtime.mjs
 ```
 
 Factories run from that machine-resident runtime, not from your project. The
-second command also provisions both plugins from the runtime clone — on a
+second command also provisions the code4food plugins from the runtime clone — on a
 factory machine, get them this way rather than via `/plugin marketplace add`,
 because the two sources would fight over the `code4food` marketplace name and
 doctor requires the marketplace to point at the runtime. It is also the update
@@ -139,13 +127,7 @@ verb (below).
 
 ### 2. Set the project up
 
-Easiest: open `claude` in the project and say **"set up a factory here"**. The
-`factory-setup` skill interviews you, turns your specs into `.factory/spec/`
-files, runs the wizard, compiles the backlog, and offers a supervised first
-window. You only paste tokens.
-
-The manual path is the wizard — one command, 11 questions, everything
-mechanical done for you:
+The wizard — one command, 11 questions, everything mechanical done for you:
 
 ```sh
 node ~/.factory/runtime/factory/driver/init.mjs --project /path/to/project
@@ -212,8 +194,8 @@ node ~/.factory/runtime/factory/driver/deploy-runtime.mjs
 One command per **machine**, not per project: it fetches, gates the candidate
 (syntax check plus every registered factory's doctor, read-only), and
 fast-forwards the runtime only when green — so the whole machine advances at
-once, or not at all. It refuses while a window is running. Interactive
-skillset users update with `/plugin` instead.
+once, or not at all. It refuses while a window is running. Live-session
+users update with `/plugin` instead.
 
 ## Where things live
 
