@@ -13,8 +13,10 @@ Three plugins, one marketplace:
   change good against the repository's own standards, its issue's acceptance
   criteria and its docs, and commits the fixes. Built on mattpocock/skills
   and pstack — see `general/NOTICE.md`.
-- **`code4food-engines`** — `godot` and `unity`, for game repositories. A game
-  repository enables it in its own `.claude/settings.json`.
+- **`code4food-engines`** — `godot` and `unity`, for game repositories. Install
+  it, disable it machine-wide (`claude plugin disable code4food-engines@code4food
+  --scope user`), and enable it in each game repository's own
+  `.claude/settings.json`: `"enabledPlugins": {"code4food-engines@code4food": true}`.
 
 Use any of them. Everything below is the setup path; the factory's full
 manual — configuration, operations, contracts, gotchas — is
