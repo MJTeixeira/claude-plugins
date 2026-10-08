@@ -9,7 +9,7 @@
     {
       "name": "code4food-live",
       "description": "Live sessions with a human in the room: Matt Pocock's engineering and productivity skills, retargeted at the factory board (spec issue, tasks on the board, one implement path through tdd, verify, review and a PR), plus HumanLayer's show-me and visual-pr. Skills only: no injected contract, no hooks, no agents.",
-      "version": "3.0.0",
+      "version": "3.0.1",
       "license": "MIT",
       "keywords": [
         "workflow",
