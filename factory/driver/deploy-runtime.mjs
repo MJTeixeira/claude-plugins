@@ -103,9 +103,17 @@ const syncPlugins = () => {
     log(`⚠ retired plugins and engines scope NOT checked — plugin list failed: ${firstLine(listed)}`);
     return;
   }
-  for (const { id, scope } of installed.filter((e) => RETIRED.some((r) => e.id === `${r}@code4food`))) {
-    const un = claude("uninstall", id, "--scope", scope);
+  // Only a user-scope install is this machine's to remove. A project-scope one
+  // lives in that repository's committed .claude/settings.json and uninstalls
+  // only from inside it, so the deploy counts those and leaves them.
+  const retired = installed.filter((e) => RETIRED.some((r) => e.id === `${r}@code4food`));
+  for (const { id } of retired.filter((e) => e.scope === "user")) {
+    const un = claude("uninstall", id, "--scope", "user");
     log(un.status === 0 ? `retired plugin uninstalled: ${id}` : `⚠ retired plugin ${id} NOT uninstalled: ${firstLine(un)}`);
+  }
+  const elsewhere = retired.filter((e) => e.scope !== "user");
+  if (elsewhere.length) {
+    log(`${elsewhere.length} project-scope installs of retired plugins left (${[...new Set(elsewhere.map((e) => e.id))].join(", ")}); each repository's own settings carry them`);
   }
   // A game repository enables code4food-engines in its own .claude/settings.json;
   // machine-wide it stays installed but off. `disable` exits 1 on an
