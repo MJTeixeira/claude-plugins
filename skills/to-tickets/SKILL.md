@@ -8,7 +8,7 @@ disable-model-invocation: true
 
 Break a plan, spec, or conversation into a set of **tickets**: tracer-bullet vertical slices, each declaring the tickets that **block** it.
 
-This repository has exactly one linked GitHub Project board, titled `factory: <repo>`. Every issue on that board is a task the factory will run, and a board issue whose body fails the factory's parser is refused and parked. Each ticket is one such task: one unattended session of roughly 150k to 200k tokens of context.
+This repository has exactly one linked GitHub Project board, titled `factory: <repo>`. Every issue on that board is a task the factory will run, and a board issue whose body fails the factory's parser is refused and parked. Each ticket is one such task: one unattended session of roughly 150k to 200k tokens of context. That session reads the ticket's own issue body and nothing else: it has no GitHub login, so it cannot open the spec or any other issue.
 
 ## Process
 
@@ -77,7 +77,7 @@ The body carries these fields and nothing else the factory reads, in exactly thi
 
 - Spec: #<spec issue>
 - Acceptance:
-  - <one criterion per bullet, each checkable against the code or a run>
+  - <one criterion per bullet, each checkable against the code or a run, stating outright every value, name, path and decision it takes from the spec>
 - Verify: `<one shell command that drives the product and fails on this commit>`
 - Model: <sonnet, or opus for a task that needs judgment>
 - Effort: <low, medium, high, xhigh or max>
@@ -88,5 +88,6 @@ The body carries these fields and nothing else the factory reads, in exactly thi
 - When `.claude/skills/verify-*/features/<name>.md` already drives the behaviour, write `- Verify: feature <name>`, bare, with no backticks.
 - A Verify that only runs the test suite (`npm test`, `pytest`, `cargo test` and the like) is refused: the merge gate already runs the suite, so the line must drive the product. When no command obviously drives the behaviour, ask the user for one rather than invent it.
 - The title says what the ticket delivers; the body holds nothing but the fields above.
+- `- Spec:` is a back-link for people; the session never follows it. Before publishing, reread each body for a pointer standing in for a fact ("as in spec #52", "the values in the spec", "see #N") and replace it with what it points at.
 
-Avoid specific file paths or code snippets: they go stale fast. Exception: if a prototype produced a snippet that encodes a decision more precisely than prose can (state machine, reducer, schema, type shape), inline it and note briefly that it came from a prototype. Trim to the decision-rich parts, not a working demo, just the important bits.
+Beyond the paths the spec fixes, avoid specific file paths or code snippets: they go stale fast. Exception: if a prototype produced a snippet that encodes a decision more precisely than prose can (state machine, reducer, schema, type shape), inline it and note briefly that it came from a prototype. Trim to the decision-rich parts, not a working demo, just the important bits.
