@@ -1,17 +1,4 @@
 #!/usr/bin/env node
-// code4food statusline — one-command installer.
-//
-// Fetches statusline.cjs, writes it to ~/.claude/statusline.cjs, and merges
-// the statusLine key into ~/.claude/settings.json — creating the file if it
-// doesn't exist, preserving every other key if it does, and refusing to
-// clobber a statusLine you've already configured differently.
-//
-// Self-contained: no npm dependencies, works identically on macOS, Linux
-// and Windows. Safe to run more than once (re-fetches, re-merges).
-//
-//   curl -fsSL <raw-url>/install.cjs -o /tmp/cf-statusline-install.cjs && node /tmp/cf-statusline-install.cjs
-//   iwr <raw-url>/install.cjs -OutFile "$env:TEMP\cf-statusline-install.cjs"; node "$env:TEMP\cf-statusline-install.cjs"
-
 "use strict";
 
 const https = require("node:https");
@@ -80,7 +67,7 @@ async function main() {
   }
 
   settings.statusLine = WANT;
-  fs.writeFileSync(SETTINGS_PATH, JSON.stringify(settings, null, 2) + "\n");
+  fs.writeFileSync(SETTINGS_PATH, `${JSON.stringify(settings, null, 2)}\n`);
   console.log(`  merged "statusLine" into ${SETTINGS_PATH} (everything else in that file is untouched)`);
   console.log("\nDone. Start a new Claude Code session (or restart this one) to see it.");
 }

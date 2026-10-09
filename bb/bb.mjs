@@ -80,7 +80,7 @@ const bitbucket = (cwd, cred) => {
   const repo = repoPathOf(origin);
   if (!repo) fail(`origin '${origin ?? "(none)"}' is not a bitbucket.org repo`);
   const base = `${API}/repositories/${repo}`;
-  const req = (url, { method, body } = {}) => execFileSync("curl", [
+  const req = (url, { method = undefined, body = undefined } = {}) => execFileSync("curl", [
     "-sS", "--fail-with-body", "-K", "-", "-H", "Accept: application/json",
     ...(method ? ["-X", method] : []),
     ...(body !== undefined ? ["-H", "Content-Type: application/json", "--data", JSON.stringify(body)] : []),
@@ -136,7 +136,7 @@ const main = () => {
   if (verb === "list") {
     const rows = bb.prList();
     process.stdout.write(rows.length
-      ? rows.map((p) => `#${p.id}\t${p.title}\t${p.source?.branch?.name ?? ""}${p.draft ? "\t(draft)" : ""}\n\t${p.links?.html?.href ?? ""}`).join("\n") + "\n"
+      ? `${rows.map((p) => `#${p.id}\t${p.title}\t${p.source?.branch?.name ?? ""}${p.draft ? "\t(draft)" : ""}\n\t${p.links?.html?.href ?? ""}`).join("\n")}\n`
       : "no open PRs\n");
   } else if (verb === "view") {
     if (!rest[0]) fail("bb pr view <id|url>");
