@@ -1,18 +1,4 @@
 #!/usr/bin/env node
-// code4food statusline — a two-line Claude Code status line.
-//
-// Line 1: model + effort · branch + dirty count · context (size, %, warning) · PR
-// Line 2: repo · input/output tokens · 5h + 7d rate-limit usage · output style · By Code4food
-//
-// Standalone by design: no dependency on the code4food skillset or factory
-// plugins, no dependency on jq or bash — plain Node so it runs identically
-// on macOS, Linux and Windows. Reads the payload Claude Code sends on
-// stdin; every field is read defensively, since most are absent early in a
-// session or outside a git repo.
-//
-// Install: see the "Just the status line" section of this repo's
-// ONBOARDING.md (published as claude-plugins' README.md).
-
 "use strict";
 
 const { execFileSync } = require("node:child_process");
@@ -49,7 +35,6 @@ function fmtK(n) {
   return `${Number.isInteger(k) ? k : k.toFixed(1)}k`;
 }
 
-// ○ ◔ ◑ ◕ ● — a compact fill gauge for any 0-100 value.
 function gauge(pct) {
   if (pct == null) return "";
   if (pct >= 88) return "●";
@@ -61,6 +46,7 @@ function gauge(pct) {
 
 function main() {
   const input = readStdin();
+  // Claude Code omits most payload fields early in a session and outside a repo.
 
   const modelName = input?.model?.display_name ?? "Claude";
   const effort = input?.effort?.level ?? null;
@@ -88,7 +74,6 @@ function main() {
 
   const style = input?.output_style?.name ?? "default";
 
-  // ---- line 1: identity, branch, context, PR ----
   const line1 = [];
   line1.push(bold(modelName) + (effort ? dim(` · ${effort}`) : ""));
   if (branch) {
@@ -105,7 +90,6 @@ function main() {
     line1.push(`PR ${blue(`#${prNumber} ${prState}`)}`);
   }
 
-  // ---- line 2: location, token split, rate limits, style, signature ----
   const line2 = [];
   if (repo) line2.push(`📁 ${dim(repo)}`);
   if (inTok != null && outTok != null) line2.push(dim(`in ${fmtK(inTok)} · out ${fmtK(outTok)}`));
@@ -119,8 +103,8 @@ function main() {
   line2.push(dim(style));
   line2.push(dim("By Code4food"));
 
-  process.stdout.write(line1.join(dim(" │ ")) + "\n");
-  process.stdout.write(line2.join(dim(" │ ")) + "\n");
+  process.stdout.write(`${line1.join(dim(" │ "))}\n`);
+  process.stdout.write(`${line2.join(dim(" │ "))}\n`);
 }
 
 main();
