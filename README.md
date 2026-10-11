@@ -87,7 +87,9 @@ The flow targets a repository with one linked GitHub Project board titled
 `/to-spec` (the spec becomes an issue, kept off the board) → `/to-tickets`
 (each task an issue, added straight to the board) → `/implement` (one board
 issue per fresh window: tdd, its `Verify:` line, verify, comment cleanup,
-`code4food-general:review`, then the PR). On-ramps: `/diagnosing-bugs` when
+`code4food-general:review`, then the PR), or `/implement-spec` (every ticket
+of one spec in a single run: parallel subagents in worktrees, one integration
+branch, one PR). On-ramps: `/diagnosing-bugs` when
 something is broken, `/improve-codebase-architecture` for deepening work,
 `/research` before a decision that needs reading, `/retro` to turn sessions
 and reviews into coding standards or lints, `/teach` when the project's

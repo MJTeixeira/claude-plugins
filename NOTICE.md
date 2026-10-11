@@ -4,7 +4,7 @@
 every copyright notice, as MIT requires:
 
 - **[mattpocock/skills](https://github.com/mattpocock/skills)** by Matt Pocock,
-  at commit `d81f3a183412e71a5b1e84ca21bc1a35eea03a60`: 18 skills, under his
+  at commit `d81f3a183412e71a5b1e84ca21bc1a35eea03a60`: 19 skills, under his
   names.
 - **[humanlayer/skills](https://github.com/humanlayer/skills)** by HumanLayer,
   at commit `ca7c8088db69e315a8b2deea43820270457f8f3c`: `show-me`
@@ -35,6 +35,7 @@ the backlog fields) are gone: none of them is needed by the board.
 | `skills/wayfinder/SKILL.md` | Matt `wayfinder` | The `/setup-matt-pocock-skills` paragraph becomes the board rule: the map and its tickets are GitHub issues off the board, children by `gh issue edit --parent`, blocking by `--add-blocked-by`. "Plan, don't do" names `/to-spec` as the handoff. A research ticket's findings go in a comment on the ticket instead of a `research/<name>` branch, matching `research`. |
 | `skills/implement/SKILL.md` | Matt `implement` | Rewritten around a board issue: claim by assigning it to yourself (the factory holds an issue assigned to anyone else), then tdd, the issue's `Verify:` line, `/verify`, `/diagnosing-bugs` on a failure, commit, `pstack:no-comments`, `code4food-general:review` in place of `/code-review`, and pstack `poteto-mode`'s "Opening a PR" playbook with `Closes #<n>`. Kept from his text: the tdd line, the typecheck and test cadence, the commit line. |
 | `skills/implement/agents/openai.yaml` | Matt `implement` | `short_description` follows the new description. |
+| `skills/implement-spec/SKILL.md` | Matt `implement-spec` | The `/setup-matt-pocock-skills` line becomes the board rule: the spec is an issue off the board listing its tickets, each ticket a board issue whose `Acceptance:` bullets are the work and whose `Verify:` line proves it, closed by a PR carrying `Closes #<n>`. Step 1 claims every ticket by assigning it to yourself (the factory holds an issue assigned to anyone else). Step 4 spawns each implementer with the ticket's `Model:` and `Effort:`, inheriting the session's when the ticket names none, and has it run the ticket's `Verify:` line. Step 7 names `code4food-general:review` in place of `code-review`, which is not shipped. |
 | `skills/tdd/SKILL.md` | Matt `tdd` | "Respect ADRs" goes. The refactor pointer names `code4food-general:review` in place of `code-review`, which is not shipped. |
 | `skills/diagnosing-bugs/SKILL.md` | Matt `diagnosing-bugs` | "Check ADRs" goes. |
 | `skills/improve-codebase-architecture/SKILL.md` | Matt `improve-codebase-architecture` | ADR reads go (lines 14 and 25 upstream) and so does the "ADR conflicts" paragraph. A rejected candidate is offered as a comment on the issue in hand instead of an ADR. |
