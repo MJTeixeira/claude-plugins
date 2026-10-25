@@ -1,6 +1,6 @@
 # code4food plugins for Claude Code
 
-Three plugins, one marketplace:
+Four plugins, one marketplace:
 
 - **`code4food-live`** — skills for sessions with a human in the room:
   [mattpocock/skills](https://github.com/mattpocock/skills) retargeted at a
@@ -17,6 +17,10 @@ Three plugins, one marketplace:
   it, disable it machine-wide (`claude plugin disable code4food-engines@code4food
   --scope user`), and enable it in each game repository's own
   `.claude/settings.json`: `"enabledPlugins": {"code4food-engines@code4food": true}`.
+- **`seat-router`** — a mod that runs marked subagents on the Codex CLI or the
+  Antigravity CLI (`agy`) instead of Claude, picking a model by size and quota,
+  with a band and a `/seats` pane showing seats and each vendor's quota. Needs
+  `codex` or `agy` installed and logged in. See `seat-router/README.md`.
 
 Use any of them. Everything below is the setup path.
 
@@ -27,6 +31,7 @@ Use any of them. Everything below is the setup path.
 /plugin install code4food-live@code4food         # live sessions
 /plugin install code4food-general@code4food      # review, for both
 /plugin install code4food-engines@code4food      # godot and unity
+/plugin install seat-router@code4food            # subagents on codex and agy
 ```
 
 Requirements: **Node.js ≥ 18**, **git**, and the **Claude Code CLI** logged in
