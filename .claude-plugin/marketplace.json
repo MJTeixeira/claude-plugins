@@ -1,6 +1,6 @@
 {
   "name": "code4food",
-  "description": "code4food studio's Claude Code tooling: Live (skills for sessions with a human in the room), General (the skills live and factory sessions both use) and Engines (godot and unity, per game repository).",
+  "description": "code4food studio's Claude Code tooling: Live (skills for sessions with a human in the room), General (the skills live and factory sessions both use), Engines (godot and unity, per game repository) and seat-router (subagents on Codex and Antigravity CLIs).",
   "owner": {
     "name": "Marcos Teixeira",
     "url": "https://github.com/MJTeixeira"
@@ -41,6 +41,19 @@
         "skills"
       ],
       "source": "./engines"
+    },
+    {
+      "name": "seat-router",
+      "description": "A mod that runs marked Agent calls on the Codex CLI or the Antigravity CLI (agy) instead of Claude: seat lines by size or exact model, quota-aware choice among candidates, fallback, and a band and /seats pane showing seats and each vendor's quota.",
+      "version": "1.0.0",
+      "license": "MIT",
+      "keywords": [
+        "subagents",
+        "codex",
+        "gemini",
+        "mod"
+      ],
+      "source": "./seat-router"
     }
   ]
 }

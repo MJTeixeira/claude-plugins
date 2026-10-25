@@ -1,0 +1,39 @@
+{
+  "name": "seat-router",
+  "version": "1.0.0",
+  "description": "Routes marked Agent calls through durable external seats",
+  "license": "MIT",
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "heavySeats": {
+      "type": "string",
+      "title": "Heavy seats",
+      "description": "The candidates a heavy seat runs on, in the order tried: comma-separated `<codex|agy|claude> <model> [effort]` entries.",
+      "default": "codex gpt-5.6-terra xhigh, agy claude-opus-5-5 high, agy gemini-4-argon high, claude opus xhigh"
+    },
+    "standardSeats": {
+      "type": "string",
+      "title": "Standard seats",
+      "description": "The candidates a standard seat runs on, in the order tried.",
+      "default": "codex gpt-5.6-terra high, agy claude-sonnet-5-5 high, agy gemini-3.8-flash high, claude sonnet high"
+    },
+    "lightSeats": {
+      "type": "string",
+      "title": "Light seats",
+      "description": "The candidates a light seat runs on, in the order tried.",
+      "default": "codex gpt-6-luna medium, agy gemini-3.8-flash medium, agy claude-sonnet-5-5 low, claude haiku"
+    },
+    "busyAt": {
+      "type": "number",
+      "title": "Busy at (percent used)",
+      "description": "A sized seat passes over a candidate whose 5-hour or weekly window is used this much, or whose week is used faster than it has passed.",
+      "default": 80
+    },
+    "mixFanouts": {
+      "type": "boolean",
+      "title": "Mix model families in fan-outs",
+      "description": "Tell the session to put one seat of each installed CLI beside the Claude agents in every review or verification fan-out.",
+      "default": true
+    }
+  }
+}
