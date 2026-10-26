@@ -3,7 +3,8 @@
 // or still marked running or waiting while their launcher is gone. A folder with
 // no seat.json goes once it is a week old. A seat's worktree goes only through
 // `git worktree remove`, which refuses one with changes or untracked files; the
-// folder then stays. Its seat/* branch always stays. Links (an agy seat's HOME
+// folder then stays. A reviewer's seat/* branch goes with its worktree, since a
+// reviewer commits nothing; an owner's stays, as a pull request may name it. Links (an agy seat's HOME
 // links ~/.gemini; Windows makes them junctions) are removed, never followed.
 // Prints each folder it deletes.
 // Usage: node prune-seats.mjs ROOT
@@ -59,7 +60,11 @@ for (const entry of entries) {
   if (ended === undefined || now - ended < WEEK_MS) continue
   const tree = seat?.worktreePath
   if (tree && existsSync(join(tree, '.git'))) {
+    const repo = spawnSync('git', ['-C', tree, 'rev-parse', '--path-format=absolute', '--git-common-dir'], { encoding: 'utf8', windowsHide: true }).stdout.trim()
     if (spawnSync('git', ['-C', tree, 'worktree', 'remove', tree], { stdio: 'ignore', windowsHide: true }).status !== 0) continue
+    if (seat.tier === 'reviewer' && seat.worktreeBranch && repo) {
+      spawnSync('git', ['--git-dir', repo, 'branch', '-D', seat.worktreeBranch], { stdio: 'ignore', windowsHide: true })
+    }
   }
   remove(dir)
   process.stdout.write(dir + '\n')

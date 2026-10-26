@@ -136,6 +136,26 @@ const claudeCard = (agent: AgentInfo, seat: ClaudeSeatDisplay | undefined): Card
   steps: seat?.steps ?? 0,
 })
 
+// The engine drops a finished subagent from agent.list a while after it ends; the
+// seat's own record keeps its card in the pane.
+const claudeCards = (agents: readonly AgentInfo[], seats: readonly ClaudeSeatDisplay[]): Card[] => {
+  const known = new Map(seats.map(seat => [seat.id, seat]))
+  const listed = new Set(agents.map(agent => agent.id))
+  const dropped = seats.filter(seat => !listed.has(seat.id) && seat.endedAt !== undefined).map((seat): Card => ({
+    id: seat.id,
+    vendor: 'claude',
+    description: seat.description || 'Claude subagent',
+    model: seat.model ?? 'claude',
+    effort: seat.effort ?? '',
+    status: 'done',
+    startedAt: seat.startedAt,
+    endedAt: seat.endedAt,
+    tokens: seat.tokens,
+    steps: seat.steps,
+  }))
+  return [...agents.map(agent => claudeCard(agent, known.get(agent.id))), ...dropped]
+}
+
 // The subagents running now and those that finished while any of them ran:
 // the batch the band's Tasks bar counts. Null while none runs.
 const batch = (cards: readonly Card[]): QueueDisplay | null => {
@@ -363,6 +383,7 @@ export const register: Register = (on, options) => {
   on('agent.spawn', async ($, e, next) => {
     const spawned = await next(e)
     if (ownerCalls.delete(e.tool_use_id) && spawned.agentId) claudeOwners.add(spawned.agentId)
+    if (spawned.agentId) await recordClaudeSeat($, spawned.agentId, await $.clock.now(), () => ({ description: e.description }))
     return spawned
   })
 
@@ -422,8 +443,7 @@ export const register: Register = (on, options) => {
     // Every vendor until the CLIs were asked for, then Claude and the installed ones.
     const shown: readonly SeatVendor[] = vendors ? ['claude', ...vendors] : VENDORS
     // The pane's cards: codex and agy seats, and Claude subagents.
-    const known = new Map(claudeSeats.map(seat => [seat.id, seat]))
-    const cards = [...seats.map(externalCard), ...agents.map(agent => claudeCard(agent, known.get(agent.id)))]
+    const cards = [...seats.map(externalCard), ...claudeCards(agents, claudeSeats)]
     const count = cards.filter(card => card.status === 'running').length
     // An autopilot queue reports its own tasks; otherwise the tasks are the batch running now.
     const progress = queue ?? batch(cards)
@@ -479,8 +499,7 @@ export const register: Register = (on, options) => {
     const [seats, claudeSeats, agents, panel, now] = await Promise.all([
       read($, seatsState), read($, claudeSeatsState), $.agent.list(), read($, seatPanelState), $.clock.now(),
     ])
-    const known = new Map(claudeSeats.map(seat => [seat.id, seat]))
-    const cards = [...seats.map(externalCard), ...agents.map(agent => claudeCard(agent, known.get(agent.id)))]
+    const cards = [...seats.map(externalCard), ...claudeCards(agents, claudeSeats)]
       .sort((a, b) => (b.startedAt ?? -1) - (a.startedAt ?? -1))
     const running = cards.filter(card => card.status === 'running')
     const done = cards.filter(card => card.status === 'done')
