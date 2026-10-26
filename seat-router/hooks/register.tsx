@@ -13,7 +13,7 @@ import type { Drawing } from './raster'
 import { autoCandidates, familyOf, formatCandidate, parseCandidates, SIZES } from './chain'
 import type { Candidate, Family, Size } from './chain'
 import {
-  chooseInitial, claudeBrief, cliModels, delegateOf, delegateReason, delegateSetting, installedVendors, parseMarker, runningFamilies, seatConfigFrom,
+  chooseInitial, claudeBrief, cliModels, delegateOf, delegateReason, delegateSetting, installedVendors, ownerGuardReason, parseMarker, runningFamilies, saveOptions, seatConfigFrom,
   setDelegate, setSeatConfig, setSize, sizeCandidates, pruneSeats, singleFlightPoll, singleFlightQuotaRefresh, startExternal, stopSeat,
 } from './router'
 import type { Delegate, ExternalVendor } from './router'
@@ -42,7 +42,9 @@ const seatRules = (vendors: readonly ExternalVendor[], sizes: Record<Size, Candi
     + 'A seat is a fresh context: it sees only its brief and its folder, so the brief carries '
     + 'the task, the grounding it cannot read from its folder, and its output format. Tier `owner` is for a seat that '
     + 'commits, pushes, opens or merges a PR, or needs the network; every other seat is `reviewer`, sandboxed to its '
-    + 'folder with no network and no .git writes. Pass `isolation: "worktree"` when the seat works on code. A seat '
+    + 'folder with no network and no .git writes. Pass `isolation: "worktree"` whenever the seat reads or changes this '
+    + 'repository, a review included: without it the seat starts in an empty folder and sees only the absolute paths its '
+    + 'brief names. A seat '
     + 'cannot be continued: give follow-up work to a fresh seat with the whole scope. The mod falls back along the size\'s '
     + 'candidates; when a report says no CLI could take the seat, start the Agent it asks for yourself, in that turn.'
     + (mixFanouts && others.length > 0
@@ -96,6 +98,13 @@ const oneAtATime = <T,>(work: () => Promise<T>): Promise<T> => {
 }
 // Claude seats handed to the session, which $.agent.list may not show for a moment.
 const CLAUDE_PICK_MS = 60_000
+// The engine skips a tool.call hook after 10s; a pick this late launches nothing.
+const LATE_MS = 9_000
+// Owner seats handed to Claude: their Agent calls until spawned, then the subagents,
+// whose shell commands pass the same owner guard as codex and agy owners.
+const ownerCalls = new Set<string>()
+const claudeOwners = new Set<string>()
+const SHELL_TOOLS = ['Bash', 'PowerShell']
 let claudePicks: number[] = []
 
 const isRunning = (status: string): boolean => status === 'running' || status === 'waiting'
@@ -194,11 +203,14 @@ const sizeQuestion = (size: Size, auto: readonly Candidate[]): string =>
   + ', and follows your CLIs when their models change. Picking a model puts it first, the others after it.'
 const AUTO = 'Auto (recommended)'
 
-// Asks, size by size, which model goes first, offering the auto candidates the CLIs report, and stores each answer.
+// Asks, size by size, which model goes first, offering the auto candidates the CLIs
+// report, then the delegate mode, and saves every answer at once.
 async function setup($: EngineInterface): Promise<string> {
   const models = await cliModels($)
-  const rows = await $.config.list()
   const lines: string[] = []
+  const sizes: Partial<Record<Size, string>> = {}
+  let delegate: Delegate | undefined
+  let asked = true
   for (const size of ['heavy', 'standard', 'light'] as const) {
     const auto = autoCandidates(size, models)
     let answer: string
@@ -206,48 +218,46 @@ async function setup($: EngineInterface): Promise<string> {
       answer = await $.ui.ask(sizeQuestion(size, auto), { header: size[0]?.toUpperCase() + size.slice(1), options: [AUTO, ...auto.slice(0, 3).map(formatCandidate)] })
     } catch {
       lines.push(size + ' and after: not asked, kept as they were.')
-      return 'Seat sizes:\n' + lines.join('\n') + '\nChange them again with /seats setup, or in /config.'
+      asked = false
+      break
     }
     const chosen = answer === AUTO ? undefined : parseCandidates(answer)[0]
     if (answer !== AUTO && !chosen) {
       lines.push(size + ': kept as it was; "' + answer + '" is not `<codex|agy|claude> <model> [effort]`.')
       continue
     }
-    const setting = chosen
+    sizes[size] = chosen
       ? [chosen, ...auto.filter(candidate => candidate.vendor !== chosen.vendor || candidate.model !== chosen.model)].map(formatCandidate).join(', ')
       : 'auto'
-    const row = rows.find(item => item.key.startsWith('seat-router') && item.key.endsWith('.' + size + 'Seats'))
-    const written = row ? await $.config.set({ key: row.key, value: setting }) : { deny: 'no setting row' }
-    if ('deny' in written && written.deny) {
-      lines.push(size + ': not saved (' + written.deny + ').')
-      continue
+  }
+  if (asked) {
+    try {
+      const answer = await $.ui.ask(DELEGATE_QUESTION, { header: 'Delegate', options: Object.keys(DELEGATE_ANSWERS) })
+      delegate = DELEGATE_ANSWERS[answer]
+      if (!delegate) lines.push('delegate: kept as it was; "' + answer + '" is not Auto, On or Off.')
+    } catch {
+      lines.push('delegate: not asked, kept as it was.')
     }
-    setSize(size, setting)
+  }
+  const values: Record<string, string> = Object.fromEntries(Object.entries(sizes).map(([size, setting]) => [size + 'Seats', setting]))
+  if (delegate) values.delegate = delegate
+  if (Object.keys(values).length === 0) return 'Seat settings:\n' + lines.join('\n')
+  const refused = await saveOptions($, values)
+  if (refused) return 'Seat settings not saved: ' + refused + '.\n' + lines.join('\n')
+  for (const [size, setting] of Object.entries(sizes)) {
+    setSize(size as Size, setting)
     lines.push(size + ': ' + setting + '.')
   }
-  lines.push(await setupDelegate($, rows))
-  return 'Seat sizes:\n' + lines.join('\n') + '\nChange them again with /seats setup, or in /config.'
+  if (delegate) {
+    setDelegate(delegate)
+    lines.push('delegate: ' + delegate + '.')
+  }
+  return 'Seat settings:\n' + lines.join('\n') + '\nChange them again with /seats setup.'
 }
 
 const DELEGATE_QUESTION = 'Delegate mode: when does code work (features, fixes, PR owners) go to owner seats on your other CLIs? '
   + 'Auto does it while Claude\'s quota is busy; On always; Off never.'
 const DELEGATE_ANSWERS: Record<string, Delegate> = { [AUTO]: 'auto', On: 'on', Off: 'off' }
-
-async function setupDelegate($: EngineInterface, rows: Awaited<ReturnType<EngineInterface['config']['list']>>): Promise<string> {
-  let answer: string
-  try {
-    answer = await $.ui.ask(DELEGATE_QUESTION, { header: 'Delegate', options: Object.keys(DELEGATE_ANSWERS) })
-  } catch {
-    return 'delegate: not asked, kept as it was.'
-  }
-  const delegate = DELEGATE_ANSWERS[answer]
-  if (!delegate) return 'delegate: kept as it was; "' + answer + '" is not Auto, On or Off.'
-  const row = rows.find(item => item.key.startsWith('seat-router') && item.key.endsWith('.delegate'))
-  const written = row ? await $.config.set({ key: row.key, value: delegate }) : { deny: 'no setting row' }
-  if ('deny' in written && written.deny) return 'delegate: not saved (' + written.deny + ').'
-  setDelegate(delegate)
-  return 'delegate: ' + delegate + '.'
-}
 
 const queueTotal = (queue: QueueDisplay): number => queue.done + queue.running + queue.pending
 
@@ -314,6 +324,7 @@ export const register: Register = (on, options) => {
   on('tool.call', { tool: 'Agent' }, async ($, e, next) => {
     const marker = parseMarker(e.prompt)
     if (!marker) return next(e)
+    const began = await $.clock.now()
     const picked = await oneAtATime(async () => {
       const now = await $.clock.now()
       claudePicks = claudePicks.filter(at => now - at < CLAUDE_PICK_MS)
@@ -321,6 +332,8 @@ export const register: Register = (on, options) => {
       const rotating = !('vendor' in marker) && marker.prefer === undefined
       const listed = rotating ? (await $.agent.list()).filter(agent => isRunning(agent.status)).length : 0
       const initial = await chooseInitial($, marker, rotating ? await runningFamilies($, Math.max(listed, claudePicks.length)) : {})
+      // Past the engine's tool.call budget the Agent already ran as a plain subagent: a seat would run the task twice.
+      if ((await $.clock.now()) - began >= LATE_MS) return { kind: 'late' as const }
       const chosen = initial.allOut ? undefined : initial.chain[initial.position ?? 0]
       if (chosen?.vendor === 'claude') {
         claudePicks.push(now)
@@ -328,8 +341,10 @@ export const register: Register = (on, options) => {
       }
       return { kind: 'external' as const, seat: await startExternal($, e, marker, initial) }
     })
+    if (picked.kind === 'late') return next(e)
     if (picked.kind === 'claude') {
       const { claude, initial } = picked
+      if (marker.tier === 'owner' && e.tool_use_id) ownerCalls.add(e.tool_use_id)
       return next({
         ...e, prompt: claudeBrief(marker.brief, initial.trail), model: claude.model as typeof e.model,
         ...(claude.effort ? { effort: claude.effort as typeof e.effort } : {}),
@@ -343,6 +358,21 @@ export const register: Register = (on, options) => {
         outputFile: seat.dir + '/report.md', canReadOutputFile: true, canContinueAgent: false,
       },
     }
+  })
+
+  on('agent.spawn', async ($, e, next) => {
+    const spawned = await next(e)
+    if (ownerCalls.delete(e.tool_use_id) && spawned.agentId) claudeOwners.add(spawned.agentId)
+    return spawned
+  })
+
+  on('tool.check', async ($, e, next) => {
+    const command = (e.input as { command?: unknown } | null)?.command
+    if (e.agentId !== undefined && claudeOwners.has(e.agentId) && SHELL_TOOLS.includes(e.tool) && typeof command === 'string') {
+      const reason = await ownerGuardReason($, command)
+      if (reason) return { decision: 'deny', reason }
+    }
+    return next(e)
   })
 
   on('turn.start', async ($, e, next) => {

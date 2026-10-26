@@ -63,6 +63,8 @@ declare module 'claude-code' {
       vendors: Shaped<Exclude<SeatVendor, 'claude'>[] | null>
       // The models each installed CLI reports; null until asked.
       models: Shaped<Partial<Record<Exclude<SeatVendor, 'claude'>, { model: string, efforts: string[], isDefault?: boolean }[]>> | null>
+      // Each CLI's last usage output and when it was read.
+      usage: Shaped<Partial<Record<Exclude<SeatVendor, 'claude'>, { at: number, stdout: string }>>>
     }
   }
 
