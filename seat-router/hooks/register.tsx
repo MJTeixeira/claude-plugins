@@ -149,11 +149,16 @@ async function togglePane($: EngineInterface): Promise<boolean> {
   return true
 }
 
-const SIZE_QUESTION: Record<Size, string> = {
-  heavy: 'Heavy tasks (large changes, hard reviews): which model goes first?',
-  standard: 'Standard tasks: which model goes first?',
-  light: 'Light tasks (quick checks, bulk work): which model goes first?',
+const SIZE_NAME: Record<Size, string> = {
+  heavy: 'Heavy tasks (large changes, hard reviews)',
+  standard: 'Standard tasks',
+  light: 'Light tasks (quick checks, bulk work)',
 }
+
+// The question names what Auto runs, since the dialog's options carry labels only.
+const sizeQuestion = (size: Size, auto: readonly Candidate[]): string =>
+  SIZE_NAME[size] + ': which model goes first? Auto tries ' + auto.map(formatCandidate).join(', then ')
+  + ', and follows your CLIs when their models change. Picking a model puts it first, the others after it.'
 const AUTO = 'Auto (recommended)'
 
 // Asks, size by size, which model goes first, offering the auto candidates the CLIs report, and stores each answer.
@@ -165,7 +170,7 @@ async function setup($: EngineInterface): Promise<string> {
     const auto = autoCandidates(size, models)
     let answer: string
     try {
-      answer = await $.ui.ask(SIZE_QUESTION[size], { header: size[0]?.toUpperCase() + size.slice(1), options: [AUTO, ...auto.slice(0, 3).map(formatCandidate)] })
+      answer = await $.ui.ask(sizeQuestion(size, auto), { header: size[0]?.toUpperCase() + size.slice(1), options: [AUTO, ...auto.slice(0, 3).map(formatCandidate)] })
     } catch {
       lines.push(size + ' and after: not asked, kept as they were.')
       break
