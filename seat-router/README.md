@@ -22,7 +22,10 @@ An explicit line runs exactly that model; it moves only when that vendor is out,
 candidates of the size its effort stands for (low or medium is light, high standard, xhigh or max
 heavy).
 
-- `reviewer` seats are sandboxed to their folder, with no network and no `.git` writes.
+- `reviewer` seats are sandboxed to their folder, with no network and no `.git` writes. A codex
+  reviewer also runs without your `~/.codex/config.toml` (so none of your codex MCP servers start)
+  and with codex's apps, plugins and web search off. This needs codex-cli 0.163 or later; an older
+  codex refuses the flags and the seat moves to its next model.
 - `owner` seats may commit, push and open pull requests; force-push, `git reset --hard`,
   `rm -rf`, `gh pr merge --admin` and `gh repo delete` stay refused.
 
