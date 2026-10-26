@@ -636,6 +636,13 @@ async function launch($: EngineInterface, seat: Seat): Promise<void> {
     argv: [
       'codex', 'exec', '--json', '-m', seat.model, '-c', 'model_reasoning_effort=' + seat.effort,
       '-s', 'workspace-write', '--skip-git-repo-check', '-C', seat.workDir,
+      // A reviewer is held to its folder: the user's config would start their MCP servers
+      // (computer use among them), and codex's apps, plugins and web search reach the network
+      // from the cloud. An owner keeps all of them, as a development session does.
+      ...(seat.tier === 'reviewer' ? [
+        '--ignore-user-config', '--disable', 'apps', '--disable', 'plugins', '--disable', 'remote_plugin',
+        '-c', 'web_search="disabled"',
+      ] : []),
       ...(seat.tier === 'owner' ? [
         '-c', 'sandbox_workspace_write.network_access=true', '-c', 'shell_environment_policy.ignore_default_excludes=true',
         // A TOML key: seat paths use `/`, so a Windows folder needs no escapes there.
