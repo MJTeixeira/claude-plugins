@@ -20,6 +20,7 @@ export type SeatDisplay = {
 
 export type ClaudeSeatDisplay = {
   id: string
+  description?: string
   model?: string
   effort?: string
   startedAt: number
