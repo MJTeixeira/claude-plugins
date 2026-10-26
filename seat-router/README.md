@@ -22,7 +22,9 @@ An explicit line runs exactly that model; it moves only when that vendor is out,
 candidates of the size its effort stands for (low or medium is light, high standard, xhigh or max
 heavy).
 
-- `reviewer` seats are sandboxed to their folder, with no network and no `.git` writes. A codex
+- `reviewer` seats are sandboxed to their folder, with no network and no `.git` writes. A seat called without
+  `isolation: "worktree"` starts in an empty folder and reads only the absolute paths its brief names, so the session
+  is told to pass the worktree for any seat that reads the repository, a review included. A codex
   reviewer also runs without your `~/.codex/config.toml` (so none of your codex MCP servers start)
   and with codex's apps, plugins and web search off. This needs codex-cli 0.163 or later; an older
   codex refuses the flags and the seat moves to its next model. An agy reviewer starts none of your
@@ -35,7 +37,7 @@ heavy).
 - `owner` seats may commit, push and open pull requests, with your codex and agy config. Force-push,
   `git reset --hard`, `rm -rf`, `gh pr merge --admin` and `gh repo delete` stay refused, however the
   command spells them (`git -C . reset --hard`, `rm -fr`): a PreToolUse hook (`bin/owner-guard.mjs`)
-  checks every command. A codex owner runs with `--dangerously-bypass-hook-trust`, since codex runs a
+  checks every command. An owner seat whose turn falls to Claude runs as a Claude subagent, and the mod refuses the same commands in its Bash and PowerShell calls. A codex owner runs with `--dangerously-bypass-hook-trust`, since codex runs a
   hook from the command line only past its trust check; for that run codex also runs any hook in your
   codex config or the repo's `.codex/` that you have not trusted.
 
@@ -71,7 +73,7 @@ opus high for heavy.
 To choose which model a size tries first, run `/seats setup`: it asks once per size and offers the models
 your CLIs report, then asks for delegate mode. Pick one, keep **Auto**, or type `<codex|agy|claude> <model> [effort]` under Other.
 
-The fields themselves, in `/config` or with `claude plugin configure seat-router`:
+The fields themselves, with `claude plugin configure seat-router@code4food` (`/seats setup` saves through it; the `/config` menu does not list plugin fields):
 
 | Setting | Default | What it does |
 | --- | --- | --- |

@@ -22,6 +22,14 @@ const vendorsState = atom({ plugin: 'seat-router', key: 'vendors' } as const, nu
 const modelsState = atom({ plugin: 'seat-router', key: 'models' } as const, null as CliModels | null, {
   shape: 'cli-models-1',
 })
+// The CLIs' usage output, kept QUOTA_FRESH_MS: the engine gives a tool.call hook
+// 10s, and seats of one message pick one at a time, so a pick reads a recent
+// output (the band refreshes it every two minutes) or joins a read under way.
+const QUOTA_FRESH_MS = 150_000
+const usageState = atom({ plugin: 'seat-router', key: 'usage' } as const, {} as Partial<Record<ExternalVendor, { at: number, stdout: string }>>, {
+  shape: 'usage-reads-1',
+})
+const usageReading = new Map<ExternalVendor, Promise<string | undefined>>()
 const OWNER_NOTE = 'Commands starting with git, gh, npm, npx, node, pnpm, yarn or curl need network or .git writes: run each of them with your run_command tool\'s BypassSandbox set to true. Run every other command inside the sandbox.\n'
 type AgentInput = Extract<ToolCallInput, { tool: 'Agent' }>
 export type ExternalVendor = Exclude<SeatVendor, 'claude'>
@@ -338,7 +346,32 @@ export async function installedVendors($: EngineInterface): Promise<ExternalVend
   return vendors
 }
 
-async function quota($: EngineInterface, vendor: SeatVendor, model: string): Promise<Quota> {
+// A CLI's usage output no older than `maxAgeMs`; undefined when the CLI failed.
+async function usageOutput($: EngineInterface, vendor: ExternalVendor, maxAgeMs: number): Promise<string | undefined> {
+  const kept = (await read($, usageState))[vendor]
+  if (kept && (await $.clock.now()) - kept.at < maxAgeMs) return kept.stdout
+  const running = usageReading.get(vendor)
+  if (running) return running
+  const reading = (async () => {
+    try {
+      const result = vendor === 'codex'
+        ? await $.process.run(['node', join($.plugin.root, 'bin', 'codex-usage.mjs')], { timeoutMs: 60_000 })
+        : await io($, ['exec', 'agy', '-p', '/usage', '--output-format', 'json'], { timeoutMs: 60_000 })
+      if (result.exitCode !== 0) return undefined
+      const at = await $.clock.now()
+      await update($, usageState, current => ({ ...current, [vendor]: { at, stdout: result.stdout } }))
+      return result.stdout
+    } catch {
+      return undefined
+    } finally {
+      usageReading.delete(vendor)
+    }
+  })()
+  usageReading.set(vendor, reading)
+  return reading
+}
+
+async function quota($: EngineInterface, vendor: SeatVendor, model: string, maxAgeMs = QUOTA_FRESH_MS): Promise<Quota> {
   if (vendor === 'claude') {
     const usage = await claudeUsage($).catch(() => undefined)
     const parsed = usage === undefined ? { vendor, known: false, out: false } as Quota : claudeQuota(usage)
@@ -346,33 +379,20 @@ async function quota($: EngineInterface, vendor: SeatVendor, model: string): Pro
     return parsed
   }
   if (!(await installedVendors($)).includes(vendor)) return { vendor, known: true, out: true, detail: 'not installed' }
-  try {
-    const result = vendor === 'codex'
-      ? await $.process.run(['node', join($.plugin.root, 'bin', 'codex-usage.mjs')], { timeoutMs: 60_000 })
-      : await io($, ['exec', 'agy', '-p', '/usage', '--output-format', 'json'], { timeoutMs: 60_000 })
-    if (result.exitCode !== 0) {
-      const unknown = { vendor, known: false, out: false } as Quota
-      await putQuota($, unknown)
-      return unknown
-    }
-    const data = readJson(result.stdout)
-    const parsed = data === undefined ? { vendor, known: false, out: false } as Quota
-      : vendor === 'codex' ? codexQuota(data) : agyBucketQuota(data, model)
-    await putQuota($, parsed)
-    return parsed
-  } catch {
-    const unknown = { vendor, known: false, out: false } as Quota
-    await putQuota($, unknown)
-    return unknown
-  }
+  const output = await usageOutput($, vendor, maxAgeMs)
+  const data = output === undefined ? undefined : readJson(output)
+  const parsed = data === undefined ? { vendor, known: false, out: false } as Quota
+    : vendor === 'codex' ? codexQuota(data) : agyBucketQuota(data, model)
+  await putQuota($, parsed)
+  return parsed
 }
 
 export async function refreshQuotas($: EngineInterface): Promise<void> {
   await Promise.all([
     quota($, 'claude', 'opus'),
-    quota($, 'codex', 'gpt'),
+    quota($, 'codex', 'gpt', 0),
     // The band draws agy's Gemini windows, whichever Gemini model is named.
-    quota($, 'agy', 'gemini'),
+    quota($, 'agy', 'gemini', 0),
   ])
 }
 
@@ -435,8 +455,26 @@ async function seatRoot($: EngineInterface): Promise<string> {
 }
 
 // The POSIX tools seat-io.mjs stands in for, on every platform.
-function io($: EngineInterface, args: string[], init?: { timeoutMs?: number }): ReturnType<EngineInterface['process']['run']> {
+function io($: EngineInterface, args: string[], init?: { timeoutMs?: number, stdin?: string }): ReturnType<EngineInterface['process']['run']> {
   return $.process.run(['node', join($.plugin.root, 'bin', 'seat-io.mjs'), ...args], init)
+}
+
+// Claude Code 2.1.310 lists no plugin userConfig rows in /config, so $.config.set
+// refuses them: settings are saved through the CLI, under the id the plugin is
+// installed as. A --plugin-dir load (`@inline`) has none: its options live in
+// settings.json. Returns why nothing was saved, or undefined once saved.
+export async function saveOptions($: EngineInterface, values: Record<string, string>): Promise<string | undefined> {
+  const same = (path: string) => slashed(path).replace(/\/+$/, '').toLowerCase()
+  const listed = await io($, ['exec', 'claude', 'plugin', 'list', '--json'], { timeoutMs: 60_000 })
+  const plugins = readJson(listed.stdout)
+  const mine = Array.isArray(plugins)
+    ? plugins.map(asObject).find(plugin => typeof plugin?.installPath === 'string' && same(plugin.installPath) === same($.plugin.root))
+    : undefined
+  const id = mine?.id
+  if (typeof id !== 'string') return '`claude plugin list` does not name this plugin'
+  if (id.endsWith('@inline')) return 'it is loaded with --plugin-dir; set pluginConfigs["' + id + '"].options in settings.json'
+  const saved = await io($, ['exec', 'claude', 'plugin', 'configure', id, '--values-stdin'], { timeoutMs: 60_000, stdin: JSON.stringify(values) })
+  return saved.exitCode === 0 ? undefined : saved.stderr.trim() || '`claude plugin configure` exited ' + saved.exitCode
 }
 
 // agy reads only its workspace: the folders its brief names by absolute path
@@ -458,6 +496,13 @@ async function briefReads($: EngineInterface, seat: Pick<Seat, 'brief' | 'dir' |
     folders.add(folder)
   }
   return [...folders].sort()
+}
+
+// Why owner-guard.mjs refuses a shell command, or undefined when it may run: the
+// guard of a Claude subagent that runs an owner seat, as codex and agy owners have.
+export async function ownerGuardReason($: EngineInterface, command: string): Promise<string | undefined> {
+  const ran = await $.process.run(['node', join($.plugin.root, 'bin', 'owner-guard.mjs')], { stdin: JSON.stringify({ tool_input: { command } }) })
+  return ran.exitCode === 2 ? ran.stderr.trim() || 'seat-router owner guard: refused.' : undefined
 }
 
 // codex's own prefix rules miss reworded commands (`git -C . reset --hard`) and any
