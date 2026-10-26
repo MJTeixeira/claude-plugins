@@ -48,8 +48,9 @@ card per seat.
 
 Nothing to set: leave every field as it is on the install screen. Each size starts as `auto`: the mod asks
 the CLIs you have for their models when a session starts and tries, in order, codex's default model, agy's
-Gemini Flash, then Claude (haiku, sonnet or opus), at the size's effort (light medium, standard high, heavy
-xhigh, as far as each model goes).
+Gemini Flash, then Claude, at the size's effort: light low, standard medium, heavy high, as far as each model
+goes (codex ships its default model at low). Claude runs sonnet high for light, opus medium for standard and
+opus high for heavy.
 
 To choose which model a size tries first, run `/seats setup`: it asks once per size and offers the models
 your CLIs report. Pick one, keep **Auto**, or type `<codex|agy|claude> <model> [effort]` under Other.

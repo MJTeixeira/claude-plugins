@@ -66,11 +66,12 @@ export type CliModel = { model: string, efforts: string[], isDefault?: boolean }
 export type CliModels = { codex?: CliModel[], agy?: CliModel[] }
 
 const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max']
-const SIZE_EFFORT: Record<Size, string> = { light: 'medium', standard: 'high', heavy: 'xhigh' }
+// codex ships its default model at low effort; each size steps up from there.
+const SIZE_EFFORT: Record<Size, string> = { light: 'low', standard: 'medium', heavy: 'high' }
 const CLAUDE_BY_SIZE: Record<Size, Candidate> = {
-  light: { vendor: 'claude', model: 'haiku', effort: '' },
-  standard: { vendor: 'claude', model: 'sonnet', effort: 'high' },
-  heavy: { vendor: 'claude', model: 'opus', effort: 'xhigh' },
+  light: { vendor: 'claude', model: 'sonnet', effort: 'high' },
+  standard: { vendor: 'claude', model: 'opus', effort: 'medium' },
+  heavy: { vendor: 'claude', model: 'opus', effort: 'high' },
 }
 
 /** `agy models` lines are `<model>-<effort>\t<name>`: one model per base, with its efforts. */
