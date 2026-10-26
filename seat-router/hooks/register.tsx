@@ -10,10 +10,13 @@ import {
 import type { Card } from './art'
 import { cardRaster, headerRaster, queueRaster, quotaRaster, runningRaster } from './raster'
 import type { Drawing } from './raster'
-import { familyOf, formatCandidate, SIZES } from './chain'
-import type { Family } from './chain'
-import { chooseInitial, claudeBrief, installedVendors, parseMarker, seatConfigFrom, setSeatConfig, singleFlightPoll, singleFlightQuotaRefresh, startExternal } from './router'
-import type { ExternalVendor, SeatConfig } from './router'
+import { autoCandidates, familyOf, formatCandidate, parseCandidates, SIZES } from './chain'
+import type { Candidate, Family, Size } from './chain'
+import {
+  chooseInitial, claudeBrief, cliModels, installedVendors, parseMarker, seatConfigFrom, setSeatConfig, setSize, sizeCandidates,
+  singleFlightPoll, singleFlightQuotaRefresh, startExternal,
+} from './router'
+import type { ExternalVendor } from './router'
 
 const seatsState = atom({ plugin: 'seat-router', key: 'seats' } as const, [], { shape: 'seat-display-3' })
 const quotasState = atom({ plugin: 'seat-router', key: 'quotas' } as const, {}, { shape: 'quota-windows-1' })
@@ -26,8 +29,8 @@ const seatPanelState = atom({ plugin: 'seat-router', key: 'seatPanel' } as const
 const PANE = 'seats'
 
 // The seat rules, naming only the CLIs this machine has and the candidates they serve.
-const seatRules = (vendors: readonly ExternalVendor[], config: SeatConfig, mixFanouts: boolean): string => {
-  const usable = (size: typeof SIZES[number]) => config.sizes[size].filter(candidate => candidate.vendor === 'claude' || vendors.includes(candidate.vendor as ExternalVendor))
+const seatRules = (vendors: readonly ExternalVendor[], sizes: Record<Size, Candidate[]>, mixFanouts: boolean): string => {
+  const usable = (size: Size) => sizes[size].filter(candidate => candidate.vendor === 'claude' || vendors.includes(candidate.vendor as ExternalVendor))
   const others = [...new Set(SIZES.flatMap(size => usable(size).map(familyOf)))].filter((family): family is Exclude<Family, 'claude' | 'other'> => family !== 'claude' && family !== 'other')
   return 'The seat-router mod is loaded: an Agent call whose prompt starts with a seat line runs on another CLI ('
     + vendors.join(', ') + '), and its report arrives later as a message from the seat-router plugin. A seat line is either '
@@ -146,6 +149,47 @@ async function togglePane($: EngineInterface): Promise<boolean> {
   return true
 }
 
+const SIZE_QUESTION: Record<Size, string> = {
+  heavy: 'Heavy tasks (large changes, hard reviews): which model goes first?',
+  standard: 'Standard tasks: which model goes first?',
+  light: 'Light tasks (quick checks, bulk work): which model goes first?',
+}
+const AUTO = 'Auto (recommended)'
+
+// Asks, size by size, which model goes first, offering the auto candidates the CLIs report, and stores each answer.
+async function setup($: EngineInterface): Promise<string> {
+  const models = await cliModels($)
+  const rows = await $.config.list()
+  const lines: string[] = []
+  for (const size of ['heavy', 'standard', 'light'] as const) {
+    const auto = autoCandidates(size, models)
+    let answer: string
+    try {
+      answer = await $.ui.ask(SIZE_QUESTION[size], { header: size[0]?.toUpperCase() + size.slice(1), options: [AUTO, ...auto.slice(0, 3).map(formatCandidate)] })
+    } catch {
+      lines.push(size + ' and after: not asked, kept as they were.')
+      break
+    }
+    const chosen = answer === AUTO ? undefined : parseCandidates(answer)[0]
+    if (answer !== AUTO && !chosen) {
+      lines.push(size + ': kept as it was; "' + answer + '" is not `<codex|agy|claude> <model> [effort]`.')
+      continue
+    }
+    const setting = chosen
+      ? [chosen, ...auto.filter(candidate => candidate.vendor !== chosen.vendor || candidate.model !== chosen.model)].map(formatCandidate).join(', ')
+      : 'auto'
+    const row = rows.find(item => item.key.startsWith('seat-router') && item.key.endsWith('.' + size + 'Seats'))
+    const written = row ? await $.config.set({ key: row.key, value: setting }) : { deny: 'no setting row' }
+    if ('deny' in written && written.deny) {
+      lines.push(size + ': not saved (' + written.deny + ').')
+      continue
+    }
+    setSize(size, setting)
+    lines.push(size + ': ' + setting + '.')
+  }
+  return 'Seat sizes:\n' + lines.join('\n') + '\nChange them again with /seats setup, or in /config.'
+}
+
 const queueTotal = (queue: QueueDisplay): number => queue.done + queue.running + queue.pending
 
 export const register: Register = (on, options) => {
@@ -157,11 +201,12 @@ export const register: Register = (on, options) => {
     const composed = await next(e)
     const vendors = await installedVendors($)
     if (vendors.length === 0) return composed
-    return { sections: [...composed.sections, { id: 'seat-router:loaded', text: seatRules(vendors, config, mixFanouts), scope: 'session' }] }
+    const sizes = Object.fromEntries(await Promise.all(SIZES.map(async size => [size, await sizeCandidates($, size)] as const))) as Record<Size, Candidate[]>
+    return { sections: [...composed.sections, { id: 'seat-router:loaded', text: seatRules(vendors, sizes, mixFanouts), scope: 'session' }] }
   })
 
   on('session.start', async ($, e, next) => {
-    await $.command.register({ name: 'seats', description: 'Show or hide the seats of this session' })
+    await $.command.register({ name: 'seats', description: 'Show or hide the seats of this session; `/seats setup` picks the models each size tries first' })
     await $.tool.register({
       name: 'queue',
       description: 'Update autopilot queue progress. Call whenever the autopilot queue changes; set done, running, and pending all to 0 to clear it. '
@@ -176,7 +221,10 @@ export const register: Register = (on, options) => {
     return next(e)
   })
 
-  on('command.run', { command: 'seats' }, async $ => ({ text: await togglePane($) ? 'Seats pane opened.' : 'Seats pane closed.' }))
+  on('command.run', { command: 'seats' }, async ($, e) => {
+    if (e.args.trim() === 'setup') return { text: await setup($) }
+    return { text: await togglePane($) ? 'Seats pane opened.' : 'Seats pane closed.' }
+  })
 
   on('tool.call', { tool: 'mcp__seat-router__queue' }, async ($, e) => {
     const { done, running, pending } = e

@@ -60,3 +60,52 @@ export const pick = (loads: ReadonlyArray<Load | 'out'>, busyAt: number): number
   }
   return least
 }
+
+/** A model a CLI reports, with the efforts it takes. */
+export type CliModel = { model: string, efforts: string[], isDefault?: boolean }
+export type CliModels = { codex?: CliModel[], agy?: CliModel[] }
+
+const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max']
+const SIZE_EFFORT: Record<Size, string> = { light: 'medium', standard: 'high', heavy: 'xhigh' }
+const CLAUDE_BY_SIZE: Record<Size, Candidate> = {
+  light: { vendor: 'claude', model: 'haiku', effort: '' },
+  standard: { vendor: 'claude', model: 'sonnet', effort: 'high' },
+  heavy: { vendor: 'claude', model: 'opus', effort: 'xhigh' },
+}
+
+/** `agy models` lines are `<model>-<effort>\t<name>`: one model per base, with its efforts. */
+export const parseAgyModels = (text: string): CliModel[] => {
+  const models: CliModel[] = []
+  for (const line of text.split('\n')) {
+    const id = line.split('\t')[0]?.trim() ?? ''
+    const match = /^(.+)-(low|medium|high|xhigh|max)$/.exec(id)
+    if (!match?.[1] || !match[2]) continue
+    const found = models.find(entry => entry.model === match[1])
+    if (found) found.efforts.push(match[2])
+    else models.push({ model: match[1], efforts: [match[2]] })
+  }
+  return models
+}
+
+/** The wanted effort when the model takes it, else the highest it takes below it, else its lowest. */
+export const clampEffort = (wanted: string, efforts: readonly string[]): string => {
+  if (efforts.includes(wanted)) return wanted
+  const below = EFFORTS.slice(0, EFFORTS.indexOf(wanted)).filter(effort => efforts.includes(effort))
+  return below.at(-1) ?? efforts[0] ?? wanted
+}
+
+/**
+ * A size's candidates when its setting is `auto`: codex's default model, agy's
+ * Gemini Flash, then Claude, each at the size's effort as far as the model takes it.
+ */
+export const autoCandidates = (size: Size, models: CliModels): Candidate[] => {
+  const codex = models.codex?.find(entry => entry.isDefault) ?? models.codex?.[0]
+  const agy = models.agy?.find(entry => entry.model.startsWith('gemini') && entry.model.includes('flash'))
+  return [
+    ...(codex ? [{ vendor: 'codex' as const, model: codex.model, effort: clampEffort(SIZE_EFFORT[size], codex.efforts) }] : []),
+    ...(agy ? [{ vendor: 'agy' as const, model: agy.model, effort: clampEffort(SIZE_EFFORT[size], agy.efforts) }] : []),
+    CLAUDE_BY_SIZE[size],
+  ]
+}
+
+export const isAuto = (setting: string): boolean => setting.trim().toLowerCase() === 'auto'
