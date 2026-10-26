@@ -61,6 +61,34 @@ export const pick = (loads: ReadonlyArray<Load | 'out'>, busyAt: number): number
   return least
 }
 
+/** Seats running now in each family, Claude subagents counted as claude. */
+export type Running = Partial<Record<Family, number>>
+
+/**
+ * A sized seat's order across families: of the families with a candidate that
+ * is neither out nor busy, the one with the fewest seats running goes first
+ * (ties to the family listed first), led by its first such candidate; the other
+ * families follow, fewest running first. Indexes into the chain; empty when every
+ * family is out or busy.
+ */
+export const rotate = (chain: readonly Candidate[], loads: ReadonlyArray<Load | 'out'>, running: Running, busyAt: number): number[] => {
+  const families: Family[] = []
+  for (const candidate of chain) if (!families.includes(familyOf(candidate))) families.push(familyOf(candidate))
+  const free = (index: number): boolean => {
+    const load = loads[index]
+    return load !== undefined && load !== 'out' && !isBusy(load, busyAt)
+  }
+  const members = (family: Family): number[] => chain.flatMap((candidate, index) => familyOf(candidate) === family ? [index] : [])
+  const byRunning = (list: Family[]): Family[] => [...list].sort((a, b) => (running[a] ?? 0) - (running[b] ?? 0))
+  const lead = byRunning(families.filter(family => members(family).some(free)))[0]
+  if (lead === undefined) return []
+  const first = members(lead).find(free) as number
+  return [
+    first, ...members(lead).filter(index => index !== first),
+    ...byRunning(families.filter(family => family !== lead)).flatMap(members),
+  ]
+}
+
 /** A model a CLI reports, with the efforts it takes. */
 export type CliModel = { model: string, efforts: string[], isDefault?: boolean }
 export type CliModels = { codex?: CliModel[], agy?: CliModel[] }
@@ -68,6 +96,8 @@ export type CliModels = { codex?: CliModel[], agy?: CliModel[] }
 const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max']
 // codex ships its default model at low effort; each size steps up from there.
 const SIZE_EFFORT: Record<Size, string> = { light: 'low', standard: 'medium', heavy: 'high' }
+// The Claude model agy serves for each size, by name prefix: Claude's family through its own quota.
+const AGY_CLAUDE_BY_SIZE: Record<Size, string> = { light: 'claude-sonnet', standard: 'claude-sonnet', heavy: 'claude-opus' }
 const CLAUDE_BY_SIZE: Record<Size, Candidate> = {
   light: { vendor: 'claude', model: 'sonnet', effort: 'high' },
   standard: { vendor: 'claude', model: 'opus', effort: 'medium' },
@@ -97,15 +127,18 @@ export const clampEffort = (wanted: string, efforts: readonly string[]): string 
 
 /**
  * A size's candidates when its setting is `auto`: codex's default model, agy's
- * Gemini Flash, then Claude, each at the size's effort as far as the model takes it.
+ * Gemini Flash, then Claude, then agy's Claude, each at the size's effort as far
+ * as the model takes it.
  */
 export const autoCandidates = (size: Size, models: CliModels): Candidate[] => {
   const codex = models.codex?.find(entry => entry.isDefault) ?? models.codex?.[0]
   const agy = models.agy?.find(entry => entry.model.startsWith('gemini') && entry.model.includes('flash'))
+  const agyClaude = models.agy?.find(entry => entry.model.startsWith(AGY_CLAUDE_BY_SIZE[size]))
   return [
     ...(codex ? [{ vendor: 'codex' as const, model: codex.model, effort: clampEffort(SIZE_EFFORT[size], codex.efforts) }] : []),
     ...(agy ? [{ vendor: 'agy' as const, model: agy.model, effort: clampEffort(SIZE_EFFORT[size], agy.efforts) }] : []),
     CLAUDE_BY_SIZE[size],
+    ...(agyClaude ? [{ vendor: 'agy' as const, model: agyClaude.model, effort: clampEffort(SIZE_EFFORT[size], agyClaude.efforts) }] : []),
   ]
 }
 

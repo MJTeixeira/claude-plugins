@@ -5,7 +5,9 @@
 // `cwd`; `env`; `stdin` (a file, else nothing); `stdout`, `stderr`; `exit`;
 // `home`, the arguments of agy-seat-home.mjs, whose printed path becomes HOME
 // (and USERPROFILE on Windows); `dropWindowsApps`, which takes the folders under
-// WindowsApps off PATH; or `sleep`, seconds to wait before writing 0.
+// WindowsApps off PATH; or `sleep`, seconds to wait before writing 0. The
+// launcher writes its own pid and the CLI's to `pid`, so the mod can tell a seat
+// that died from one still running, and stop it.
 // Usage: node run-seat.mjs SPEC
 import { execFileSync, spawn } from 'node:child_process'
 import { appendFileSync, openSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
@@ -24,7 +26,9 @@ if (first !== '--child') {
 
 const spec = JSON.parse(readFileSync(second, 'utf8'))
 const finish = code => writeFileSync(spec.exit, code + '\n')
+const pids = cli => spec.pid && writeFileSync(spec.pid, JSON.stringify({ launcher: process.pid, ...(cli ? { cli } : {}) }) + '\n')
 rmSync(spec.exit, { force: true })
+pids()
 
 if (spec.sleep !== undefined) {
   setTimeout(() => finish(0), spec.sleep * 1000)
@@ -47,6 +51,7 @@ if (spec.sleep !== undefined) {
       ...started.options, cwd: spec.cwd, env, windowsHide: true,
       stdio: [spec.stdin ? openSync(spec.stdin, 'r') : 'ignore', openSync(spec.stdout, 'w'), openSync(spec.stderr, 'w')],
     })
+    pids(child.pid)
     child.on('error', error => {
       appendFileSync(spec.stderr, error.message + '\n')
       finish(127)

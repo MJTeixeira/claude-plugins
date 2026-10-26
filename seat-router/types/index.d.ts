@@ -68,5 +68,6 @@ declare module 'claude-code' {
 
   interface McpToolInputs {
     'mcp__seat-router__queue': QueueDisplay
+    'mcp__seat-router__stop': { id: string }
   }
 }

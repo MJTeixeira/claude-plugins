@@ -25,18 +25,26 @@ heavy).
 - `reviewer` seats are sandboxed to their folder, with no network and no `.git` writes. A codex
   reviewer also runs without your `~/.codex/config.toml` (so none of your codex MCP servers start)
   and with codex's apps, plugins and web search off. This needs codex-cli 0.163 or later; an older
-  codex refuses the flags and the seat moves to its next model.
+  codex refuses the flags and the seat moves to its next model. An agy reviewer starts none of your
+  agy MCP servers.
 - On Windows a codex reviewer runs codex's unelevated sandbox, and codex seats start without the
   `WindowsApps` folders on PATH (the Store's `pwsh.exe` cannot start inside that sandbox). The
   sandbox cannot write to a folder whose path has non-ASCII letters, so when your profile path has
   them, seat folders go under `%PUBLIC%\seat-router`, which every local user of the machine can read.
   An owner seat on a repo whose path has non-ASCII letters still cannot write there.
-- `owner` seats may commit, push and open pull requests; force-push, `git reset --hard`,
-  `rm -rf`, `gh pr merge --admin` and `gh repo delete` stay refused.
+- `owner` seats may commit, push and open pull requests, with your codex and agy config. Force-push,
+  `git reset --hard`, `rm -rf`, `gh pr merge --admin` and `gh repo delete` stay refused, however the
+  command spells them (`git -C . reset --hard`, `rm -fr`): a PreToolUse hook (`bin/owner-guard.mjs`)
+  checks every command. A codex owner runs with `--dangerously-bypass-hook-trust`, since codex runs a
+  hook from the command line only past its trust check; for that run codex also runs any hook in your
+  codex config or the repo's `.codex/` that you have not trusted.
 
 The session learns the seat line from the mod itself: you do not write rules for it. The mod also
 shows running seats and each vendor's quota above the prompt, and `/seats` opens a pane with one
-card per seat.
+card per seat. The session can stop a seat with the mod's `stop` tool (TaskStop does not reach
+seats); a seat whose process died without an exit code is reported as such. When a session starts,
+the mod deletes seat folders that ended more than a week ago, except a worktree with changes or
+untracked files; `seat/*` branches stay.
 
 ## Requirements
 
@@ -68,7 +76,13 @@ The fields themselves, in `/config` or with `claude plugin configure seat-router
 | Setting | Default | What it does |
 | --- | --- | --- |
 | `heavySeats`, `standardSeats`, `lightSeats` | `auto` | The models a size tries, in order: `auto`, or comma-separated `<codex\|agy\|claude> <model> [effort]`. |
-| `busyAt` | `80` | A model is busy once its 5-hour or weekly quota is this used, or its week is used faster than it has passed; a sized seat then tries the next. |
+| `busyAt` | `80` | A model is busy once its 5-hour or weekly quota is this used, or its week is used faster than it has passed; a sized seat then passes it over. |
 | `mixFanouts` | on | Asks the session to add one seat per other model family beside the Claude agents in every review or verification fan-out. |
 
 A model's family comes from its name, so `agy claude-opus-5-5` counts as Claude, not as variety.
+
+A sized seat line that names no CLI or family goes to the family (gpt, gemini, claude) with the fewest
+of this session's seats and Claude subagents running now, so three such seats in a row land on three
+families. A family is passed over only when every candidate in it is busy or out: with native Claude
+busy, agy's Claude still serves the claude family. With every family busy, the least loaded model runs.
+`auto` sizes list agy's Claude (sonnet for light and standard, opus for heavy) after native Claude.
