@@ -26,6 +26,11 @@ heavy).
   reviewer also runs without your `~/.codex/config.toml` (so none of your codex MCP servers start)
   and with codex's apps, plugins and web search off. This needs codex-cli 0.163 or later; an older
   codex refuses the flags and the seat moves to its next model.
+- On Windows a codex reviewer runs codex's unelevated sandbox, and codex seats start without the
+  `WindowsApps` folders on PATH (the Store's `pwsh.exe` cannot start inside that sandbox). The
+  sandbox cannot write to a folder whose path has non-ASCII letters, so when your profile path has
+  them, seat folders go under `%PUBLIC%\seat-router`, which every local user of the machine can read.
+  An owner seat on a repo whose path has non-ASCII letters still cannot write there.
 - `owner` seats may commit, push and open pull requests; force-push, `git reset --hard`,
   `rm -rf`, `gh pr merge --admin` and `gh repo delete` stay refused.
 
