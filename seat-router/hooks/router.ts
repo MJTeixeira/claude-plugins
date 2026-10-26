@@ -26,10 +26,12 @@ const OWNER_NOTE = 'Commands starting with git, gh, npm, npx, node, pnpm, yarn o
 type AgentInput = Extract<ToolCallInput, { tool: 'Agent' }>
 export type ExternalVendor = Exclude<SeatVendor, 'claude'>
 
-// Each size's setting (`auto`, or a list of candidates) and the busy threshold, from the plugin's userConfig.
-export type SeatConfig = { sizes: Record<Size, string>, busyAt: number }
+// Each size's setting (`auto`, or a list of candidates), the busy threshold and
+// when code work goes to owner seats, from the plugin's userConfig.
+export type Delegate = 'auto' | 'on' | 'off'
+export type SeatConfig = { sizes: Record<Size, string>, busyAt: number, delegate: Delegate }
 
-let seatConfig: SeatConfig = { sizes: { light: 'auto', standard: 'auto', heavy: 'auto' }, busyAt: 80 }
+let seatConfig: SeatConfig = { sizes: { light: 'auto', standard: 'auto', heavy: 'auto' }, busyAt: 80, delegate: 'auto' }
 
 export function setSeatConfig(config: SeatConfig): void {
   seatConfig = config
@@ -41,8 +43,25 @@ export function setSize(size: Size, setting: string): void {
 
 export function seatConfigFrom(options: Readonly<Record<string, unknown>>): SeatConfig {
   const sizes = Object.fromEntries(SIZES.map(size => [size, String(options[size + 'Seats'] ?? 'auto')])) as Record<Size, string>
-  return { sizes, busyAt: typeof options.busyAt === 'number' ? options.busyAt : 80 }
+  return { sizes, busyAt: typeof options.busyAt === 'number' ? options.busyAt : 80, delegate: delegateOf(options.delegate) }
 }
+
+export const delegateOf = (value: unknown): Delegate => value === 'on' || value === 'off' ? value : 'auto'
+
+export function setDelegate(delegate: Delegate): void {
+  seatConfig = { ...seatConfig, delegate }
+}
+
+// Why code work goes to owner seats now, or undefined while it stays on Claude.
+export async function delegateReason($: EngineInterface): Promise<string | undefined> {
+  if (seatConfig.delegate === 'on') return 'set to on'
+  if (seatConfig.delegate === 'off') return undefined
+  const usage = await claudeUsage($).catch(() => undefined)
+  if (usage === undefined) return undefined
+  return isBusy(loadOf(claudeQuota(usage), await $.clock.now()), seatConfig.busyAt) ? 'Claude\'s quota is busy' : undefined
+}
+
+export const delegateSetting = (): Delegate => seatConfig.delegate
 
 // The models each installed CLI reports, asked once a session; a CLI that cannot answer offers none.
 export async function cliModels($: EngineInterface): Promise<CliModels> {
