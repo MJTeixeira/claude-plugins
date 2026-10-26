@@ -411,8 +411,15 @@ async function homeDir($: EngineInterface): Promise<string | undefined> {
 }
 
 // Where seat folders live: /tmp on macOS and Linux, the user's TEMP on Windows.
+// codex's Windows sandbox cannot make a folder with a non-ASCII path writable, and
+// an 8.3 TEMP still resolves to the long name, so a non-ASCII profile moves seats
+// to PUBLIC, which every local user can read.
 async function seatRoot($: EngineInterface): Promise<string> {
-  return await isWindows($) ? slashed(await $.env.get('TEMP') ?? 'C:/Windows/Temp') : '/tmp'
+  if (!await isWindows($)) return '/tmp'
+  const temp = slashed(await $.env.get('TEMP') ?? 'C:/Windows/Temp')
+  const ascii = [temp, await $.env.get('USERPROFILE') ?? ''].every(path => /^[\x20-\x7e]*$/.test(path))
+  const shared = await $.env.get('PUBLIC')
+  return ascii || !shared ? temp : slashed(shared) + '/seat-router'
 }
 
 // The POSIX tools seat-io.mjs stands in for, on every platform.
@@ -632,6 +639,7 @@ async function launch($: EngineInterface, seat: Seat): Promise<void> {
       }
     }
   }
+  const windows = await isWindows($)
   const spec: LaunchSpec = seat.vendor === 'codex' ? {
     argv: [
       'codex', 'exec', '--json', '-m', seat.model, '-c', 'model_reasoning_effort=' + seat.effort,
@@ -642,6 +650,9 @@ async function launch($: EngineInterface, seat: Seat): Promise<void> {
       ...(seat.tier === 'reviewer' ? [
         '--ignore-user-config', '--disable', 'apps', '--disable', 'plugins', '--disable', 'remote_plugin',
         '-c', 'web_search="disabled"',
+        // Without a Windows sandbox mode codex refuses every command; the user's config
+        // would have named one.
+        ...(windows ? ['-c', 'windows.sandbox="unelevated"'] : []),
       ] : []),
       ...(seat.tier === 'owner' ? [
         '-c', 'sandbox_workspace_write.network_access=true', '-c', 'shell_environment_policy.ignore_default_excludes=true',
@@ -652,6 +663,9 @@ async function launch($: EngineInterface, seat: Seat): Promise<void> {
       '-o', join(seat.dir, 'final.md'), '-',
     ],
     cwd: seat.workDir, stdin: join(seat.dir, 'brief.md'),
+    // The Store's pwsh.exe alias cannot start inside codex's Windows sandbox; without
+    // it on PATH codex runs System32's powershell.exe.
+    ...(windows ? { dropWindowsApps: true } : {}),
     stdout: join(seat.dir, 'codex.jsonl'), stderr: join(seat.dir, 'codex.err'), exit: join(seat.dir, 'exit'),
   } : {
     argv: [
@@ -677,6 +691,7 @@ type LaunchSpec = {
   stderr?: string
   exit: string
   home?: string[]
+  dropWindowsApps?: boolean
   sleep?: number
 }
 

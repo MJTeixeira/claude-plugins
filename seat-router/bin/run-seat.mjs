@@ -4,11 +4,12 @@
 // file. The spec (JSON): `argv`, where `{ file }` stands for that file's text;
 // `cwd`; `env`; `stdin` (a file, else nothing); `stdout`, `stderr`; `exit`;
 // `home`, the arguments of agy-seat-home.mjs, whose printed path becomes HOME
-// (and USERPROFILE on Windows); or `sleep`, seconds to wait before writing 0.
+// (and USERPROFILE on Windows); `dropWindowsApps`, which takes the folders under
+// WindowsApps off PATH; or `sleep`, seconds to wait before writing 0.
 // Usage: node run-seat.mjs SPEC
 import { execFileSync, spawn } from 'node:child_process'
 import { appendFileSync, openSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
-import { dirname, join } from 'node:path'
+import { delimiter, dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { command } from './command.mjs'
 
@@ -34,6 +35,11 @@ if (spec.sleep !== undefined) {
       const home = execFileSync(process.execPath, [join(dirname(self), 'agy-seat-home.mjs'), ...spec.home], { encoding: 'utf8' }).trim()
       env.HOME = home
       if (process.platform === 'win32') env.USERPROFILE = home
+    }
+    if (spec.dropWindowsApps) {
+      for (const key of Object.keys(env).filter(name => name.toUpperCase() === 'PATH')) {
+        env[key] = env[key].split(delimiter).filter(dir => !/[\\/]WindowsApps(?:[\\/]|$)/i.test(dir)).join(delimiter)
+      }
     }
     const argv = spec.argv.map(arg => typeof arg === 'string' ? arg : readFileSync(arg.file, 'utf8'))
     const started = command(argv[0], argv.slice(1))

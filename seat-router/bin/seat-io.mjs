@@ -1,13 +1,13 @@
 #!/usr/bin/env node
 // The few POSIX tools the mod probes seat files with, written once for every
 // platform and taking the flags the mod passes: `pwd`, `mktemp -d TEMPLATE`
-// (prints the resolved path), `mkdir DIR`, `head -n N FILE`, `tail -n N FILE`,
+// (creates its parent, prints the resolved path), `mkdir DIR`, `head -n N FILE`, `tail -n N FILE`,
 // `grep -[Eicoq] PATTERN FILE...` (POSIX classes read as JS), `find DIR -name
 // GLOB`, and `exec NAME ARG...`, which starts a CLI as command.mjs resolves it.
 // Files are read in bounded chunks or line by line, never whole.
 import { spawn } from 'node:child_process'
 import { closeSync, createReadStream, fstatSync, mkdirSync, mkdtempSync, openSync, readSync, readdirSync, realpathSync } from 'node:fs'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { createInterface } from 'node:readline'
 import { command } from './command.mjs'
 
@@ -82,7 +82,10 @@ function exec(name, rest) {
 
 try {
   if (tool === 'pwd') process.stdout.write(process.cwd() + '\n')
-  else if (tool === 'mktemp') process.stdout.write(realpathSync.native(mkdtempSync(args[1].replace(/X+$/, ''))) + '\n')
+  else if (tool === 'mktemp') {
+    mkdirSync(dirname(args[1]), { recursive: true })
+    process.stdout.write(realpathSync.native(mkdtempSync(args[1].replace(/X+$/, ''))) + '\n')
+  }
   else if (tool === 'mkdir') mkdirSync(args[0])
   else if (tool === 'head') process.stdout.write(lines(args[2], Number(args[1]), false))
   else if (tool === 'tail') process.stdout.write(lines(args[2], Number(args[1]), true))
