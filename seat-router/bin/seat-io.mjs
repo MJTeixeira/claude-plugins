@@ -3,9 +3,11 @@
 // platform and taking the flags the mod passes: `pwd`, `mktemp -d TEMPLATE`
 // (creates its parent, prints the resolved path), `mkdir DIR`, `head -n N FILE`, `tail -n N FILE`,
 // `grep -[Eicoq] PATTERN FILE...` (POSIX classes read as JS), `find DIR -name
-// GLOB`, and `exec NAME ARG...`, which starts a CLI as command.mjs resolves it.
+// GLOB`, `exec NAME ARG...`, which starts a CLI as command.mjs resolves it,
+// `alive PID` (exit 0 while that process runs), and `kill PID`, which ends that
+// process and everything it started.
 // Files are read in bounded chunks or line by line, never whole.
-import { spawn } from 'node:child_process'
+import { execFileSync, spawn } from 'node:child_process'
 import { closeSync, createReadStream, fstatSync, mkdirSync, mkdtempSync, openSync, readSync, readdirSync, realpathSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { createInterface } from 'node:readline'
@@ -80,6 +82,21 @@ function exec(name, rest) {
   child.on('exit', code => process.exit(code ?? 1))
 }
 
+function alive(pid) {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch (error) {
+    return error.code === 'EPERM'
+  }
+}
+
+// run-seat starts detached, so on POSIX its pid names the group of everything it started.
+function kill(pid) {
+  if (process.platform === 'win32') return execFileSync('taskkill', ['/T', '/F', '/PID', String(pid)], { stdio: 'ignore' })
+  try { process.kill(-pid, 'SIGKILL') } catch { process.kill(pid, 'SIGKILL') }
+}
+
 try {
   if (tool === 'pwd') process.stdout.write(process.cwd() + '\n')
   else if (tool === 'mktemp') {
@@ -92,6 +109,8 @@ try {
   else if (tool === 'grep') await grep(args[0], args[1], args.slice(2))
   else if (tool === 'find') find(args[0], args[2])
   else if (tool === 'exec') exec(args[0], args.slice(1))
+  else if (tool === 'alive') process.exit(alive(Number(args[0])) ? 0 : 1)
+  else if (tool === 'kill') kill(Number(args[0]))
   else throw new Error('unknown tool')
 } catch (error) {
   process.stderr.write(`seat-io ${tool}: ${error.message}\n`)

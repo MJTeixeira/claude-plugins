@@ -13,8 +13,8 @@ import type { Drawing } from './raster'
 import { autoCandidates, familyOf, formatCandidate, parseCandidates, SIZES } from './chain'
 import type { Candidate, Family, Size } from './chain'
 import {
-  chooseInitial, claudeBrief, cliModels, installedVendors, parseMarker, seatConfigFrom, setSeatConfig, setSize, sizeCandidates,
-  singleFlightPoll, singleFlightQuotaRefresh, startExternal,
+  chooseInitial, claudeBrief, cliModels, installedVendors, parseMarker, runningFamilies, seatConfigFrom, setSeatConfig, setSize, sizeCandidates,
+  pruneSeats, singleFlightPoll, singleFlightQuotaRefresh, startExternal, stopSeat,
 } from './router'
 import type { ExternalVendor } from './router'
 
@@ -63,7 +63,26 @@ const QUEUE_SCHEMA = {
   additionalProperties: false,
 } as const
 
+const STOP_SCHEMA = {
+  type: 'object',
+  properties: { id: { type: 'string', pattern: '^seat-\\w+$' } },
+  required: ['id'],
+  additionalProperties: false,
+} as const
+
 let elapsedTick: Timer | undefined
+
+// Seat lines of one message arrive together, before any quota moves: each picks
+// its family only after the one before it is counted as running.
+let picking: Promise<unknown> = Promise.resolve()
+const oneAtATime = <T,>(work: () => Promise<T>): Promise<T> => {
+  const turn = picking.then(work)
+  picking = turn.catch(() => undefined)
+  return turn
+}
+// Claude seats handed to the session, which $.agent.list may not show for a moment.
+const CLAUDE_PICK_MS = 60_000
+let claudePicks: number[] = []
 
 const isRunning = (status: string): boolean => status === 'running' || status === 'waiting'
 
@@ -219,6 +238,14 @@ export const register: Register = (on, options) => {
       inputSchema: QUEUE_SCHEMA,
       isDeferred: false,
     })
+    await $.tool.register({
+      name: 'stop',
+      description: 'Stop a codex or agy seat of this session that is still running or waiting: ends its CLI and everything it started, '
+        + 'and reports the seat stopped. `id` is the seat id (seat-XXXXXX) its Agent call returned. TaskStop cannot stop seats.',
+      inputSchema: STOP_SCHEMA,
+      isDeferred: false,
+    })
+    void pruneSeats($).catch(() => undefined)
     $.clock.every(5_000, () => singleFlightPoll($))
     void singleFlightPoll($)
     $.clock.every(120_000, () => singleFlightQuotaRefresh($))
@@ -246,18 +273,33 @@ export const register: Register = (on, options) => {
     return { result: text }
   })
 
+  on('tool.call', { tool: 'mcp__seat-router__stop' }, async ($, e) => ({ result: await stopSeat($, e.id) }))
+
   on('tool.call', { tool: 'Agent' }, async ($, e, next) => {
     const marker = parseMarker(e.prompt)
     if (!marker) return next(e)
-    const initial = await chooseInitial($, marker)
-    const chosen = initial.allOut ? undefined : initial.chain[initial.position ?? 0]
-    if (chosen?.vendor === 'claude') {
+    const picked = await oneAtATime(async () => {
+      const now = await $.clock.now()
+      claudePicks = claudePicks.filter(at => now - at < CLAUDE_PICK_MS)
+      // Only a sized line naming no CLI or family rotates across families.
+      const rotating = !('vendor' in marker) && marker.prefer === undefined
+      const listed = rotating ? (await $.agent.list()).filter(agent => isRunning(agent.status)).length : 0
+      const initial = await chooseInitial($, marker, rotating ? await runningFamilies($, Math.max(listed, claudePicks.length)) : {})
+      const chosen = initial.allOut ? undefined : initial.chain[initial.position ?? 0]
+      if (chosen?.vendor === 'claude') {
+        claudePicks.push(now)
+        return { kind: 'claude' as const, claude: chosen, initial }
+      }
+      return { kind: 'external' as const, seat: await startExternal($, e, marker, initial) }
+    })
+    if (picked.kind === 'claude') {
+      const { claude, initial } = picked
       return next({
-        ...e, prompt: claudeBrief(marker.brief, initial.trail), model: chosen.model as typeof e.model,
-        ...(chosen.effort ? { effort: chosen.effort as typeof e.effort } : {}),
+        ...e, prompt: claudeBrief(marker.brief, initial.trail), model: claude.model as typeof e.model,
+        ...(claude.effort ? { effort: claude.effort as typeof e.effort } : {}),
       })
     }
-    const seat = await startExternal($, e, marker, initial)
+    const seat = picked.seat
     void startElapsedTick($)
     return {
       result: {

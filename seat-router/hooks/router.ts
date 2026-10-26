@@ -1,8 +1,8 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, ToolCallInput } from 'claude-code'
 import type { SeatDisplay, SeatQuotaDisplay, SeatStatus, SeatTier, SeatVendor } from '../types/index'
-import { autoCandidates, formatCandidate, isAuto, isBusy, isPreferred, parseAgyModels, parseCandidates, pick, SIZES, sizeOf } from './chain'
-import type { Candidate, CliModel, CliModels, Load, Size } from './chain'
+import { autoCandidates, familyOf, formatCandidate, isAuto, isBusy, isPreferred, parseAgyModels, parseCandidates, pick, rotate, SIZES, sizeOf } from './chain'
+import type { Candidate, CliModel, CliModels, Load, Running, Size } from './chain'
 
 const EXPLICIT = /^seat: (codex|agy) (\S+) (\S+) (reviewer|owner)\n/
 const SIZED = /^seat: (?:(codex|agy|claude|gpt|gemini) )?(light|standard|heavy) (reviewer|owner)\n/
@@ -23,13 +23,6 @@ const modelsState = atom({ plugin: 'seat-router', key: 'models' } as const, null
   shape: 'cli-models-1',
 })
 const OWNER_NOTE = 'Commands starting with git, gh, npm, npx, node, pnpm, yarn or curl need network or .git writes: run each of them with your run_command tool\'s BypassSandbox set to true. Run every other command inside the sandbox.\n'
-const OWNER_RULES = 'prefix_rule(pattern = ["git", "push", "--force"], decision = "forbidden", justification = "Use a non-force push.")\n'
-  + 'prefix_rule(pattern = ["git", "push", "-f"], decision = "forbidden", justification = "Use a non-force push.")\n'
-  + 'prefix_rule(pattern = ["git", "reset", "--hard"], decision = "forbidden", justification = "Use a reversible Git operation.")\n'
-  + 'prefix_rule(pattern = ["gh", "pr", "merge", "--admin"], decision = "forbidden", justification = "Do not bypass merge protections.")\n'
-  + 'prefix_rule(pattern = ["gh", "repo", "delete"], decision = "forbidden", justification = "Do not delete repositories.")\n'
-  + 'prefix_rule(pattern = ["rm", "-rf"], decision = "forbidden", justification = "Remove only explicit paths.")\n'
-
 type AgentInput = Extract<ToolCallInput, { tool: 'Agent' }>
 export type ExternalVendor = Exclude<SeatVendor, 'claude'>
 
@@ -448,8 +441,12 @@ async function briefReads($: EngineInterface, seat: Pick<Seat, 'brief' | 'dir' |
   return [...folders].sort()
 }
 
-function ownerRulesPath(dir: string): string {
-  return join(dir, '.codex', 'rules', 'seat-router.rules')
+// codex's own prefix rules miss reworded commands (`git -C . reset --hard`) and any
+// line its shell parser gives up on (`HEAD~1`), so an owner's commands pass this hook.
+// The hook comes from the command line, which codex runs only past its hook trust check.
+function ownerGuard($: EngineInterface): string[] {
+  const command = 'node "' + slashed($.plugin.root) + '/bin/owner-guard.mjs"'
+  return ['--dangerously-bypass-hook-trust', '-c', 'hooks.PreToolUse=[{matcher="Bash",hooks=[{type="command",command=' + JSON.stringify(command) + '}]}]']
 }
 
 export function claudeBrief(brief: string, trail: string[]): string {
@@ -627,18 +624,6 @@ async function putSeat($: EngineInterface, seat: Seat, liveTokens?: number, acti
 async function launch($: EngineInterface, seat: Seat): Promise<void> {
   const brief = seat.tier === 'owner' && seat.vendor === 'agy' ? seat.brief + '\n' + OWNER_NOTE : seat.brief
   await $.fs.write(join(seat.dir, 'brief.md'), brief)
-  if (seat.tier === 'owner' && seat.vendor === 'codex') {
-    await $.fs.write(ownerRulesPath(seat.workDir), OWNER_RULES)
-    if (seat.isolation === 'worktree') {
-      const excluded = await $.process.run(['git', 'rev-parse', '--path-format=absolute', '--git-path', 'info/exclude'], { cwd: seat.workDir })
-      if (excluded.exitCode === 0 && excluded.stdout.trim()) {
-        const path = excluded.stdout.trim()
-        const entry = '.codex/rules/seat-router.rules'
-        const current = await readText($, path)
-        if (!current.split('\n').includes(entry)) await $.fs.write(path, current + (current.endsWith('\n') || !current ? '' : '\n') + entry + '\n')
-      }
-    }
-  }
   const windows = await isWindows($)
   const spec: LaunchSpec = seat.vendor === 'codex' ? {
     argv: [
@@ -656,8 +641,7 @@ async function launch($: EngineInterface, seat: Seat): Promise<void> {
       ] : []),
       ...(seat.tier === 'owner' ? [
         '-c', 'sandbox_workspace_write.network_access=true', '-c', 'shell_environment_policy.ignore_default_excludes=true',
-        // A TOML key: seat paths use `/`, so a Windows folder needs no escapes there.
-        '-c', 'projects."' + seat.workDir + '".trust_level="trusted"',
+        ...ownerGuard($),
         ...(seat.gitDirs ?? []).flatMap(dir => ['--add-dir', dir]),
       ] : []),
       '-o', join(seat.dir, 'final.md'), '-',
@@ -666,7 +650,7 @@ async function launch($: EngineInterface, seat: Seat): Promise<void> {
     // The Store's pwsh.exe alias cannot start inside codex's Windows sandbox; without
     // it on PATH codex runs System32's powershell.exe.
     ...(windows ? { dropWindowsApps: true } : {}),
-    stdout: join(seat.dir, 'codex.jsonl'), stderr: join(seat.dir, 'codex.err'), exit: join(seat.dir, 'exit'),
+    stdout: join(seat.dir, 'codex.jsonl'), stderr: join(seat.dir, 'codex.err'), exit: join(seat.dir, 'exit'), pid: join(seat.dir, 'pid'),
   } : {
     argv: [
       'agy', '--output-format', 'stream-json', '--model', seat.model, '--effort', agyEffort(seat.effort),
@@ -677,7 +661,7 @@ async function launch($: EngineInterface, seat: Seat): Promise<void> {
       ...(seat.tier === 'owner' ? ['owner'] : []), '--home', join(seat.dir, 'home'),
       ...(await briefReads($, seat)).flatMap(folder => ['--read', folder]),
     ],
-    stdout: join(seat.dir, 'agy.jsonl'), stderr: join(seat.dir, 'agy.err'), exit: join(seat.dir, 'exit'),
+    stdout: join(seat.dir, 'agy.jsonl'), stderr: join(seat.dir, 'agy.err'), exit: join(seat.dir, 'exit'), pid: join(seat.dir, 'pid'),
   }
   await start($, seat, spec, seat.tier === 'owner' ? await ownerEnv($) : undefined)
 }
@@ -690,6 +674,7 @@ type LaunchSpec = {
   stdout?: string
   stderr?: string
   exit: string
+  pid?: string
   home?: string[]
   dropWindowsApps?: boolean
   sleep?: number
@@ -723,7 +708,7 @@ async function scheduleWait($: EngineInterface, seat: Seat, until: number): Prom
   await writeSeat($, seat)
   await putSeat($, seat)
   const seconds = Math.max(0, Math.ceil((seat.waitUntil - now) / 1000))
-  await start($, seat, { sleep: seconds, exit: join(seat.dir, 'exit') })
+  await start($, seat, { sleep: seconds, exit: join(seat.dir, 'exit'), pid: join(seat.dir, 'pid') })
 }
 
 // codex keeps a worktree's own git dir read-only even under a writable common
@@ -925,7 +910,13 @@ export async function pollSession($: EngineInterface, sessionId: string): Promis
     await putSeat($, seat, await liveTokens($, seat), await readActivity($, seat))
     if (seat.reported || seat.status === 'reported' || seat.status === 'reporting') continue
     const exit = await readText($, join(seat.dir, 'exit'))
-    if (!exit.trim()) continue
+    if (!exit.trim()) {
+      if (await launcherGone($, seat) && !(await readText($, join(seat.dir, 'exit'))).trim()) {
+        await report($, seat, 'The seat\'s process ended without an exit code (killed, or the machine restarted); it was not rerun.'
+          + ' Its output so far:\n\n' + (await partialOutput($, seat) || '(none)'))
+      }
+      continue
+    }
     if (seat.status === 'waiting') {
       const now = await $.clock.now()
       seat.waitedMs = now - (seat.waitedAt ?? now)
@@ -948,6 +939,41 @@ export async function pollSession($: EngineInterface, sessionId: string): Promis
     }
     await runCandidate($, seat, seat.chainPosition + 1)
   }
+}
+
+// The launcher's pid, from the pid file run-seat writes; seats launched before it wrote one have none.
+async function launcherPid($: EngineInterface, seat: Seat): Promise<number | undefined> {
+  return numberAt(asObject(readJson(await readText($, join(seat.dir, 'pid'))))?.launcher)
+}
+
+async function launcherGone($: EngineInterface, seat: Seat): Promise<boolean> {
+  const pid = await launcherPid($, seat)
+  return pid !== undefined && (await io($, ['alive', String(pid)])).exitCode === 1
+}
+
+async function partialOutput($: EngineInterface, seat: Seat): Promise<string> {
+  return (await readText($, join(seat.dir, 'final.md'))).trim() || lastAction(seat.vendor === 'agy' ? 'agy' : 'codex',
+    await tail($, join(seat.dir, seat.vendor === 'agy' ? 'agy.jsonl' : 'codex.jsonl'), 20)) || ''
+}
+
+/** Ends a seat of this session that is still running or waiting, with everything it started; returns its report. */
+export async function stopSeat($: EngineInterface, id: string): Promise<string> {
+  const seat = (await seatsFor($, await $.session.id())).find(value => value.id === id)
+  if (!seat) return 'No seat ' + id + ' in this session.'
+  if (seat.status !== 'running' && seat.status !== 'waiting') return 'Seat ' + id + ' is not running (' + seat.status + ').'
+  const pid = await launcherPid($, seat)
+  if (pid !== undefined && !await launcherGone($, seat)) {
+    const killed = await io($, ['kill', String(pid)])
+    if (killed.exitCode !== 0 && !await launcherGone($, seat)) return 'Could not stop seat ' + id + ': ' + killed.stderr.trim()
+  }
+  // A tool call cannot submit a prompt, so the stopped seat's report is this tool's result.
+  await report($, seat, 'Stopped on request; it was not rerun. Its output so far:\n\n' + (await partialOutput($, seat) || '(none)'), false)
+  return readText($, join(seat.dir, 'report.md'))
+}
+
+/** Deletes seat folders that ended over a week ago, from every session on this machine (see prune-seats.mjs). */
+export async function pruneSeats($: EngineInterface): Promise<void> {
+  await $.process.run(['node', join($.plugin.root, 'bin', 'prune-seats.mjs'), await seatRoot($)], { timeoutMs: 120_000 })
 }
 
 export async function poll($: EngineInterface): Promise<void> {
@@ -984,15 +1010,30 @@ export async function startExternal($: EngineInterface, input: AgentInput, marke
   return seat
 }
 
-// An explicit line keeps its order and moves on only past a vendor that is out;
-// a sized line runs the first candidate that is not busy, else the least loaded.
-export async function chooseInitial($: EngineInterface, marker: Marker): Promise<Initial> {
+/** This session's codex and agy seats still running or waiting, by family, plus `claude` running Claude subagents. */
+export async function runningFamilies($: EngineInterface, claude: number): Promise<Running> {
+  const running: Running = { claude }
+  for (const seat of await seatsFor($, await $.session.id())) {
+    if (seat.status !== 'running' && seat.status !== 'waiting') continue
+    const family = familyOf(seat)
+    running[family] = (running[family] ?? 0) + 1
+  }
+  return running
+}
+
+// An explicit line keeps its order and moves on only past a vendor that is out.
+// A sized line naming a CLI or family runs the first of those candidates that is
+// not busy, else the least loaded; any other sized line goes to the family with
+// the fewest seats in `running` (see rotate), and to the least loaded when every
+// family is busy.
+export async function chooseInitial($: EngineInterface, marker: Marker, running: Running = {}): Promise<Initial> {
   const chain = await chainFor($, marker)
   const trail: string[] = []
   const readings: Quota[] = []
   let resetAt: number | undefined
   const now = await $.clock.now()
   const loads: Array<Load | 'out'> = []
+  const rotating = !('vendor' in marker) && marker.prefer === undefined
   for (const choice of chain) {
     const available = await quota($, choice.vendor, choice.model)
     readings.push(available)
@@ -1004,7 +1045,17 @@ export async function chooseInitial($: EngineInterface, marker: Marker): Promise
     }
     const load = loadOf(available, now)
     loads.push(load)
-    if ('vendor' in marker || !isBusy(load, seatConfig.busyAt)) break
+    if (!rotating && ('vendor' in marker || !isBusy(load, seatConfig.busyAt))) break
+  }
+  const order = rotating ? rotate(chain, loads, running, seatConfig.busyAt) : []
+  if (order.length) {
+    const first = order[0] as number
+    const busy = chain.slice(0, first).filter((_, index) => { const load = loads[index]; return load !== 'out' && load !== undefined && isBusy(load, seatConfig.busyAt) })
+    return {
+      chain: order.map(index => chain[index]).filter((value): value is Candidate => value !== undefined),
+      trail: busy.length ? [...trail, 'busy: ' + busy.map(formatCandidate).join(', ')] : trail, allOut: false, position: 0,
+      readings: order.map(index => readings[index]).filter((value): value is Quota => value !== undefined),
+    }
   }
   const position = 'vendor' in marker ? loads.findIndex(load => load !== 'out') : pick(loads, seatConfig.busyAt)
   if (position === -1) return { chain, trail, resetAt, allOut: true, readings }
