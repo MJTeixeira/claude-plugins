@@ -61,6 +61,8 @@ declare module 'claude-code' {
       seatPaneTick: number
       seatPanel: { isDoneCollapsed: boolean }
       vendors: Shaped<Exclude<SeatVendor, 'claude'>[] | null>
+      // The models each installed CLI reports; null until asked.
+      models: Shaped<Partial<Record<Exclude<SeatVendor, 'claude'>, { model: string, efforts: string[], isDefault?: boolean }[]>> | null>
     }
   }
 

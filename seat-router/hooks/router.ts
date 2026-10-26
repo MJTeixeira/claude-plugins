@@ -1,8 +1,8 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, ToolCallInput } from 'claude-code'
 import type { SeatDisplay, SeatQuotaDisplay, SeatStatus, SeatTier, SeatVendor } from '../types/index'
-import { formatCandidate, isBusy, isPreferred, parseCandidates, pick, SIZES, sizeOf } from './chain'
-import type { Candidate, Load, Size } from './chain'
+import { autoCandidates, formatCandidate, isAuto, isBusy, isPreferred, parseAgyModels, parseCandidates, pick, SIZES, sizeOf } from './chain'
+import type { Candidate, CliModel, CliModels, Load, Size } from './chain'
 
 const EXPLICIT = /^seat: (codex|agy) (\S+) (\S+) (reviewer|owner)\n/
 const SIZED = /^seat: (?:(codex|agy|claude|gpt|gemini) )?(light|standard|heavy) (reviewer|owner)\n/
@@ -19,6 +19,9 @@ const EXTERNAL_VENDORS = ['codex', 'agy'] as const
 const vendorsState = atom({ plugin: 'seat-router', key: 'vendors' } as const, null as ExternalVendor[] | null, {
   shape: 'installed-vendors-1',
 })
+const modelsState = atom({ plugin: 'seat-router', key: 'models' } as const, null as CliModels | null, {
+  shape: 'cli-models-1',
+})
 const OWNER_NOTE = 'Commands starting with git, gh, npm, npx, node, pnpm, yarn or curl need network or .git writes: run each of them with your run_command tool\'s BypassSandbox set to true. Run every other command inside the sandbox.\n'
 const OWNER_RULES = 'prefix_rule(pattern = ["git", "push", "--force"], decision = "forbidden", justification = "Use a non-force push.")\n'
   + 'prefix_rule(pattern = ["git", "push", "-f"], decision = "forbidden", justification = "Use a non-force push.")\n'
@@ -30,18 +33,53 @@ const OWNER_RULES = 'prefix_rule(pattern = ["git", "push", "--force"], decision 
 type AgentInput = Extract<ToolCallInput, { tool: 'Agent' }>
 export type ExternalVendor = Exclude<SeatVendor, 'claude'>
 
-export type SeatConfig = { sizes: Record<Size, Candidate[]>, busyAt: number }
+// Each size's setting (`auto`, or a list of candidates) and the busy threshold, from the plugin's userConfig.
+export type SeatConfig = { sizes: Record<Size, string>, busyAt: number }
 
-// The candidates of each size and the busy threshold, from the plugin's userConfig.
-let seatConfig: SeatConfig = { sizes: { light: [], standard: [], heavy: [] }, busyAt: 80 }
+let seatConfig: SeatConfig = { sizes: { light: 'auto', standard: 'auto', heavy: 'auto' }, busyAt: 80 }
 
 export function setSeatConfig(config: SeatConfig): void {
   seatConfig = config
 }
 
+export function setSize(size: Size, setting: string): void {
+  seatConfig = { ...seatConfig, sizes: { ...seatConfig.sizes, [size]: setting } }
+}
+
 export function seatConfigFrom(options: Readonly<Record<string, unknown>>): SeatConfig {
-  const sizes = Object.fromEntries(SIZES.map(size => [size, parseCandidates(String(options[size + 'Seats'] ?? ''))])) as Record<Size, Candidate[]>
+  const sizes = Object.fromEntries(SIZES.map(size => [size, String(options[size + 'Seats'] ?? 'auto')])) as Record<Size, string>
   return { sizes, busyAt: typeof options.busyAt === 'number' ? options.busyAt : 80 }
+}
+
+// The models each installed CLI reports, asked once a session; a CLI that cannot answer offers none.
+export async function cliModels($: EngineInterface): Promise<CliModels> {
+  const known = await read($, modelsState)
+  if (known) return known
+  const vendors = await installedVendors($)
+  const ask = async (vendor: ExternalVendor): Promise<CliModel[] | undefined> => {
+    if (!vendors.includes(vendor)) return undefined
+    try {
+      if (vendor === 'agy') {
+        const listed = await io($, ['exec', 'agy', 'models'], { timeoutMs: 60_000 })
+        return listed.exitCode === 0 ? parseAgyModels(listed.stdout) : undefined
+      }
+      const listed = await $.process.run(['node', join($.plugin.root, 'bin', 'codex-models.mjs')], { timeoutMs: 60_000 })
+      const data = listed.exitCode === 0 ? readJson(listed.stdout) : undefined
+      return Array.isArray(data) ? data as CliModel[] : undefined
+    } catch {
+      return undefined
+    }
+  }
+  const [codex, agy] = await Promise.all([ask('codex'), ask('agy')])
+  const models: CliModels = { ...(codex ? { codex } : {}), ...(agy ? { agy } : {}) }
+  await update($, modelsState, () => models)
+  return models
+}
+
+/** A size's candidates: built from the CLIs' models when its setting is `auto`, else the listed ones. */
+export async function sizeCandidates($: EngineInterface, size: Size): Promise<Candidate[]> {
+  const setting = seatConfig.sizes[size]
+  return isAuto(setting) ? autoCandidates(size, await cliModels($)) : parseCandidates(setting)
 }
 
 /** An explicit line names the model and effort; a sized one leaves them to the size's candidates. */
@@ -347,9 +385,9 @@ async function chainFor($: EngineInterface, marker: Marker): Promise<Candidate[]
   const usable = (list: Candidate[]): Candidate[] => list.filter(candidate => installed.includes(candidate.vendor))
   if ('vendor' in marker) {
     const named = { vendor: marker.vendor, model: marker.model, effort: marker.effort }
-    return [named, ...usable(seatConfig.sizes[sizeOf(marker.effort)]).filter(candidate => !sameCandidate(candidate, named))]
+    return [named, ...usable(await sizeCandidates($, sizeOf(marker.effort))).filter(candidate => !sameCandidate(candidate, named))]
   }
-  const list = usable(seatConfig.sizes[marker.size])
+  const list = usable(await sizeCandidates($, marker.size))
   if (marker.prefer === undefined) return list
   const prefer = marker.prefer
   return [...list.filter(candidate => isPreferred(candidate, prefer)), ...list.filter(candidate => !isPreferred(candidate, prefer))]

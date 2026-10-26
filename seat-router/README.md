@@ -46,15 +46,20 @@ card per seat.
 
 ## Settings
 
-In `/config`, or with `claude plugin configure seat-router`:
+Nothing to set: leave every field as it is on the install screen. Each size starts as `auto`: the mod asks
+the CLIs you have for their models when a session starts and tries, in order, codex's default model, agy's
+Gemini Flash, then Claude (haiku, sonnet or opus), at the size's effort (light medium, standard high, heavy
+xhigh, as far as each model goes).
+
+To choose which model a size tries first, run `/seats setup`: it asks once per size and offers the models
+your CLIs report. Pick one, keep **Auto**, or type `<codex|agy|claude> <model> [effort]` under Other.
+
+The fields themselves, in `/config` or with `claude plugin configure seat-router`:
 
 | Setting | Default | What it does |
 | --- | --- | --- |
-| `heavySeats` | `codex gpt-5.6-terra xhigh, agy claude-opus-5-5 high, agy gemini-4-argon high, claude opus xhigh` | The candidates of a heavy seat, in the order tried. |
-| `standardSeats` | `codex gpt-5.6-terra high, agy claude-sonnet-5-5 high, agy gemini-3.8-flash high, claude sonnet high` | The same for standard. |
-| `lightSeats` | `codex gpt-6-luna medium, agy gemini-3.8-flash medium, agy claude-sonnet-5-5 low, claude haiku` | The same for light. |
-| `busyAt` | `80` | A candidate is busy when its 5-hour or weekly window is used this much, or its week is used faster than it has passed. |
+| `heavySeats`, `standardSeats`, `lightSeats` | `auto` | The models a size tries, in order: `auto`, or comma-separated `<codex\|agy\|claude> <model> [effort]`. |
+| `busyAt` | `80` | A model is busy once its 5-hour or weekly quota is this used, or its week is used faster than it has passed; a sized seat then tries the next. |
 | `mixFanouts` | on | Asks the session to add one seat per other model family beside the Claude agents in every review or verification fan-out. |
 
-A candidate is `<codex|agy|claude> <model> [effort]`; `claude` entries run as Claude subagents.
 A model's family comes from its name, so `agy claude-opus-5-5` counts as Claude, not as variety.
