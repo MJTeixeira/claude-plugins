@@ -69,7 +69,7 @@ goes (codex ships its default model at low). Claude runs sonnet high for light, 
 opus high for heavy.
 
 To choose which model a size tries first, run `/seats setup`: it asks once per size and offers the models
-your CLIs report. Pick one, keep **Auto**, or type `<codex|agy|claude> <model> [effort]` under Other.
+your CLIs report, then asks for delegate mode. Pick one, keep **Auto**, or type `<codex|agy|claude> <model> [effort]` under Other.
 
 The fields themselves, in `/config` or with `claude plugin configure seat-router`:
 
@@ -78,6 +78,7 @@ The fields themselves, in `/config` or with `claude plugin configure seat-router
 | `heavySeats`, `standardSeats`, `lightSeats` | `auto` | The models a size tries, in order: `auto`, or comma-separated `<codex\|agy\|claude> <model> [effort]`. |
 | `busyAt` | `80` | A model is busy once its 5-hour or weekly quota is this used, or its week is used faster than it has passed; a sized seat then passes it over. |
 | `mixFanouts` | on | Asks the session to add one seat per other model family beside the Claude agents in every review or verification fan-out. |
+| `delegate` | `auto` | When code work (features, fixes, bug and performance tasks, PR owners and their fix rounds) goes to owner seats, which the mod spreads across model families: `auto` while Claude's quota is busy by the `busyAt` rule, `on` always, `off` never. `/seats setup` asks it after the sizes. |
 
 A model's family comes from its name, so `agy claude-opus-5-5` counts as Claude, not as variety.
 

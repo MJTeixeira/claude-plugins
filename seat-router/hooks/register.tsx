@@ -13,10 +13,10 @@ import type { Drawing } from './raster'
 import { autoCandidates, familyOf, formatCandidate, parseCandidates, SIZES } from './chain'
 import type { Candidate, Family, Size } from './chain'
 import {
-  chooseInitial, claudeBrief, cliModels, installedVendors, parseMarker, runningFamilies, seatConfigFrom, setSeatConfig, setSize, sizeCandidates,
-  pruneSeats, singleFlightPoll, singleFlightQuotaRefresh, startExternal, stopSeat,
+  chooseInitial, claudeBrief, cliModels, delegateOf, delegateReason, delegateSetting, installedVendors, parseMarker, runningFamilies, seatConfigFrom,
+  setDelegate, setSeatConfig, setSize, sizeCandidates, pruneSeats, singleFlightPoll, singleFlightQuotaRefresh, startExternal, stopSeat,
 } from './router'
-import type { ExternalVendor } from './router'
+import type { Delegate, ExternalVendor } from './router'
 
 const seatsState = atom({ plugin: 'seat-router', key: 'seats' } as const, [], { shape: 'seat-display-3' })
 const quotasState = atom({ plugin: 'seat-router', key: 'quotas' } as const, {}, { shape: 'quota-windows-1' })
@@ -50,6 +50,20 @@ const seatRules = (vendors: readonly ExternalVendor[], sizes: Record<Size, Candi
         + others.map(family => '`seat: ' + family + ' <size> reviewer`').join(', ') + '), all in one message.'
       : '')
 }
+// When code work goes to owner seats: always (`on`), never (`off`), or while Claude's quota is busy (`auto`).
+const delegateRules = (setting: Delegate, reason: string | undefined): string => {
+  if (reason !== undefined) {
+    return '\nDelegate mode is on (' + reason + '): code work goes to owner seats. A feature, refactor, bug fix or performance task, '
+      + 'a PR owner with its fix rounds, and their helpers go out as `seat: <size> owner` with `isolation: "worktree"`, the size '
+      + 'the task\'s effort maps to (standard when none is named); the mod spreads them across model families by quota. This '
+      + 'session keeps the planning, briefs, verdicts, the merges it owns and every reply to the person. Say when delegate mode '
+      + 'turns on and why.'
+  }
+  return setting === 'auto'
+    ? '\nDelegate mode turns on by itself while Claude\'s quota is busy; until then code work stays on Claude unless the person asks to delegate it.'
+    : ''
+}
+
 const QUEUE_SCHEMA = {
   type: 'object',
   properties: {
@@ -192,7 +206,7 @@ async function setup($: EngineInterface): Promise<string> {
       answer = await $.ui.ask(sizeQuestion(size, auto), { header: size[0]?.toUpperCase() + size.slice(1), options: [AUTO, ...auto.slice(0, 3).map(formatCandidate)] })
     } catch {
       lines.push(size + ' and after: not asked, kept as they were.')
-      break
+      return 'Seat sizes:\n' + lines.join('\n') + '\nChange them again with /seats setup, or in /config.'
     }
     const chosen = answer === AUTO ? undefined : parseCandidates(answer)[0]
     if (answer !== AUTO && !chosen) {
@@ -211,7 +225,28 @@ async function setup($: EngineInterface): Promise<string> {
     setSize(size, setting)
     lines.push(size + ': ' + setting + '.')
   }
+  lines.push(await setupDelegate($, rows))
   return 'Seat sizes:\n' + lines.join('\n') + '\nChange them again with /seats setup, or in /config.'
+}
+
+const DELEGATE_QUESTION = 'Delegate mode: when does code work (features, fixes, PR owners) go to owner seats on your other CLIs? '
+  + 'Auto does it while Claude\'s quota is busy; On always; Off never.'
+const DELEGATE_ANSWERS: Record<string, Delegate> = { [AUTO]: 'auto', On: 'on', Off: 'off' }
+
+async function setupDelegate($: EngineInterface, rows: Awaited<ReturnType<EngineInterface['config']['list']>>): Promise<string> {
+  let answer: string
+  try {
+    answer = await $.ui.ask(DELEGATE_QUESTION, { header: 'Delegate', options: Object.keys(DELEGATE_ANSWERS) })
+  } catch {
+    return 'delegate: not asked, kept as it was.'
+  }
+  const delegate = DELEGATE_ANSWERS[answer]
+  if (!delegate) return 'delegate: kept as it was; "' + answer + '" is not Auto, On or Off.'
+  const row = rows.find(item => item.key.startsWith('seat-router') && item.key.endsWith('.delegate'))
+  const written = row ? await $.config.set({ key: row.key, value: delegate }) : { deny: 'no setting row' }
+  if ('deny' in written && written.deny) return 'delegate: not saved (' + written.deny + ').'
+  setDelegate(delegate)
+  return 'delegate: ' + delegate + '.'
 }
 
 const queueTotal = (queue: QueueDisplay): number => queue.done + queue.running + queue.pending
@@ -226,11 +261,12 @@ export const register: Register = (on, options) => {
     const vendors = await installedVendors($)
     if (vendors.length === 0) return composed
     const sizes = Object.fromEntries(await Promise.all(SIZES.map(async size => [size, await sizeCandidates($, size)] as const))) as Record<Size, Candidate[]>
-    return { sections: [...composed.sections, { id: 'seat-router:loaded', text: seatRules(vendors, sizes, mixFanouts), scope: 'session' }] }
+    const text = seatRules(vendors, sizes, mixFanouts) + delegateRules(delegateSetting(), await delegateReason($))
+    return { sections: [...composed.sections, { id: 'seat-router:loaded', text, scope: 'session' }] }
   })
 
   on('session.start', async ($, e, next) => {
-    await $.command.register({ name: 'seats', description: 'Show or hide the seats of this session; `/seats setup` picks the models each size tries first' })
+    await $.command.register({ name: 'seats', description: 'Show or hide the seats of this session; `/seats setup` picks the models each size tries first and delegate mode' })
     await $.tool.register({
       name: 'queue',
       description: 'Update autopilot queue progress. Call whenever the autopilot queue changes; set done, running, and pending all to 0 to clear it. '
@@ -323,7 +359,13 @@ export const register: Register = (on, options) => {
       await recordClaudeSeat($, e.agentId, await $.clock.now(), current => ({ model: e.model, ...effort, steps: (current?.steps ?? 0) + 1 }))
       void startElapsedTick($)
     }
-    return yield* next(e)
+    const result = yield* next(e)
+    // Each step's usage is counted as it lands, so a running subagent shows its tokens.
+    const usage = result.usage
+    if (e.agentId !== undefined && usage) {
+      await recordClaudeSeat($, e.agentId, await $.clock.now(), current => ({ tokens: (current?.tokens ?? 0) + usageTokens(usage) }))
+    }
+    return result
   })
 
   on('turn.complete', async ($, e, next) => {
@@ -334,7 +376,7 @@ export const register: Register = (on, options) => {
     await recordClaudeSeat($, e.agentId, now - e.durationMs, current => ({
       endedAt: now,
       ...(e.usage?.model === undefined ? {} : { model: e.usage.model }),
-      ...(tokens === undefined ? {} : { tokens: (current?.tokens ?? 0) + tokens }),
+      ...(tokens === undefined || current?.tokens !== undefined ? {} : { tokens }),
     }))
     return completed
   })
