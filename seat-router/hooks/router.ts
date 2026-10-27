@@ -36,9 +36,20 @@ const usageReading = new Map<UsageSource, Promise<string | undefined>>()
 export const SHELL_TOOLS = ['Bash', 'PowerShell']
 // The guard reads command lines, so an interpreter (python, node, a script) can reach what
 // it refused; an owner seat is told that a refusal is final.
-const OWNER_GUARD_NOTE = 'An owner guard refuses force pushes, git reset --hard, forced recursive deletes, gh pr merge --admin '
-  + 'and gh repo delete. A refusal is final: do not reach the same result another way (another shell, python, node or a '
+const OWNER_GUARD_NOTE = 'An owner guard refuses force pushes, git reset --hard, git worktree remove and move (seat-router removes '
+  + 'this seat\'s worktree when it ends), git branch -D, clean -f, checkout, restore and forced switch in another worktree (-C, --work-tree), forced recursive deletes, gh pr merge --admin and gh repo delete. A refusal is final: do not reach the same result another way (another shell, python, node or a '
   + 'script). Say in your report what was refused and why you needed it.\n'
+// In -p mode agy keeps a run open while a background task (a long run_command, a schedule
+// timer) runs and wakes the agent when it ends, so an answer given early is not the run's
+// last act: a failed wake-up call ends the run in error after a complete answer.
+const AGY_TASKS_NOTE = 'agy keeps the run open while a background task you started is still running, and wakes you when it ends. '
+  + 'Before your final answer, wait for or stop (manage_task kill) every background task and schedule timer you started, so the final answer is the last thing you do.\n'
+// agy's Windows shell is Windows PowerShell 5.1 whatever else is installed, and a codex reviewer
+// without the WindowsApps PATH entries lands there too where PowerShell 7 came from the Store.
+// Neither CLI lets the mod pick the shell.
+const POWERSHELL_51_NOTE = 'Your shell may be Windows PowerShell 5.1, where text piped into a program loses every non-ASCII '
+  + 'character and && does not separate commands (use ; and check $LASTEXITCODE). Write files with your file tools, or with '
+  + 'python using encoding=\'utf-8\', never by piping text through the shell.\n'
 const NO_SHELL_NOTE = 'This seat has no shell: Bash and PowerShell are refused here. Read, search and edit files with your file tools, and say in your report what you could not run.\n'
 // codex's unelevated Windows sandbox refuses a process node starts with piped stdio (EPERM,
 // openai/codex#47868); one that inherits or ignores stdio starts, and so do
@@ -49,6 +60,9 @@ const CODEX_WINDOWS_NOTE = 'On this machine node cannot read the output of a pro
 // codex's mxc Windows sandbox resets TEMP and TMP to a folder of its own whose files a
 // program cannot clean up (pip's ensurepip fails), whatever the launch sets; a folder
 // the seat writes, set from its own shell, works.
+// Python on Windows reads and writes files in the ANSI code page (cp1252) unless told
+// otherwise, so a seat's python script turns UTF-8 text into mojibake (PEP 686).
+const PYTHON_UTF8 = { PYTHONUTF8: '1' }
 const codexMxcNote = (temp: string): string => {
   const quoted = "'" + temp.replaceAll("'", "''") + "'"
   return 'This sandbox gives programs a temp folder they cannot clean up, so pip, python\'s tempfile and other tools '
@@ -236,6 +250,8 @@ type Seat = {
   waitedAt?: number
   waitedMs?: number
   waitUntil?: number
+  // When a poll first saw the seat's latest calls repeat one cycle.
+  loopSince?: number
 }
 
 export type Check = {
@@ -749,6 +765,91 @@ export function lastAction(vendor: Transcript, text: string): string | undefined
   return action
 }
 
+/** One finished tool call: `name` says what it did; two calls share a `key` when they did the same thing and got the same result. */
+export type Call = { name: string, key: string }
+
+// Writes never repeat: a seat that writes between runs is making progress. agy names a write by
+// its path alone and codex's file changes carry no content, so neither says what it wrote.
+const WRITES = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit', 'write_file', 'write_to_file', 'create_file', 'edit_file',
+  'replace_file_content', 'multi_replace_file_content', 'apply_patch', 'delete_file', 'move_file'])
+
+const call = (tool: string, input: unknown, result: unknown, name: string, id: string): Call =>
+  ({ name, key: WRITES.has(tool) ? '#' + id : JSON.stringify([tool, input, result]) })
+
+// agy's parameters hold a command's working folder (`Cwd`) when it names one.
+function agyCall(step: Record<string, unknown>): Call | undefined {
+  if (step.step_type !== 'tool' || (step.state !== 'DONE' && step.state !== 'ERROR')) return undefined
+  const info = asObject(step.tool_info) ?? {}
+  const parameters = asObject(info.parameters) ?? {}
+  const tool = textAt(step.tool_name) ?? 'tool'
+  const command = textAt(parameters.CommandLine)
+  return call(tool, parameters, info.output ?? asObject(info.error)?.message,
+    command ? 'Ran ' + command : tool + ' ' + JSON.stringify(parameters), String(step.step_index))
+}
+
+// codex runs every command in the seat's folder, so a `cd` is part of the command.
+function codexCall(event: Record<string, unknown>): Call | undefined {
+  const item = asObject(event.item)
+  if (event.type !== 'item.completed' || !item) return undefined
+  const command = textAt(item.command)
+  if (item.type === 'command_execution' && command) {
+    return call('command', command, [item.exit_code, item.aggregated_output], 'Ran ' + shellCommand(command), String(item.id))
+  }
+  return item.type === 'file_change' || item.type === 'mcp_tool_call' ? { name: String(item.type), key: '#' + String(item.id) } : undefined
+}
+
+/** A transcript's finished tool calls in order. */
+export function toolCalls(vendor: Transcript, text: string): Call[] {
+  const calls: Call[] = []
+  // A Claude call's result arrives in a later event, under the call's id.
+  const started = new Map<string, { tool: string, input: unknown, cwd: unknown, done?: boolean }>()
+  for (const line of text.split('\n')) {
+    const event = asObject(readJson(line))
+    if (!event) continue
+    if (vendor !== 'claude') {
+      const step = asObject(event.step_update)
+      const found = vendor === 'codex' ? codexCall(event) : step && agyCall(step)
+      if (found) calls.push(found)
+      continue
+    }
+    const content = asObject(event.message)?.content
+    for (const block of Array.isArray(content) ? content.map(asObject) : []) {
+      const id = textAt(block?.id) ?? textAt(block?.tool_use_id)
+      if (!block || !id) continue
+      // A transcript can hold the same call twice (a resumed session copies its history).
+      if (block.type === 'tool_use' && !started.has(id)) started.set(id, { tool: textAt(block.name) ?? 'tool', input: block.input, cwd: event.cwd })
+      const use = started.get(id)
+      if (block.type !== 'tool_result' || !use || use.done) continue
+      use.done = true
+      const command = textAt(asObject(use.input)?.command)
+      calls.push(call(use.tool, [use.input, use.cwd], [block.is_error, block.content],
+        command ? 'Ran ' + command : use.tool + ' ' + JSON.stringify(use.input), id))
+    }
+  }
+  return calls
+}
+
+export type Loop = { cycle: string[], repeats: number }
+
+// seat-vFRfUC ran one cycle of three failing greps 8 times in a row (24 calls) and would have
+// run it until stopped. An honest seat re-runs a check a few times, or gets a new result.
+const LOOP_CALLS = 24
+const LOOP_REPEATS = 3
+// A seat waiting on CI or a background task gets the same "pending" until it ends; on four
+// of the fleet's repos more than one CI run in 20 takes over 13 minutes.
+const LOOP_MS = 30 * 60_000
+
+/** The cycle of calls the last LOOP_CALLS calls repeat, and how many times in a row; none when they do not. */
+export function findLoop(calls: readonly Call[]): Loop | undefined {
+  if (calls.length < LOOP_CALLS) return undefined
+  for (let size = 1; size * LOOP_REPEATS <= LOOP_CALLS; size += 1) {
+    let run = size
+    while (run < calls.length && calls[calls.length - 1 - run]?.key === calls[calls.length - 1 - run + size]?.key) run += 1
+    if (run >= LOOP_CALLS) return { cycle: calls.slice(-size).map(found => found.name), repeats: Math.floor(run / size) }
+  }
+  return undefined
+}
+
 function threadId(jsonl: string): string | undefined {
   const event = asObject(readJson(jsonl))
   return event?.type === 'thread.started' ? textAt(event.thread_id) : undefined
@@ -765,6 +866,13 @@ async function matches($: EngineInterface, pattern: string, paths: string[]): Pr
 async function tail($: EngineInterface, path: string, lines = 1): Promise<string> {
   try {
     const result = await io($, ['tail', '-n', String(lines), path])
+    return result.exitCode === 0 ? result.stdout : ''
+  } catch { return '' }
+}
+
+async function grepLines($: EngineInterface, pattern: string, path: string): Promise<string> {
+  try {
+    const result = await io($, ['grep', '-E', pattern, path])
     return result.exitCode === 0 ? result.stdout : ''
   } catch { return '' }
 }
@@ -842,7 +950,8 @@ const REVIEWER_TOOLS = ['Read', 'Grep', 'Glob', 'Edit', 'Write', 'NotebookEdit',
 // owner-guard.mjs.
 async function launchAccount($: EngineInterface, seat: Seat & { account: string }): Promise<void> {
   const isReviewer = seat.tier === 'reviewer'
-  const windows = isReviewer && await isWindows($)
+  const onWindows = await isWindows($)
+  const windows = isReviewer && onWindows
   if (windows) await $.fs.write(join(seat.dir, 'brief.md'), seat.brief + '\n' + NO_SHELL_NOTE)
   const gitDenied = isReviewer ? (await gitDirs($, seat.workDir)).map(dir => 'Edit(/' + (dir.startsWith('/') ? '' : '/') + slashed(dir) + '/**)') : []
   const tiered = !isReviewer ? {
@@ -872,7 +981,7 @@ async function launchAccount($: EngineInterface, seat: Seat & { account: string 
   }
   // The session's own mods, this one among them, would also come in through the environment.
   const env = { CLAUDE_CONFIG_DIR: await accountDir($, seat.account), CLAUDE_CODE_PLUGIN_DIRS: '' }
-  await start($, seat, spec, isReviewer ? env : { ...await ownerEnv($), ...env })
+  await start($, seat, spec, isReviewer ? env : { ...await ownerEnv($), ...env, ...(onWindows ? PYTHON_UTF8 : {}) })
 }
 
 // codex's mxc Windows sandbox starts on Windows 11 24H2 26100.9278 or 25H2 26200.9278 and
@@ -908,7 +1017,9 @@ async function launch($: EngineInterface, seat: Seat): Promise<void> {
   const mxc = sandbox === 'mxc'
   const temp = join(seat.dir, 'tmp')
   if (mxc) await io($, ['mkdir', temp])
-  const note = mxc ? codexMxcNote(temp) : windowsReviewer ? CODEX_WINDOWS_NOTE : ''
+  const shellNote = windowsReviewer || (windows && seat.vendor === 'agy') ? POWERSHELL_51_NOTE : ''
+  const note = (mxc ? codexMxcNote(temp) : windowsReviewer ? CODEX_WINDOWS_NOTE : seat.vendor === 'agy' ? AGY_TASKS_NOTE : '') + shellNote
+  const env = windows ? { env: PYTHON_UTF8 } : {}
   await $.fs.write(join(seat.dir, 'brief.md'), brief + (note ? '\n' + note : ''))
   const spec: LaunchSpec = seat.vendor === 'codex' ? {
     argv: [
@@ -932,17 +1043,19 @@ async function launch($: EngineInterface, seat: Seat): Promise<void> {
       ...(windows ? ['-c', 'allow_login_shell=false'] : []),
       '-o', join(seat.dir, 'final.md'), '-',
     ],
-    cwd: seat.workDir, stdin: join(seat.dir, 'brief.md'),
+    cwd: seat.workDir, stdin: join(seat.dir, 'brief.md'), ...env,
     // The Store's pwsh.exe alias cannot start inside codex's Windows sandbox; without
-    // it on PATH codex runs System32's powershell.exe.
-    ...(windows ? { dropWindowsApps: true } : {}),
+    // it on PATH codex runs System32's powershell.exe. An owner runs outside the sandbox
+    // and keeps it: codex prefers pwsh, and Windows PowerShell 5.1 pipes text into a
+    // program as ASCII, so each non-ASCII character arrives as `?`.
+    ...(windowsReviewer ? { dropWindowsApps: true } : {}),
     stdout: join(seat.dir, 'codex.jsonl'), stderr: join(seat.dir, 'codex.err'), outputs: [join(seat.dir, 'final.md')], exit: join(seat.dir, 'exit'), pid: join(seat.dir, 'pid'),
   } : {
     argv: [
       'agy', '--output-format', 'stream-json', '--model', seat.model, '--effort', agyEffort(seat.effort),
       '--dangerously-skip-permissions', '-p', { file: join(seat.dir, 'brief.md') },
     ],
-    cwd: seat.workDir,
+    cwd: seat.workDir, ...env,
     home: [...(isOwner ? ['owner'] : []), '--home', join(seat.dir, 'home')],
     stdout: join(seat.dir, 'agy.jsonl'), stderr: join(seat.dir, 'agy.err'), exit: join(seat.dir, 'exit'), pid: join(seat.dir, 'pid'),
   }
@@ -953,6 +1066,7 @@ async function launch($: EngineInterface, seat: Seat): Promise<void> {
 type LaunchSpec = {
   argv?: Array<string | { file: string }>
   cwd?: string
+  env?: Record<string, string>
   stdin?: string
   stdout?: string
   stderr?: string
@@ -1038,20 +1152,38 @@ async function makeSeat($: EngineInterface, input: AgentInput, marker: Marker, c
 const seatName = (seat: Pick<Seat, 'vendor' | 'account'>): string =>
   seat.account === undefined ? seat.vendor : 'claude on the ' + seat.account + ' account'
 
+// agy feeds its model background-task notices as <SYSTEM_MESSAGE> blocks, each after a preamble
+// line, and the model can echo them into its answer. In the session's context they would read
+// as system text, so a report drops every block in agy's exact shape, whichever seat wrote it:
+// tag lines of their own around a `[Message] ` line. A seat that mentions the tag in its own text
+// keeps it, and so does a block with no closing line, since where it ends cannot be told.
+const NOTICE = /^(?:The following is a <SYSTEM_MESSAGE> not actually sent by the user\. It is provided by the system as important information to pay attention to\.\r?\n(?:[ \t]*\r?\n)*)?<SYSTEM_MESSAGE>\r?\n\[Message\] (?:(?!^<SYSTEM_MESSAGE>\r?$)[\s\S])*?^<\/SYSTEM_MESSAGE>\r?(?:\n|$)/gm
+
+export function withoutSystemNotices(text: string): { text: string, note?: string } {
+  let total = 0
+  const cleaned = text.replace(NOTICE, () => { total += 1; return '' })
+  if (!total) return { text }
+  return { text: cleaned, note: 'Removed ' + total + ' system-message block' + (total === 1 ? '' : 's') + ' from the seat\'s output.' }
+}
+
 function reportText(seat: Seat, text: string, worktree?: string): string {
   const lines = ['Seat ' + seat.id + ' ("' + seat.description + '", ' + seatName(seat) + ' ' + seat.model + ' ' + seat.effort + ' ' + seat.tier + ') finished.']
   if (seat.fallbackTrail.length) lines.push('Fallback: ' + seat.fallbackTrail.join(' → '))
   if (seat.waitedMs !== undefined) lines.push('Waited ' + Math.ceil(seat.waitedMs / 1000) + ' seconds for quota reset.')
   if (worktree) lines.push(worktree)
-  lines.push('', text)
+  const cleaned = withoutSystemNotices(text)
+  if (cleaned.note) lines.push(cleaned.note)
+  lines.push('', cleaned.text)
   return lines.join('\n')
 }
 
 // agy reports a seat whose guard hook crashed as a success: every shell command failed
 // with the hook's error, which shows only in the tool steps.
 const GUARD_CRASH = /^JSON hook "jsonhook__seat-router-owner-guard_[^"]*" failed:/
+// The lines of an agy stream that can carry GUARD_CRASH, found without reading the stream whole.
+const GUARD_CRASH_LINE = 'jsonhook__seat-router-owner-guard_[^ ]* failed:'
 
-function agyResult(jsonl: string): { text: string, valid: boolean, denied: string[], guardCrashed: boolean } {
+function agyResult(jsonl: string): { text: string, valid: boolean, error: string, denied: string[], guardCrashed: boolean } {
   let last: Record<string, unknown> | undefined
   let guardCrashed = false
   for (const line of jsonl.split('\n')) {
@@ -1061,12 +1193,12 @@ function agyResult(jsonl: string): { text: string, valid: boolean, denied: strin
     const error = asObject(asObject(asObject(parsed.step_update)?.tool_info)?.error)
     if (GUARD_CRASH.test(textAt(error?.message) ?? '')) guardCrashed = true
   }
-  if (last?.event !== 'result' && last?.type !== 'result') return { text: '', valid: false, denied: [], guardCrashed }
+  if (last?.event !== 'result' && last?.type !== 'result') return { text: '', valid: false, error: '', denied: [], guardCrashed }
   const result = asObject(last?.result)
   // agy leaves denied_actions out when nothing was refused.
   const denied = result?.denied_actions
   const names = Array.isArray(denied) ? denied.map(action => textAt(asObject(action)?.action) ?? '?') : []
-  return { text: textAt(result?.response) ?? '', valid: result?.status === 'SUCCESS', denied: names, guardCrashed }
+  return { text: textAt(result?.response) ?? '', valid: result?.status === 'SUCCESS', error: textAt(result?.error) ?? '', denied: names, guardCrashed }
 }
 
 export function failedSeat(vendor: ExternalVendor, exitCode: number | undefined, text: string, transcript: string, stderr: string): Check {
@@ -1091,9 +1223,14 @@ export function failedAgy(exitCode: number | undefined, jsonl: string, stderr: s
   const base = failedSeat('agy', exitCode, result.text, jsonl, stderr)
   const failed = base.failed || !result.valid || result.guardCrashed
   const refused = result.denied.length ? 'denied ' + result.denied.join(', ') : ''
-  const reason = base.detail || (result.guardCrashed ? 'owner guard could not run' : !result.valid ? 'agy result failed' : '')
-  const detail = base.quota ? base.detail : [reason, failed ? refused : ''].filter(Boolean).join(', ')
-  return { ...base, failed, detail, ...(result.denied.length ? { refused: result.denied } : {}) }
+  const error = result.valid ? '' : result.error.replace(/\s+/g, ' ').trim()
+  const reason = base.detail || (result.guardCrashed ? 'owner guard could not run' : !result.valid && !error ? 'agy result failed' : '')
+  const detail = base.quota ? base.detail : [reason, error ? 'agy\'s error: ' + error : '', failed ? refused : ''].filter(Boolean).join(', ')
+  // The answer may be complete with only a late call failing, so the parent gets both to judge.
+  const text = !result.valid && result.text.trim()
+    ? 'agy\'s error: ' + (error || '(none given)') + '\nThe text the seat produced before agy\'s error:\n\n' + result.text
+    : base.text
+  return { ...base, text, failed, detail, ...(result.denied.length ? { refused: result.denied } : {}) }
 }
 
 // A Claude run passes when its last result event is a success with text; events such as
@@ -1136,7 +1273,8 @@ async function checkSeat($: EngineInterface, seat: Seat): Promise<Check> {
   }
   const transcript = join(seat.dir, 'agy.jsonl')
   const limited = await matches($, 'RESOURCE_EXHAUSTED|exhausted your quota|out of quota', [transcript, join(seat.dir, 'agy.err')])
-  return failedAgy(Number.isNaN(exitCode) ? undefined : exitCode, await tail($, transcript), limited ? 'RESOURCE_EXHAUSTED' : '')
+  const crashes = await grepLines($, GUARD_CRASH_LINE, transcript)
+  return failedAgy(Number.isNaN(exitCode) ? undefined : exitCode, crashes + await tail($, transcript), limited ? 'RESOURCE_EXHAUSTED' : '')
 }
 
 async function seatsFor($: EngineInterface, sessionId: string): Promise<Seat[]> {
@@ -1198,7 +1336,7 @@ async function report($: EngineInterface, seat: Seat, text: string, submit = tru
   await putSeat($, seat)
 }
 
-async function runCandidate($: EngineInterface, seat: Seat, start: number, readings: Quota[] = []): Promise<void> {
+async function runCandidate($: EngineInterface, seat: Seat, start: number, readings: Quota[] = [], failedOutput = ''): Promise<void> {
   const choices = seat.chain
   let earliest: number | undefined
   for (let position = start; position < choices.length; position += 1) {
@@ -1237,7 +1375,7 @@ async function runCandidate($: EngineInterface, seat: Seat, start: number, readi
   }
   if (seat.preferFailed) {
     await report($, seat, 'No ' + seat.prefer + ' candidate is left to run this seat, and it was not moved to another family. Its output:\n\n'
-      + (await partialOutput($, seat) || '(none)'))
+      + (failedOutput || await partialOutput($, seat) || '(none)'))
     return
   }
   await scheduleWait($, seat, earliest ?? (await $.clock.now()) + 60_000)
@@ -1274,7 +1412,27 @@ export async function pollSession($: EngineInterface, sessionId: string): Promis
     if (seat.reported || seat.status === 'reported' || seat.status === 'reporting') continue
     const exit = await readText($, join(seat.dir, 'exit'))
     if (!exit.trim()) {
-      if (await launcherGone($, seat) && !(await readText($, join(seat.dir, 'exit'))).trim()) {
+      const gone = await launcherGone($, seat)
+      // A seat with no pid file cannot be stopped, so it is never judged stuck.
+      if (!gone && seat.status === 'running' && await launcherPid($, seat) !== undefined) {
+        const loop = await stuckLoop($, seat)
+        const now = await $.clock.now()
+        const since = loop ? seat.loopSince ?? now : undefined
+        if (since !== seat.loopSince) {
+          if (since === undefined) delete seat.loopSince
+          else seat.loopSince = since
+          await writeSeat($, seat)
+        }
+        // A seat that finished just before the kill has written its exit code: the next poll reports it.
+        if (loop && since !== undefined && now - since >= LOOP_MS && await endLauncher($, seat) === undefined
+          && !(await readText($, join(seat.dir, 'exit'))).trim()) {
+          delete seat.loopSince
+          const calls = loop.cycle.length === 1 ? 'tool call' : loop.cycle.length + ' tool calls'
+          await failOver($, seat, { text: await partialOutput($, seat), failed: true, quota: false,
+            detail: 'stuck: the same ' + calls + ' ' + loop.repeats + ' times in a row: ' + loop.cycle.map(oneLine).join('; ') })
+        }
+      }
+      if (gone && !(await readText($, join(seat.dir, 'exit'))).trim()) {
         // A reviewer, or an owner that changed nothing, runs once more where it was.
         if ((seat.reruns ?? 0) < 1 && (seat.tier === 'reviewer' || await isUnchanged($, seat))) {
           seat.reruns = (seat.reruns ?? 0) + 1
@@ -1299,17 +1457,27 @@ export async function pollSession($: EngineInterface, sessionId: string): Promis
       await report($, seat, checked.text + (checked.refused ? '\n\n(agy refused this seat: ' + checked.refused.join(', ') + ')' : ''))
       continue
     }
-    seat.fallbackTrail.push(checked.quota ? seat.vendor + ' out (' + checked.detail + ')' : seat.vendor + ' failed (' + checked.detail + ')')
-    // An owner that committed or left changes before it failed is not rerun elsewhere,
-    // which would repeat its work; one that changed nothing, or ran out of quota, moves on.
-    if (seat.tier === 'owner' && !checked.quota && !await isUnchanged($, seat)) {
-      await report($, seat, 'The owner seat failed and was not rerun, because it may already have changed its branch. '
-        + 'Its output:\n\n' + (checked.text || '(none)'))
-      continue
-    }
-    if (!checked.quota && seat.prefer !== undefined && isPreferred(seat, seat.prefer)) seat.preferFailed = true
-    await runCandidate($, seat, seat.chainPosition + 1)
+    await failOver($, seat, checked)
   }
+}
+
+async function failOver($: EngineInterface, seat: Seat, checked: Check): Promise<void> {
+  seat.fallbackTrail.push(checked.quota ? seat.vendor + ' out (' + checked.detail + ')' : seat.vendor + ' failed (' + checked.detail + ')')
+  // An owner that committed or left changes before it failed is not rerun elsewhere,
+  // which would repeat its work; one that changed nothing, or ran out of quota, moves on.
+  if (seat.tier === 'owner' && !checked.quota && !await isUnchanged($, seat)) {
+    await report($, seat, 'The owner seat failed and was not rerun, because it may already have changed its branch. '
+      + 'Its output:\n\n' + (checked.text || '(none)'))
+    return
+  }
+  if (!checked.quota && seat.prefer !== undefined && isPreferred(seat, seat.prefer)) seat.preferFailed = true
+  await runCandidate($, seat, seat.chainPosition + 1, [], checked.text)
+}
+
+// A loop of LOOP_CALLS calls takes about four transcript lines a call on agy, fewer on codex and Claude.
+async function stuckLoop($: EngineInterface, seat: Seat): Promise<Loop | undefined> {
+  const kind = transcriptOf(seat)
+  return kind === undefined ? undefined : findLoop(toolCalls(kind, await tail($, join(seat.dir, kind + '.jsonl'), 400)))
 }
 
 // The launcher's pid, from the pid file run-seat writes; seats launched before it wrote one have none.
@@ -1322,6 +1490,14 @@ async function launcherGone($: EngineInterface, seat: Seat): Promise<boolean> {
   return pid !== undefined && (await io($, ['alive', String(pid)])).exitCode === 1
 }
 
+// Kills the seat's launcher and everything it started; returns why it could not.
+async function endLauncher($: EngineInterface, seat: Seat): Promise<string | undefined> {
+  const pid = await launcherPid($, seat)
+  if (pid === undefined || await launcherGone($, seat)) return undefined
+  const killed = await io($, ['kill', String(pid)])
+  return killed.exitCode !== 0 && !await launcherGone($, seat) ? killed.stderr.trim() : undefined
+}
+
 async function partialOutput($: EngineInterface, seat: Seat): Promise<string> {
   const kind = transcriptOf(seat) ?? 'codex'
   return (await readText($, join(seat.dir, 'final.md'))).trim() || lastAction(kind, await tail($, join(seat.dir, kind + '.jsonl'), 20)) || ''
@@ -1332,11 +1508,8 @@ export async function stopSeat($: EngineInterface, id: string): Promise<string> 
   const seat = (await seatsFor($, await $.session.id())).find(value => value.id === id)
   if (!seat) return 'No seat ' + id + ' in this session.'
   if (seat.status !== 'running' && seat.status !== 'waiting') return 'Seat ' + id + ' is not running (' + seat.status + ').'
-  const pid = await launcherPid($, seat)
-  if (pid !== undefined && !await launcherGone($, seat)) {
-    const killed = await io($, ['kill', String(pid)])
-    if (killed.exitCode !== 0 && !await launcherGone($, seat)) return 'Could not stop seat ' + id + ': ' + killed.stderr.trim()
-  }
+  const error = await endLauncher($, seat)
+  if (error !== undefined) return 'Could not stop seat ' + id + ': ' + error
   // A tool call cannot submit a prompt, so the stopped seat's report is this tool's result.
   await report($, seat, 'Stopped on request; it was not rerun. Its output so far:\n\n' + (await partialOutput($, seat) || '(none)'), false)
   return readText($, join(seat.dir, 'report.md'))

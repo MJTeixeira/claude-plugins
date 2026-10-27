@@ -35,23 +35,38 @@ heavy).
   it. Permissions narrow later, once seats do their work. When agy refuses an action but the
   seat still answers, the answer is its report, with a line naming what agy refused; a seat that did not
   answer fails and moves on. An agy seat whose guard hook could not run fails too, though agy calls
-  the run a success.
+  the run a success. agy keeps a run open while a background task the seat started (a long command,
+  a timer) still runs, so the brief tells the seat to wait for or stop each one before its final answer.
+  A run agy ends in error still fails, and wherever its report is given, it carries agy's error and the
+  text the seat produced before it.
 - On Windows a codex reviewer runs codex's mxc sandbox where it starts (Windows 11 24H2 26100.9278 or
   25H2 26200.9278 and later; each session start checks, and a seat launched before the first check
   runs the unelevated sandbox), with a temp folder of its own in the seat folder: mxc gives programs a temp
   folder they cannot clean up, and its brief tells it to set `TEMP` and `TMP` to its own. Elsewhere it runs
   codex's unelevated sandbox, where node cannot read the output of a program it starts and a program cannot
   use the folders it makes (npm scripts, node tools that capture git's output, pip and python's tempfile fail;
-  its brief names the first). codex seats start without the
-  `WindowsApps` folders on PATH (the Store's `pwsh.exe` cannot start inside that sandbox), and run
-  PowerShell without your profile (`-NoProfile`; PowerShell 5.1 misreads a UTF-8 profile without a BOM). The
+  its brief names the first). A codex reviewer starts without the
+  `WindowsApps` folders on PATH (the Store's `pwsh.exe` cannot start inside that sandbox), so where PowerShell 7
+  came from the Store it runs Windows PowerShell 5.1, which turns each non-ASCII character it pipes into a
+  program into `?`; PowerShell 7 from its MSI installer runs there. agy runs its commands in Windows
+  PowerShell 5.1 whatever is installed, and no agy setting picks the shell. So the brief of a codex reviewer
+  and of every agy seat says its shell may be 5.1 and tells it to write files with its file tools or with
+  Python, never through a pipe. A codex owner keeps the `WindowsApps` folders on PATH and runs PowerShell 7;
+  on a machine without PowerShell 7 it runs 5.1 with no such note, so install PowerShell 7 there. codex seats
+  run PowerShell without your profile (`-NoProfile`; PowerShell 5.1 misreads a UTF-8 profile without a BOM),
+  and every codex and agy seat, and a Claude account owner, runs Python in UTF-8 mode (`PYTHONUTF8=1`), so a
+  script's file reads and writes keep non-ASCII text. The
   sandbox cannot write to a folder whose path has non-ASCII letters, so when your profile path has
   them, seat folders go under `%PUBLIC%\seat-router`, which every local user of the machine can read.
 - `owner` seats may commit, push and open pull requests, with your codex and agy config. Their commands
   reach the network, `.git`, Docker and the rest of the machine, as a Claude account owner's do. A codex
   owner runs outside codex's sandbox (`danger-full-access`). An agy owner runs outside its sandbox (`--dangerously-skip-permissions`), as an agy reviewer does. Force-push, `git reset --hard`, `rm -rf`,
   `gh pr merge --admin` and `gh repo delete` stay refused, however the command spells them
-  (`git -C . reset --hard`, `rm -fr`): a PreToolUse hook (`bin/owner-guard.mjs`) checks every command line, and
+  (`git -C . reset --hard`, `rm -fr`), and so do `git worktree remove` and `git worktree move` of any
+  worktree: another is someone else's checkout, and the mod removes the seat's own when it ends. So do
+  `git clean -f`, `git checkout`, `git restore` and a forced `git switch` that `-C`, `--work-tree` or
+  `GIT_WORK_TREE` aims at a directory other than the one the command runs in, and `git branch -D` of any
+  branch, which another agent may own (`git branch -d` keeps unmerged commits and passes). A PreToolUse hook (`bin/owner-guard.mjs`) checks every command line, and
   the brief tells the seat a refusal is final, since python, node or a script could reach the same result
   (it refuses with a deny decision, never exit 2, which codex on Windows reports as 1 and lets pass).
   One force push passes: `--force-with-lease=<branch>:<sha>` onto the branch checked out where the
@@ -95,7 +110,10 @@ shows the session's own Claude.
 The session learns the seat line from the mod itself: you do not write rules for it. The mod also
 shows running seats and each vendor's quota above the prompt, and `/seats` opens a pane with one
 card per seat. The session can stop a seat with the mod's `stop` tool (TaskStop does not reach
-seats). A seat whose process died without an exit code (killed, or the machine restarted) runs once more
+seats). A codex, agy or account seat whose last 24 tool calls repeat one cycle of calls at least three
+times in a row (the same call in the same folder with the same result, no write between), and keep doing so for thirty
+minutes, is stuck: the mod stops it as the `stop` tool does and fails it, naming the cycle, so it moves
+on as any failed seat does. The thirty minutes spare a seat waiting on CI or a background task. A seat whose process died without an exit code (killed, or the machine restarted) runs once more
 on the same model when it is a reviewer, or an owner whose worktree is as it started; otherwise it is
 reported as such. A failed owner moves to its next model only when its worktree is as it started, since
 rerunning one that committed would repeat its work. A seat line naming a CLI or family stays in it: a
@@ -106,6 +124,10 @@ untracked files stays), so the branch it held can be checked out elsewhere; a re
 branch goes with it, and an owner's report names the branch it left. When a session starts,
 the mod deletes seat folders that ended more than a week ago, except a worktree with changes or
 untracked files; `seat/*` branches stay.
+A report leaves out each background-task notice agy fed its model and the model echoed into the
+seat's output (a `<SYSTEM_MESSAGE>` block in agy's exact shape, with its preamble line), with a
+line saying how many it removed. A seat's own mention of the tag stays, and so does a block with
+no closing line.
 
 ## Requirements
 
