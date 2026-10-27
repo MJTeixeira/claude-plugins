@@ -1,12 +1,16 @@
 #!/usr/bin/env node
 // The owner seat's PreToolUse hook on codex and agy: refuses the commands an
 // owner may never run (force push, git reset --hard, rm -rf, gh pr merge
-// --admin, gh repo delete) however the command line spells them. The CLIs'
+// --admin, gh repo delete) however the command line spells them. One force push
+// passes: `--force-with-lease=<branch>:<sha>` to the branch checked out where the
+// command runs, when that is no default branch, as a rebase flow needs. The CLIs'
 // own prefix rules miss `git -C . reset --hard`, `rm -fr` and any line their
 // shell parser gives up on, such as `git reset --hard HEAD~1`.
-// codex sends `tool_input.command` and is refused with exit 2; agy sends
-// `toolCall.args.CommandLine` and is refused with a JSON decision.
+// codex and Claude send `tool_input.command` and `cwd` and are refused with exit 2;
+// agy sends `toolCall.args.CommandLine` (with `Cwd`, else its workspace is the
+// cwd) and is refused with a JSON decision.
 // Usage: node owner-guard.mjs < hook-input.json
+import { spawnSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 
@@ -14,6 +18,8 @@ const SHELLS = ['sh', 'bash', 'zsh', 'dash', 'ksh', 'fish', 'pwsh', 'powershell'
 const WRAPPERS = ['command', 'builtin', 'exec', 'nohup', 'time', 'sudo', 'doas', 'xargs', 'nice']
 const GIT_VALUE_OPTIONS = ['-C', '-c', '--git-dir', '--work-tree', '--namespace', '--exec-path', '--config-env']
 const REMOVERS = ['rm', 'remove-item', 'ri', 'del', 'erase', 'rd', 'rmdir']
+const DEFAULT_BRANCHES = ['main', 'master', 'dev', 'develop', 'trunk']
+const PUSH_VALUE_OPTIONS = ['--repo', '--receive-pack', '--exec', '-o', '--push-option']
 
 /** A command line as simple commands, each a list of words; quotes are honoured, and every shell operator ends a command. */
 export function commands(line) {
@@ -85,13 +91,37 @@ function strip(words) {
 
 const shortFlags = word => /^-[A-Za-z]+$/.test(word) ? word.slice(1) : ''
 
-function refusal(words) {
+const branchOf = ref => ref.replace(/^refs\/heads\//, '')
+
+// A push whose only force is a lease pinned to a commit, onto `branch` alone.
+function isLeasedPush(args, branch) {
+  if (!branch || DEFAULT_BRANCHES.includes(branch)) return false
+  const plain = []
+  let leased = false
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index]
+    const lease = /^--force-with-lease=([^:]+):([0-9a-f]{7,40})$/.exec(arg)
+    if (lease) {
+      if (branchOf(lease[1]) !== branch) return false
+      leased = true
+    } else if (arg === '--force' || arg.startsWith('--force-with-lease') || shortFlags(arg).includes('f')) return false
+    else if (PUSH_VALUE_OPTIONS.includes(arg)) index += 1
+    else if (!arg.startsWith('-')) plain.push(arg)
+  }
+  const refspecs = plain.slice(1)
+  return leased && refspecs.length > 0 && refspecs.every(spec => {
+    const [source, target = source] = spec.split(':')
+    return !source.startsWith('+') && (source === 'HEAD' || branchOf(source) === branch) && (target === 'HEAD' || branchOf(target) === branch)
+  })
+}
+
+function refusal(words, branch) {
   const [first, ...args] = strip(words)
   if (!first) return undefined
   const name = programName(first)
   if (SHELLS.includes(name)) {
     const script = args.findIndex(arg => /^-[a-z]*c$/i.test(arg) || /^\/c$/i.test(arg) || /^-(command|c)$/i.test(arg))
-    return script === -1 ? undefined : check(args.slice(script + 1).join(' '))
+    return script === -1 ? undefined : check(args.slice(script + 1).join(' '), branch)
   }
   if (name === 'git') {
     let index = 0
@@ -101,8 +131,10 @@ function refusal(words) {
     const sub = args[index]
     const rest = args.slice(index + 1)
     if (sub === 'reset' && rest.includes('--hard')) return 'Use a reversible Git operation instead of git reset --hard.'
-    if (sub === 'push' && rest.some(arg => arg === '--force' || arg.startsWith('--force-with-lease') || arg === '--force-if-includes'
-      || shortFlags(arg).includes('f') || (arg.startsWith('+') && arg.length > 1))) return 'Use a non-force push.'
+    if (sub === 'push' && !isLeasedPush(rest, branch) && rest.some(arg => arg === '--force' || arg.startsWith('--force-with-lease') || arg === '--force-if-includes'
+      || shortFlags(arg).includes('f') || (arg.startsWith('+') && arg.length > 1))) {
+      return 'Use a non-force push, or --force-with-lease=<branch>:<sha> onto the branch checked out here.'
+    }
     return undefined
   }
   if (name === 'gh') {
@@ -120,10 +152,10 @@ function refusal(words) {
   return undefined
 }
 
-/** Why a command line is refused, or undefined when it may run. */
-export function check(line) {
+/** Why a command line is refused, or undefined when it may run; `branch` is the one checked out where it runs. */
+export function check(line, branch) {
   for (const words of commands(line)) {
-    const reason = refusal(words)
+    const reason = refusal(words, branch)
     if (reason) return reason
   }
   return undefined
@@ -133,7 +165,9 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const input = JSON.parse(readFileSync(0, 'utf8') || '{}')
   const agy = input.toolCall?.args?.CommandLine
   const line = agy ?? input.tool_input?.command
-  const reason = typeof line === 'string' ? check(line) : undefined
+  const cwd = input.toolCall?.args?.Cwd ?? input.workspacePaths?.[0] ?? input.cwd ?? process.cwd()
+  const branch = () => spawnSync('git', ['-C', cwd, 'branch', '--show-current'], { encoding: 'utf8', windowsHide: true }).stdout?.trim()
+  const reason = typeof line === 'string' ? check(line, /\bpush\b/.test(line) ? branch() : undefined) : undefined
   if (reason && agy !== undefined) process.stdout.write(JSON.stringify({ decision: 'deny', reason: 'seat-router owner guard: ' + reason }) + '\n')
   else if (reason) {
     process.stderr.write('seat-router owner guard: ' + reason + '\n')

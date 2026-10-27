@@ -1,6 +1,6 @@
 {
   "name": "seat-router",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "Routes marked Agent calls through durable external seats",
   "license": "MIT",
   "types": "./types/index.d.ts",

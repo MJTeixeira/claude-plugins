@@ -29,15 +29,21 @@ heavy).
   and with codex's apps, plugins and web search off. This needs codex-cli 0.163 or later; an older
   codex refuses the flags and the seat moves to its next model. An agy reviewer starts none of your
   agy MCP servers.
+- An agy reviewer in a worktree may read the worktree's git folders. When agy refuses an action but the
+  seat still answers, the answer is its report, with a line naming what agy refused; a seat that did not
+  answer fails and moves on.
 - On Windows a codex reviewer runs codex's unelevated sandbox, and codex seats start without the
   `WindowsApps` folders on PATH (the Store's `pwsh.exe` cannot start inside that sandbox). The
   sandbox cannot write to a folder whose path has non-ASCII letters, so when your profile path has
   them, seat folders go under `%PUBLIC%\seat-router`, which every local user of the machine can read.
-  An owner seat on a repo whose path has non-ASCII letters still cannot write there.
-- `owner` seats may commit, push and open pull requests, with your codex and agy config. Force-push,
-  `git reset --hard`, `rm -rf`, `gh pr merge --admin` and `gh repo delete` stay refused, however the
-  command spells them (`git -C . reset --hard`, `rm -fr`): a PreToolUse hook (`bin/owner-guard.mjs`)
-  checks every command. An owner seat whose turn falls to Claude runs as a Claude subagent, and the mod refuses the same commands in its Bash and PowerShell calls. A codex owner runs with `--dangerously-bypass-hook-trust`, since codex runs a
+- `owner` seats may commit, push and open pull requests, with your codex and agy config. They run
+  outside their CLI's sandbox (codex `danger-full-access`, agy without `--sandbox` and with
+  `--dangerously-skip-permissions`), so their commands reach the network, `.git`, Docker and the rest
+  of the machine, as a Claude account owner's do. Force-push, `git reset --hard`, `rm -rf`,
+  `gh pr merge --admin` and `gh repo delete` stay refused, however the command spells them
+  (`git -C . reset --hard`, `rm -fr`): a PreToolUse hook (`bin/owner-guard.mjs`) checks every command.
+  One force push passes: `--force-with-lease=<branch>:<sha>` onto the branch checked out where the
+  command runs, when that is not `main`, `master`, `dev`, `develop` or `trunk`, as a rebase flow needs. An owner seat whose turn falls to Claude runs as a Claude subagent, and the mod refuses the same commands in its Bash and PowerShell calls. A codex owner runs with `--dangerously-bypass-hook-trust`, since codex runs a
   hook from the command line only past its trust check; for that run codex also runs any hook in your
   codex config or the repo's `.codex/` that you have not trusted.
 
@@ -77,7 +83,14 @@ shows the session's own Claude.
 The session learns the seat line from the mod itself: you do not write rules for it. The mod also
 shows running seats and each vendor's quota above the prompt, and `/seats` opens a pane with one
 card per seat. The session can stop a seat with the mod's `stop` tool (TaskStop does not reach
-seats); a seat whose process died without an exit code is reported as such. When a session starts,
+seats). A seat whose process died without an exit code (killed, or the machine restarted) runs once more
+on the same model when it is a reviewer, or an owner whose worktree is as it started; otherwise it is
+reported as such. A failed owner moves to its next model only when its worktree is as it started, since
+rerunning one that committed would repeat its work. A seat line naming a CLI or family stays in it: a
+failed candidate there moves the seat only to another of that CLI or family, and the seat is reported
+when none is left. Once a seat finishes, its worktree is removed (one with uncommitted changes or
+untracked files stays), so the branch it held can be checked out elsewhere; a reviewer's `seat/*`
+branch goes with it, and an owner's report names the branch it left. When a session starts,
 the mod deletes seat folders that ended more than a week ago, except a worktree with changes or
 untracked files; `seat/*` branches stay.
 
