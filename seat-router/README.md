@@ -30,7 +30,13 @@ heavy).
   and with codex's apps, plugins and web search off. This needs codex-cli 0.163 or later; an older
   codex refuses the flags and the seat moves to its next model. An agy reviewer starts none of your
   agy MCP servers.
-- An agy reviewer in a worktree may read the worktree's git folders. Its own folder is granted for writing
+- An agy reviewer in a worktree may read the worktree's git folders. It also reads the `bin` folders on your PATH
+  under your home folder, and the `lib` beside one that sits in a version manager's tree (`versions`,
+  `candidates`, `installs` or `toolchains`: nvm's node and npm, sdkman's java), since agy's sandbox hides
+  the home folder; never the install around them (nvm's `etc/npmrc` can hold registry tokens), nor anything
+  else under home, whatever PATH names. It decides on real paths (`bin/tool-reads.mjs`), so `..` or a symlink
+  in PATH cannot reach home or a folder such as `~/.ssh`.
+  Its own folder is granted for writing
   (`write_file`): headless agy registers no workspace, and on Windows its sandbox would otherwise mount
   that folder read-only and refuse even changing into it. When agy refuses an action but the
   seat still answers, the answer is its report, with a line naming what agy refused; a seat that did not
