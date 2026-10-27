@@ -1,13 +1,12 @@
 #!/usr/bin/env node
 // Builds the HOME an agy seat runs under and prints its path.
 // It mirrors ~/.gemini through links, except antigravity-cli/settings.json,
-// which is the seat's own: commands auto-run inside agy's terminal sandbox.
-// A reviewer starts none of the operator's MCP servers: its config/mcp_config.json
-// lists none. An owner keeps them, and its config/hooks.json adds owner-guard.mjs
-// to the operator's hooks. Nothing under the operator's ~/.gemini is touched.
-// `owner` lets git, gh and the package tools leave the sandbox (network, .git
-// writes) when agy asks to bypass it; the deny list keeps the irreversible
-// commands out either way. `--home DIR` builds the HOME at DIR instead of the
+// which is the seat's own. A reviewer's commands auto-run inside agy's terminal
+// sandbox, and it starts none of the operator's MCP servers: its
+// config/mcp_config.json lists none. An owner runs outside the sandbox and keeps
+// them; its config/hooks.json adds owner-guard.mjs to the operator's hooks, and
+// its deny list keeps the irreversible commands out besides. Nothing under the
+// operator's ~/.gemini is touched. `--home DIR` builds the HOME at DIR instead of the
 // shared one, so one seat's grants never reach another. Each `--read DIR` lets
 // the seat read DIR and everything under it; writes there stay refused.
 // Usage: node agy-seat-home.mjs [owner] [--home DIR] [--read DIR]...
@@ -77,7 +76,7 @@ if (process.platform === 'darwin') {
   link(join(real, 'Library', 'Keychains'), join(seat, 'Library', 'Keychains'))
 }
 
-const settings = { toolPermission: 'proceed-in-sandbox' }
+const settings = tier === 'owner' ? {} : { toolPermission: 'proceed-in-sandbox' }
 if (tier === 'owner') {
   const operator = join(real, '.gemini', 'config', 'hooks.json')
   const hooks = existsSync(operator) ? JSON.parse(readFileSync(operator, 'utf8')) : {}
@@ -88,9 +87,9 @@ if (tier === 'owner') {
   link(join(real, '.gitconfig'), join(seat, '.gitconfig'))
   mkdirSync(join(seat, '.config'), { recursive: true })
   link(join(real, '.config', 'gh'), join(seat, '.config', 'gh'))
+  // A force push is left to the guard, which lets a lease onto the seat's own branch through.
   settings.permissions = {
-    allow: ['git', 'gh', 'npm', 'npx', 'node', 'pnpm', 'yarn', 'curl'].map(name => `command(${name})`).concat(reads),
-    deny: ['git push --force', 'git push -f', 'git reset --hard', 'gh pr merge --admin', 'gh repo delete', 'rm -rf'].map(name => `command(${name})`),
+    deny: ['git reset --hard', 'gh pr merge --admin', 'gh repo delete', 'rm -rf'].map(name => `command(${name})`),
   }
 } else {
   writeFileSync(join(config, 'mcp_config.json'), JSON.stringify({ mcpServers: {} }) + '\n')

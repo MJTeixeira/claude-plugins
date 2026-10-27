@@ -35,7 +35,6 @@ const usageReading = new Map<UsageSource, Promise<string | undefined>>()
 // The shell tools Claude Code runs commands through.
 export const SHELL_TOOLS = ['Bash', 'PowerShell']
 const NO_SHELL_NOTE = 'This seat has no shell: Bash and PowerShell are refused here. Read, search and edit files with your file tools, and say in your report what you could not run.\n'
-const OWNER_NOTE = 'Commands starting with git, gh, npm, npx, node, pnpm, yarn or curl need network or .git writes: run each of them with your run_command tool\'s BypassSandbox set to true. Run every other command inside the sandbox.\n'
 type AgentInput = Extract<ToolCallInput, { tool: 'Agent' }>
 export type ExternalVendor = Exclude<SeatVendor, 'claude'>
 
@@ -204,7 +203,13 @@ type Seat = {
   isolation?: 'worktree'
   worktreePath?: string
   worktreeBranch?: string
-  gitDirs?: string[]
+  // The commit a worktree started at, which tells an owner that changed nothing.
+  baseSha?: string
+  // The family a sized line named (gpt, gemini, claude, or a CLI), and whether a
+  // candidate in it failed: the seat then never leaves it.
+  prefer?: string
+  preferFailed?: boolean
+  reruns?: number
   fallbackTrail: string[]
   rolloutPath?: string
   rolloutSearched?: boolean
@@ -218,6 +223,8 @@ export type Check = {
   failed: boolean
   quota: boolean
   detail: string
+  // What the run's CLI refused it, when it answered anyway.
+  refused?: string[]
 }
 
 export function parseMarker(prompt: string): Marker | undefined {
@@ -862,15 +869,18 @@ async function launchAccount($: EngineInterface, seat: Seat & { account: string 
   await start($, seat, spec, isReviewer ? env : { ...await ownerEnv($), ...env })
 }
 
+// A codex or agy owner runs outside its CLI's sandbox, as a Claude account owner
+// does: its shell reaches the network, .git, Docker and the rest of the machine, and
+// owner-guard.mjs is the fence. A reviewer stays in the sandbox, writing only its folder.
 async function launch($: EngineInterface, seat: Seat): Promise<void> {
-  const brief = seat.tier === 'owner' && seat.vendor === 'agy' ? seat.brief + '\n' + OWNER_NOTE : seat.brief
-  await $.fs.write(join(seat.dir, 'brief.md'), brief)
+  await $.fs.write(join(seat.dir, 'brief.md'), seat.brief)
   if (seat.account !== undefined) return launchAccount($, { ...seat, account: seat.account })
   const windows = await isWindows($)
+  const isOwner = seat.tier === 'owner'
   const spec: LaunchSpec = seat.vendor === 'codex' ? {
     argv: [
       'codex', 'exec', '--json', '-m', seat.model, '-c', 'model_reasoning_effort=' + seat.effort,
-      '-s', 'workspace-write', '--skip-git-repo-check', '-C', seat.workDir,
+      '-s', isOwner ? 'danger-full-access' : 'workspace-write', '--skip-git-repo-check', '-C', seat.workDir,
       // A reviewer is held to its folder: the user's config would start their MCP servers
       // (computer use among them), and codex's apps, plugins and web search reach the network
       // from the cloud. An owner keeps all of them, as a development session does.
@@ -881,11 +891,7 @@ async function launch($: EngineInterface, seat: Seat): Promise<void> {
         // would have named one.
         ...(windows ? ['-c', 'windows.sandbox="unelevated"'] : []),
       ] : []),
-      ...(seat.tier === 'owner' ? [
-        '-c', 'sandbox_workspace_write.network_access=true', '-c', 'shell_environment_policy.ignore_default_excludes=true',
-        ...ownerGuard($),
-        ...(seat.gitDirs ?? []).flatMap(dir => ['--add-dir', dir]),
-      ] : []),
+      ...(isOwner ? ['-c', 'shell_environment_policy.ignore_default_excludes=true', ...ownerGuard($)] : []),
       '-o', join(seat.dir, 'final.md'), '-',
     ],
     cwd: seat.workDir, stdin: join(seat.dir, 'brief.md'),
@@ -896,16 +902,22 @@ async function launch($: EngineInterface, seat: Seat): Promise<void> {
   } : {
     argv: [
       'agy', '--output-format', 'stream-json', '--model', seat.model, '--effort', agyEffort(seat.effort),
-      '--sandbox', '--mode', 'accept-edits', '-p', { file: join(seat.dir, 'brief.md') },
+      ...(isOwner ? ['--dangerously-skip-permissions'] : ['--sandbox', '--mode', 'accept-edits']), '-p', { file: join(seat.dir, 'brief.md') },
     ],
     cwd: seat.workDir,
-    home: [
-      ...(seat.tier === 'owner' ? ['owner'] : []), '--home', join(seat.dir, 'home'),
-      ...(await briefReads($, seat)).flatMap(folder => ['--read', folder]),
+    home: isOwner ? ['owner', '--home', join(seat.dir, 'home')] : [
+      '--home', join(seat.dir, 'home'), ...(await agyReads($, seat)).flatMap(folder => ['--read', folder]),
     ],
     stdout: join(seat.dir, 'agy.jsonl'), stderr: join(seat.dir, 'agy.err'), exit: join(seat.dir, 'exit'), pid: join(seat.dir, 'pid'),
   }
-  await start($, seat, spec, seat.tier === 'owner' ? await ownerEnv($) : undefined)
+  await start($, seat, spec, isOwner ? await ownerEnv($) : undefined)
+}
+
+// A reviewer in a worktree also reads the worktree's git folders, which live in the
+// repository's own `.git`: without them every git command it runs fails.
+async function agyReads($: EngineInterface, seat: Seat): Promise<string[]> {
+  const git = seat.worktreePath === undefined ? [] : (await gitDirs($, seat.workDir)).map(slashed)
+  return [...new Set([...await briefReads($, seat), ...git])].sort()
 }
 
 // What run-seat.mjs starts: a CLI (`{ file }` in argv is that file's text) or a wait.
@@ -953,8 +965,7 @@ async function scheduleWait($: EngineInterface, seat: Seat, until: number): Prom
   await start($, seat, { sleep: seconds, exit: join(seat.dir, 'exit'), pid: join(seat.dir, 'pid') })
 }
 
-// codex keeps a worktree's own git dir read-only even under a writable common
-// dir, so an owner gets both.
+// A worktree's git folders: the repository's common one and the worktree's own.
 async function gitDirs($: EngineInterface, workDir: string): Promise<string[]> {
   const found = await $.process.run(['git', 'rev-parse', '--path-format=absolute', '--git-common-dir', '--git-dir'], { cwd: workDir })
   if (found.exitCode !== 0) return []
@@ -986,18 +997,22 @@ async function makeSeat($: EngineInterface, input: AgentInput, marker: Marker, c
     if (tree.exitCode !== 0) throw new Error('git worktree add failed: ' + tree.stderr)
     seat.workDir = seat.worktreePath
   }
-  if (seat.tier === 'owner' && seat.vendor === 'codex') seat.gitDirs = await gitDirs($, seat.workDir)
+  if (seat.worktreePath) {
+    const head = await $.process.run(['git', '-C', seat.worktreePath, 'rev-parse', 'HEAD'])
+    if (head.exitCode === 0 && head.stdout.trim()) seat.baseSha = head.stdout.trim()
+  }
+  if ('prefer' in marker && marker.prefer !== undefined) seat.prefer = marker.prefer
   return seat
 }
 
 const seatName = (seat: Pick<Seat, 'vendor' | 'account'>): string =>
   seat.account === undefined ? seat.vendor : 'claude on the ' + seat.account + ' account'
 
-function reportText(seat: Seat, text: string): string {
+function reportText(seat: Seat, text: string, worktree?: string): string {
   const lines = ['Seat ' + seat.id + ' ("' + seat.description + '", ' + seatName(seat) + ' ' + seat.model + ' ' + seat.effort + ' ' + seat.tier + ') finished.']
   if (seat.fallbackTrail.length) lines.push('Fallback: ' + seat.fallbackTrail.join(' → '))
   if (seat.waitedMs !== undefined) lines.push('Waited ' + Math.ceil(seat.waitedMs / 1000) + ' seconds for quota reset.')
-  if (seat.tier === 'owner' && seat.worktreeBranch && seat.worktreePath) lines.push('Worktree: ' + seat.worktreeBranch + ' at ' + seat.worktreePath)
+  if (worktree) lines.push(worktree)
   lines.push('', text)
   return lines.join('\n')
 }
@@ -1012,9 +1027,8 @@ function agyResult(jsonl: string): { text: string, valid: boolean, denied: strin
   const result = asObject(last?.result)
   // agy leaves denied_actions out when nothing was refused.
   const denied = result?.denied_actions
-  const isClean = denied === undefined || denied === null || (Array.isArray(denied) && denied.length === 0)
   const names = Array.isArray(denied) ? denied.map(action => textAt(asObject(action)?.action) ?? '?') : []
-  return { text: textAt(result?.response) ?? '', valid: result?.status === 'SUCCESS' && isClean, denied: names }
+  return { text: textAt(result?.response) ?? '', valid: result?.status === 'SUCCESS', denied: names }
 }
 
 export function failedSeat(vendor: ExternalVendor, exitCode: number | undefined, text: string, transcript: string, stderr: string): Check {
@@ -1032,12 +1046,15 @@ export function failedSeat(vendor: ExternalVendor, exitCode: number | undefined,
   return { text, failed, quota, detail }
 }
 
+// A run agy refused an action passes when it still answered: the answer says what it
+// could not do, and the report names what was refused.
 export function failedAgy(exitCode: number | undefined, jsonl: string, stderr: string): Check {
   const result = agyResult(jsonl)
   const base = failedSeat('agy', exitCode, result.text, jsonl, stderr)
   const failed = base.failed || !result.valid
-  const detail = result.denied.length ? 'denied ' + result.denied.join(', ') : base.detail || (!result.valid ? 'agy result failed' : '')
-  return { ...base, failed, detail: base.quota ? base.detail : detail }
+  const refused = result.denied.length ? 'denied ' + result.denied.join(', ') : ''
+  const detail = base.quota ? base.detail : [base.detail || (!result.valid ? 'agy result failed' : ''), failed ? refused : ''].filter(Boolean).join(', ')
+  return { ...base, failed, detail, ...(result.denied.length ? { refused: result.denied } : {}) }
 }
 
 // A Claude run passes when its last result event is a success with text; events such as
@@ -1097,13 +1114,41 @@ async function seatsFor($: EngineInterface, sessionId: string): Promise<Seat[]> 
   return seats
 }
 
+// A finished seat's worktree is removed, so the branch it holds is free to check out
+// elsewhere; one with uncommitted changes or untracked files stays. A reviewer commits
+// nothing, so its seat/* branch goes too. Returns the report's line on it.
+async function releaseWorktree($: EngineInterface, seat: Seat): Promise<string | undefined> {
+  const tree = seat.worktreePath
+  if (tree === undefined) return undefined
+  const git = (args: string[]) => $.process.run(['git', '-C', tree, ...args])
+  const branch = (await git(['branch', '--show-current'])).stdout.trim() || seat.worktreeBranch || 'a detached HEAD'
+  const common = (await git(['rev-parse', '--path-format=absolute', '--git-common-dir'])).stdout.trim()
+  if ((await $.process.run(['git', '-C', seat.sessionCwd, 'worktree', 'remove', tree])).exitCode !== 0) {
+    return 'Worktree: ' + branch + ' at ' + tree + ' (kept: it has uncommitted changes or untracked files)'
+  }
+  if (seat.tier === 'reviewer') {
+    if (seat.worktreeBranch && common) await $.process.run(['git', '--git-dir', common, 'branch', '-D', seat.worktreeBranch])
+    return undefined
+  }
+  return 'Branch: ' + branch + ' (its worktree was removed)'
+}
+
+// An owner that left its worktree as it started (no commit, nothing uncommitted) may run again.
+async function isUnchanged($: EngineInterface, seat: Seat): Promise<boolean> {
+  const tree = seat.worktreePath
+  if (tree === undefined || seat.baseSha === undefined) return false
+  const head = await $.process.run(['git', '-C', tree, 'rev-parse', 'HEAD'])
+  const status = await $.process.run(['git', '-C', tree, 'status', '--porcelain'])
+  return head.exitCode === 0 && head.stdout.trim() === seat.baseSha && status.exitCode === 0 && !status.stdout.trim()
+}
+
 async function report($: EngineInterface, seat: Seat, text: string, submit = true): Promise<void> {
   if (seat.reported || seat.status === 'reported') return
   const claimed = await io($, ['mkdir', join(seat.dir, 'reporting')])
   if (claimed.exitCode !== 0) return
   seat.status = 'reporting'
   seat.endedAt ??= await $.clock.now()
-  const report = reportText(seat, text)
+  const report = reportText(seat, text, await releaseWorktree($, seat))
   await $.fs.write(join(seat.dir, 'report.md'), report)
   await writeSeat($, seat)
   await putSeat($, seat)
@@ -1119,7 +1164,7 @@ async function runCandidate($: EngineInterface, seat: Seat, start: number, readi
   let earliest: number | undefined
   for (let position = start; position < choices.length; position += 1) {
     const choice = choices[position]
-    if (!choice) continue
+    if (!choice || (seat.preferFailed && seat.prefer !== undefined && !isPreferred(choice, seat.prefer))) continue
     const available = readings[position] ?? await candidateQuota($, choice)
     if (available.out) {
       seat.fallbackTrail.push(choiceName(choice) + ' out (' + (available.detail || 'quota unavailable') + ')')
@@ -1145,11 +1190,15 @@ async function runCandidate($: EngineInterface, seat: Seat, start: number, readi
         + claudeBrief(seat.brief, seat.fallbackTrail))
       return
     }
-    if (seat.tier === 'owner' && choice.vendor === 'codex' && !seat.gitDirs) seat.gitDirs = await gitDirs($, seat.workDir)
     seat.status = 'running'
     await writeSeat($, seat)
     await putSeat($, seat)
     await launch($, seat)
+    return
+  }
+  if (seat.preferFailed) {
+    await report($, seat, 'No ' + seat.prefer + ' candidate is left to run this seat, and it was not moved to another family. Its output:\n\n'
+      + (await partialOutput($, seat) || '(none)'))
     return
   }
   await scheduleWait($, seat, earliest ?? (await $.clock.now()) + 60_000)
@@ -1187,6 +1236,13 @@ export async function pollSession($: EngineInterface, sessionId: string): Promis
     const exit = await readText($, join(seat.dir, 'exit'))
     if (!exit.trim()) {
       if (await launcherGone($, seat) && !(await readText($, join(seat.dir, 'exit'))).trim()) {
+        // A reviewer, or an owner that changed nothing, runs once more where it was.
+        if ((seat.reruns ?? 0) < 1 && (seat.tier === 'reviewer' || await isUnchanged($, seat))) {
+          seat.reruns = (seat.reruns ?? 0) + 1
+          seat.fallbackTrail.push(choiceName(seat) + ' ended without an exit code, rerun')
+          await runCandidate($, seat, seat.chainPosition)
+          continue
+        }
         await report($, seat, 'The seat\'s process ended without an exit code (killed, or the machine restarted); it was not rerun.'
           + ' Its output so far:\n\n' + (await partialOutput($, seat) || '(none)'))
       }
@@ -1201,17 +1257,18 @@ export async function pollSession($: EngineInterface, sessionId: string): Promis
     if (seat.status !== 'running') continue
     const checked = await checkSeat($, seat)
     if (!checked.failed) {
-      await report($, seat, checked.text)
+      await report($, seat, checked.text + (checked.refused ? '\n\n(agy refused this seat: ' + checked.refused.join(', ') + ')' : ''))
       continue
     }
     seat.fallbackTrail.push(checked.quota ? seat.vendor + ' out (' + checked.detail + ')' : seat.vendor + ' failed (' + checked.detail + ')')
-    // An owner may have committed or pushed before it failed; rerunning its
-    // brief elsewhere would repeat that, so only a usage limit moves it on.
-    if (seat.tier === 'owner' && !checked.quota) {
+    // An owner that committed or left changes before it failed is not rerun elsewhere,
+    // which would repeat its work; one that changed nothing, or ran out of quota, moves on.
+    if (seat.tier === 'owner' && !checked.quota && !await isUnchanged($, seat)) {
       await report($, seat, 'The owner seat failed and was not rerun, because it may already have changed its branch. '
         + 'Its output:\n\n' + (checked.text || '(none)'))
       continue
     }
+    if (!checked.quota && seat.prefer !== undefined && isPreferred(seat, seat.prefer)) seat.preferFailed = true
     await runCandidate($, seat, seat.chainPosition + 1)
   }
 }
@@ -1337,7 +1394,11 @@ export async function chooseInitial($: EngineInterface, marker: Marker, running:
       readings: order.map(index => readings[index]).filter((value): value is Quota => value !== undefined),
     }
   }
-  const position = pinned ? loads.findIndex(load => load !== 'out') : pick(loads, seatConfig.busyAt)
+  // A line naming a CLI or family stays in it, busy or not, while any of it is not out.
+  const prefer = 'prefer' in marker ? marker.prefer : undefined
+  const inFamily = prefer === undefined ? [] : loads.map((load, index) => chain[index] !== undefined && isPreferred(chain[index], prefer) ? load : 'out' as const)
+  const position = pinned ? loads.findIndex(load => load !== 'out')
+    : pick(inFamily.some(load => load !== 'out') ? inFamily : loads, seatConfig.busyAt)
   if (position === -1) return { chain, trail, resetAt, allOut: true, readings }
   const chosen = chain[position]
   if (!chosen || pinned) return { chain, trail, allOut: false, position, readings }
