@@ -900,9 +900,12 @@ export async function probeCodexSandbox($: EngineInterface): Promise<void> {
   await $.process.run(['node', join($.plugin.root, 'bin', 'codex-mxc.mjs'), await codexSandboxFile($)], { timeoutMs: 90_000 })
 }
 
-// A codex or agy owner runs outside its CLI's sandbox, as a Claude account owner
-// does: its shell reaches the network, .git, Docker and the rest of the machine, and
-// owner-guard.mjs is the fence. A reviewer stays in the sandbox, writing only its folder.
+// A codex or agy owner reaches the network, .git, Docker and the rest of the machine, as
+// a Claude account owner does, and owner-guard.mjs is the fence. A codex owner leaves its
+// sandbox only for what codex's auto-reviewer approves (`--approve-for-me`), except on
+// Windows, where codex's sandboxes break the tools an owner runs (openai/codex#19791,
+// #47868) and it runs outside the sandbox; agy offers no reviewer to a headless run, so an
+// agy owner runs outside its sandbox. A reviewer stays in the sandbox, writing only its folder.
 async function launch($: EngineInterface, seat: Seat): Promise<void> {
   if (seat.account !== undefined) {
     await $.fs.write(join(seat.dir, 'brief.md'), seat.brief)
@@ -920,7 +923,8 @@ async function launch($: EngineInterface, seat: Seat): Promise<void> {
   const spec: LaunchSpec = seat.vendor === 'codex' ? {
     argv: [
       'codex', 'exec', '--json', '-m', seat.model, '-c', 'model_reasoning_effort=' + seat.effort,
-      '-s', isOwner ? 'danger-full-access' : 'workspace-write', '--skip-git-repo-check', '-C', seat.workDir,
+      ...(!isOwner ? ['-s', 'workspace-write'] : windows ? ['-s', 'danger-full-access'] : ['--approve-for-me']),
+      '--skip-git-repo-check', '-C', seat.workDir,
       // A reviewer is held to its folder: the user's config would start their MCP servers
       // (computer use among them), and codex's apps, plugins and web search reach the network
       // from the cloud. An owner keeps all of them, as a development session does.
