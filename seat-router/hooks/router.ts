@@ -580,7 +580,7 @@ export async function saveOptions($: EngineInterface, values: Record<string, str
 
 // agy reads only its workspace: the folders its brief names by absolute path
 // (`/…`, `~/…`, or `C:\…` on Windows), outside the seat's own, are granted
-// read-only. A root and HOME are never granted.
+// read-only. A root, HOME and a folder that holds HOME are never granted.
 async function briefReads($: EngineInterface, seat: Pick<Seat, 'brief' | 'dir' | 'workDir'>): Promise<string[]> {
   const found = await homeDir($)
   const home = found === undefined ? undefined : slashed(found)
@@ -593,7 +593,9 @@ async function briefReads($: EngineInterface, seat: Pick<Seat, 'brief' | 'dir' |
     try { kind = (await $.fs.stat(path)).kind } catch { continue }
     const folder = kind === 'dir' ? path : path.slice(0, path.lastIndexOf('/'))
     const inside = (root: string) => folder === slashed(root) || folder.startsWith(slashed(root) + '/')
-    if (!folder || /^[A-Za-z]:$/.test(folder) || folder === home || inside(seat.workDir) || inside(seat.dir)) continue
+    // Without case, as Windows and macOS compare paths.
+    const holdsHome = home !== undefined && (home.toLowerCase() + '/').startsWith(folder.toLowerCase() + '/')
+    if (!folder || /^[A-Za-z]:$/.test(folder) || holdsHome || inside(seat.workDir) || inside(seat.dir)) continue
     folders.add(folder)
   }
   return [...folders].sort()

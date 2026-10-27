@@ -23,7 +23,8 @@ candidates of the size its effort stands for (low or medium is light, high stand
 heavy).
 
 - `reviewer` seats are sandboxed to their folder, with no network and no `.git` writes. A seat called without
-  `isolation: "worktree"` starts in an empty folder and reads only the absolute paths its brief names, so the session
+  `isolation: "worktree"` starts in an empty folder and reads only the absolute paths its brief names (never a drive
+  root, your home folder or a folder that holds it, such as `/Users` or `C:\Users`), so the session
   is told to pass the worktree for any seat that reads the repository, a review included. A codex
   reviewer also runs without your `~/.codex/config.toml` (so none of your codex MCP servers start)
   and with codex's apps, plugins and web search off. This needs codex-cli 0.163 or later; an older
