@@ -898,7 +898,7 @@ async function launch($: EngineInterface, seat: Seat): Promise<void> {
     // The Store's pwsh.exe alias cannot start inside codex's Windows sandbox; without
     // it on PATH codex runs System32's powershell.exe.
     ...(windows ? { dropWindowsApps: true } : {}),
-    stdout: join(seat.dir, 'codex.jsonl'), stderr: join(seat.dir, 'codex.err'), exit: join(seat.dir, 'exit'), pid: join(seat.dir, 'pid'),
+    stdout: join(seat.dir, 'codex.jsonl'), stderr: join(seat.dir, 'codex.err'), outputs: [join(seat.dir, 'final.md')], exit: join(seat.dir, 'exit'), pid: join(seat.dir, 'pid'),
   } : {
     argv: [
       'agy', '--output-format', 'stream-json', '--model', seat.model, '--effort', agyEffort(seat.effort),
@@ -927,6 +927,7 @@ type LaunchSpec = {
   stdin?: string
   stdout?: string
   stderr?: string
+  outputs?: string[]
   exit: string
   pid?: string
   home?: string[]
