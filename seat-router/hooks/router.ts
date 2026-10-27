@@ -35,12 +35,21 @@ const usageReading = new Map<UsageSource, Promise<string | undefined>>()
 // The shell tools Claude Code runs commands through.
 export const SHELL_TOOLS = ['Bash', 'PowerShell']
 const NO_SHELL_NOTE = 'This seat has no shell: Bash and PowerShell are refused here. Read, search and edit files with your file tools, and say in your report what you could not run.\n'
-// codex's Windows sandbox refuses a process node starts with piped stdio (EPERM,
+// codex's unelevated Windows sandbox refuses a process node starts with piped stdio (EPERM,
 // openai/codex#47868); one that inherits or ignores stdio starts, and so do
 // PowerShell's and python's.
 const CODEX_WINDOWS_NOTE = 'On this machine node cannot read the output of a program it starts here (spawn EPERM), so npm '
   + 'scripts and node tools that capture git\'s or another program\'s output (depcruise, vitest\'s changed mode) fail. Run '
   + 'git and other programs from PowerShell or python, and say in your report what you could not run.\n'
+// codex's mxc Windows sandbox resets TEMP and TMP to a folder of its own whose files a
+// program cannot clean up (pip's ensurepip fails), whatever the launch sets; a folder
+// the seat writes, set from its own shell, works.
+const codexMxcNote = (temp: string): string => {
+  const quoted = "'" + temp.replaceAll("'", "''") + "'"
+  return 'This sandbox gives programs a temp folder they cannot clean up, so pip, python\'s tempfile and other tools '
+    + 'that make temp files fail there. Set TEMP and TMP in the same PowerShell command first, as in '
+    + '`$env:TEMP=' + quoted + '; $env:TMP=' + quoted + '; python -m venv .venv`.\n'
+}
 type AgentInput = Extract<ToolCallInput, { tool: 'Agent' }>
 export type ExternalVendor = Exclude<SeatVendor, 'claude'>
 
@@ -877,6 +886,20 @@ async function launchAccount($: EngineInterface, seat: Seat & { account: string 
   await start($, seat, spec, isReviewer ? env : { ...await ownerEnv($), ...env })
 }
 
+// codex's mxc Windows sandbox starts on Windows 11 24H2 26100.9278 or 25H2 26200.9278 and
+// later and holds a seat to its folder with no network, as the unelevated one does, without
+// that one's bugs (openai/codex#19791, #47868). Whether it starts here is asked off the Agent
+// hook's clock, as starting codex can take seconds: each session start asks and the answer
+// lands in the seat root, and a seat launched before the first answer runs the unelevated sandbox.
+async function codexSandboxFile($: EngineInterface): Promise<string> {
+  return join(await seatRoot($), 'codex-sandbox')
+}
+
+export async function probeCodexSandbox($: EngineInterface): Promise<void> {
+  if (!await isWindows($)) return
+  await $.process.run(['node', join($.plugin.root, 'bin', 'codex-mxc.mjs'), await codexSandboxFile($)], { timeoutMs: 90_000 })
+}
+
 // A codex or agy owner runs outside its CLI's sandbox, as a Claude account owner
 // does: its shell reaches the network, .git, Docker and the rest of the machine, and
 // owner-guard.mjs is the fence. A reviewer stays in the sandbox, writing only its folder.
@@ -887,7 +910,12 @@ async function launch($: EngineInterface, seat: Seat): Promise<void> {
   }
   const windows = await isWindows($)
   const isOwner = seat.tier === 'owner'
-  const note = windows && !isOwner && seat.vendor === 'codex' ? CODEX_WINDOWS_NOTE : ''
+  const windowsReviewer = windows && !isOwner && seat.vendor === 'codex'
+  const sandbox = windowsReviewer ? (await readText($, await codexSandboxFile($))).trim() : ''
+  const mxc = sandbox === 'mxc'
+  const temp = join(seat.dir, 'tmp')
+  if (mxc) await io($, ['mkdir', temp])
+  const note = mxc ? codexMxcNote(temp) : windowsReviewer ? CODEX_WINDOWS_NOTE : ''
   await $.fs.write(join(seat.dir, 'brief.md'), seat.brief + (note ? '\n' + note : ''))
   const spec: LaunchSpec = seat.vendor === 'codex' ? {
     argv: [
@@ -901,7 +929,8 @@ async function launch($: EngineInterface, seat: Seat): Promise<void> {
         '-c', 'web_search="disabled"',
         // Without a Windows sandbox mode codex refuses every command; the user's config
         // would have named one.
-        ...(windows ? ['-c', 'windows.sandbox="unelevated"'] : []),
+        ...(windows ? ['-c', 'windows.sandbox="' + (mxc ? 'mxc' : 'unelevated') + '"'] : []),
+        ...(mxc ? ['--add-dir', temp] : []),
       ] : []),
       ...(isOwner ? ['-c', 'shell_environment_policy.ignore_default_excludes=true', ...ownerGuard($)] : []),
       '-o', join(seat.dir, 'final.md'), '-',

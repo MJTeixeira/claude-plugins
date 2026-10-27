@@ -36,9 +36,13 @@ heavy).
   seat still answers, the answer is its report, with a line naming what agy refused; a seat that did not
   answer fails and moves on. An agy owner whose guard hook could not run fails too, though agy calls
   the run a success.
-- On Windows a codex reviewer runs codex's unelevated sandbox, where node cannot read the output of a
-  program it starts (npm scripts and node tools that capture git's output fail; its brief says so and points it to
-  PowerShell or python), and codex seats start without the
+- On Windows a codex reviewer runs codex's mxc sandbox where it starts (Windows 11 24H2 26100.9278 or
+  25H2 26200.9278 and later; each session start checks, and a seat launched before the first check
+  runs the unelevated sandbox), with a temp folder of its own in the seat folder: mxc gives programs a temp
+  folder they cannot clean up, and its brief tells it to set `TEMP` and `TMP` to its own. Elsewhere it runs
+  codex's unelevated sandbox, where node cannot read the output of a program it starts and a program cannot
+  use the folders it makes (npm scripts, node tools that capture git's output, pip and python's tempfile fail;
+  its brief names the first). codex seats start without the
   `WindowsApps` folders on PATH (the Store's `pwsh.exe` cannot start inside that sandbox). The
   sandbox cannot write to a folder whose path has non-ASCII letters, so when your profile path has
   them, seat folders go under `%PUBLIC%\seat-router`, which every local user of the machine can read.
