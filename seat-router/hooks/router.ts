@@ -35,11 +35,12 @@ const usageReading = new Map<UsageSource, Promise<string | undefined>>()
 // The shell tools Claude Code runs commands through.
 export const SHELL_TOOLS = ['Bash', 'PowerShell']
 const NO_SHELL_NOTE = 'This seat has no shell: Bash and PowerShell are refused here. Read, search and edit files with your file tools, and say in your report what you could not run.\n'
-// codex's Windows sandbox refuses every process node starts (EPERM), whatever the
-// program; PowerShell and python start them.
-const CODEX_WINDOWS_NOTE = 'On this machine node cannot start other programs here (EPERM), so npm scripts and node tools '
-  + 'that run git or another program (depcruise, vitest\'s changed mode) fail. Run git and other programs from PowerShell '
-  + 'or python, and say in your report what you could not run.\n'
+// codex's Windows sandbox refuses a process node starts with piped stdio (EPERM,
+// openai/codex#47868); one that inherits or ignores stdio starts, and so do
+// PowerShell's and python's.
+const CODEX_WINDOWS_NOTE = 'On this machine node cannot read the output of a program it starts here (spawn EPERM), so npm '
+  + 'scripts and node tools that capture git\'s or another program\'s output (depcruise, vitest\'s changed mode) fail. Run '
+  + 'git and other programs from PowerShell or python, and say in your report what you could not run.\n'
 type AgentInput = Extract<ToolCallInput, { tool: 'Agent' }>
 export type ExternalVendor = Exclude<SeatVendor, 'claude'>
 
