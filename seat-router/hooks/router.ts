@@ -615,11 +615,18 @@ async function briefReads($: EngineInterface, seat: Pick<Seat, 'brief' | 'dir' |
 // guard of a Claude subagent that runs an owner seat, as codex and agy owners have.
 export async function ownerGuardReason($: EngineInterface, command: string): Promise<string | undefined> {
   const ran = await $.process.run(['node', join($.plugin.root, 'bin', 'owner-guard.mjs')], { stdin: JSON.stringify({ tool_input: { command } }) })
-  return ran.exitCode === 2 ? ran.stderr.trim() || 'seat-router owner guard: refused.' : undefined
+  if (ran.exitCode !== 0) return 'seat-router owner guard: refused.'
+  if (!ran.stdout.trim()) return undefined
+  try {
+    return JSON.parse(ran.stdout).hookSpecificOutput?.permissionDecisionReason ?? 'seat-router owner guard: refused.'
+  } catch { return 'seat-router owner guard: refused.' }
 }
 
 // codex's own prefix rules miss reworded commands (`git -C . reset --hard`) and any
 // line its shell parser gives up on (`HEAD~1`), so an owner's commands pass this hook.
+// On Windows codex runs the hook through PowerShell `-Command`, which reports a failed
+// node as exit 1, so the guard answers with a deny decision rather than exit 2
+// (openai/codex#48183).
 // The hook comes from the command line, which codex runs only past its hook trust check.
 function ownerGuard($: EngineInterface): string[] {
   const command = 'node "' + slashed($.plugin.root) + '/bin/owner-guard.mjs"'
@@ -937,6 +944,9 @@ async function launch($: EngineInterface, seat: Seat): Promise<void> {
         ...(mxc ? ['--add-dir', temp] : []),
       ] : []),
       ...(isOwner ? ['-c', 'shell_environment_policy.ignore_default_excludes=true', ...ownerGuard($)] : []),
+      // PowerShell 5.1 reads a UTF-8 profile as ANSI, so a profile naming a non-ASCII path
+      // prints an error ahead of every command; a non-login shell runs with -NoProfile.
+      ...(windows ? ['-c', 'allow_login_shell=false'] : []),
       '-o', join(seat.dir, 'final.md'), '-',
     ],
     cwd: seat.workDir, stdin: join(seat.dir, 'brief.md'),

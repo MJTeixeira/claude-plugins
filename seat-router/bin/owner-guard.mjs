@@ -6,9 +6,11 @@
 // command runs, when that is no default branch, as a rebase flow needs. The CLIs'
 // own prefix rules miss `git -C . reset --hard`, `rm -fr` and any line their
 // shell parser gives up on, such as `git reset --hard HEAD~1`.
-// codex and Claude send `tool_input.command` and `cwd` and are refused with exit 2;
-// agy sends `toolCall.args.CommandLine` (with `Cwd`, else its workspace is the
-// cwd) and is refused with a JSON decision.
+// codex and Claude send `tool_input.command` and `cwd` and are refused with a
+// `hookSpecificOutput` deny, not exit 2: on Windows codex runs the hook through
+// PowerShell `-Command`, which reports exit 2 as 1, and a failed hook lets the command
+// run (openai/codex#48183). agy sends `toolCall.args.CommandLine` (with `Cwd`, else
+// its workspace is the cwd) and is refused with its own JSON decision.
 // Usage: node owner-guard.mjs < hook-input.json
 import { spawnSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
@@ -176,7 +178,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const reason = typeof line === 'string' ? check(line, /\bpush\b/.test(line) ? branch() : undefined) : undefined
   if (reason && agy !== undefined) process.stdout.write(JSON.stringify({ decision: 'deny', reason: 'seat-router owner guard: ' + reason }) + '\n')
   else if (reason) {
-    process.stderr.write('seat-router owner guard: ' + reason + '\n')
-    process.exit(2)
+    const hookSpecificOutput = { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: 'seat-router owner guard: ' + reason }
+    process.stdout.write(JSON.stringify({ hookSpecificOutput }) + '\n')
   }
 }
