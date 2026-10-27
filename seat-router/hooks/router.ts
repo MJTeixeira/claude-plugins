@@ -35,6 +35,11 @@ const usageReading = new Map<UsageSource, Promise<string | undefined>>()
 // The shell tools Claude Code runs commands through.
 export const SHELL_TOOLS = ['Bash', 'PowerShell']
 const NO_SHELL_NOTE = 'This seat has no shell: Bash and PowerShell are refused here. Read, search and edit files with your file tools, and say in your report what you could not run.\n'
+// agy's Windows sandbox refuses to change into the seat's folder or any folder under it,
+// so git that enters its work tree and any tool that changes folder fail there.
+const AGY_WINDOWS_NOTE = 'On this machine your shell cannot change into this folder or any folder under it, so `git status`, '
+  + '`git diff` against the working tree, and tools that change folder (pytest, npm) fail here. Use `git log`, `git show`, '
+  + '`git diff <rev> <rev>` and `git ls-files`, read files with your file tools, and say in your report what you could not run.\n'
 type AgentInput = Extract<ToolCallInput, { tool: 'Agent' }>
 export type ExternalVendor = Exclude<SeatVendor, 'claude'>
 
@@ -873,10 +878,13 @@ async function launchAccount($: EngineInterface, seat: Seat & { account: string 
 // does: its shell reaches the network, .git, Docker and the rest of the machine, and
 // owner-guard.mjs is the fence. A reviewer stays in the sandbox, writing only its folder.
 async function launch($: EngineInterface, seat: Seat): Promise<void> {
-  await $.fs.write(join(seat.dir, 'brief.md'), seat.brief)
-  if (seat.account !== undefined) return launchAccount($, { ...seat, account: seat.account })
+  if (seat.account !== undefined) {
+    await $.fs.write(join(seat.dir, 'brief.md'), seat.brief)
+    return launchAccount($, { ...seat, account: seat.account })
+  }
   const windows = await isWindows($)
   const isOwner = seat.tier === 'owner'
+  await $.fs.write(join(seat.dir, 'brief.md'), seat.brief + (windows && seat.vendor === 'agy' && !isOwner ? '\n' + AGY_WINDOWS_NOTE : ''))
   const spec: LaunchSpec = seat.vendor === 'codex' ? {
     argv: [
       'codex', 'exec', '--json', '-m', seat.model, '-c', 'model_reasoning_effort=' + seat.effort,
