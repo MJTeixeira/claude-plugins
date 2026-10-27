@@ -588,29 +588,6 @@ export async function saveOptions($: EngineInterface, values: Record<string, str
   return saved.exitCode === 0 ? undefined : saved.stderr.trim() || '`claude plugin configure` exited ' + saved.exitCode
 }
 
-// agy reads only its workspace: the folders its brief names by absolute path
-// (`/…`, `~/…`, or `C:\…` on Windows), outside the seat's own, are granted
-// read-only. A root, HOME and a folder that holds HOME are never granted.
-async function briefReads($: EngineInterface, seat: Pick<Seat, 'brief' | 'dir' | 'workDir'>): Promise<string[]> {
-  const found = await homeDir($)
-  const home = found === undefined ? undefined : slashed(found)
-  const folders = new Set<string>()
-  for (const match of seat.brief.matchAll(/(?:^|[\s`'"(<[])(~?\/[\w.@+\/-]+|[A-Za-z]:[\\/][\w.@+\\\/-]*)/g)) {
-    const named = slashed(match[1] ?? '').replace(/[.,:;]+$/, '').replace(/\/+$/, '')
-    const path = named.startsWith('~/') ? (home === undefined ? '' : home + named.slice(1)) : named
-    if (!path.startsWith('/') && !/^[A-Za-z]:\//.test(path)) continue
-    let kind: string
-    try { kind = (await $.fs.stat(path)).kind } catch { continue }
-    const folder = kind === 'dir' ? path : path.slice(0, path.lastIndexOf('/'))
-    const inside = (root: string) => folder === slashed(root) || folder.startsWith(slashed(root) + '/')
-    // Without case, as Windows and macOS compare paths.
-    const holdsHome = home !== undefined && (home.toLowerCase() + '/').startsWith(folder.toLowerCase() + '/')
-    if (!folder || /^[A-Za-z]:$/.test(folder) || holdsHome || inside(seat.workDir) || inside(seat.dir)) continue
-    folders.add(folder)
-  }
-  return [...folders].sort()
-}
-
 // Why owner-guard.mjs refuses a shell command, or undefined when it may run: the
 // guard of a Claude subagent that runs an owner seat, as codex and agy owners have.
 export async function ownerGuardReason($: EngineInterface, command: string): Promise<string | undefined> {
@@ -911,8 +888,10 @@ export async function probeCodexSandbox($: EngineInterface): Promise<void> {
 // a Claude account owner does, and owner-guard.mjs is the fence. A codex owner leaves its
 // sandbox only for what codex's auto-reviewer approves (`--approve-for-me`), except on
 // Windows, where codex's sandboxes break the tools an owner runs (openai/codex#19791,
-// #47868) and it runs outside the sandbox; agy offers no reviewer to a headless run, so an
-// agy owner runs outside its sandbox. A reviewer stays in the sandbox, writing only its folder.
+// #47868) and it runs outside the sandbox. A codex reviewer stays in the sandbox, writing
+// only its folder. agy offers no reviewer to a headless run, and its sandbox refuses the
+// tools a seat needs (on Windows node cannot even stat %APPDATA%, so no npm-installed CLI
+// starts), so every agy seat runs outside it behind the guard.
 async function launch($: EngineInterface, seat: Seat): Promise<void> {
   if (seat.account !== undefined) {
     await $.fs.write(join(seat.dir, 'brief.md'), seat.brief)
@@ -957,31 +936,13 @@ async function launch($: EngineInterface, seat: Seat): Promise<void> {
   } : {
     argv: [
       'agy', '--output-format', 'stream-json', '--model', seat.model, '--effort', agyEffort(seat.effort),
-      ...(isOwner ? ['--dangerously-skip-permissions'] : ['--sandbox', '--mode', 'accept-edits']), '-p', { file: join(seat.dir, 'brief.md') },
+      '--dangerously-skip-permissions', '-p', { file: join(seat.dir, 'brief.md') },
     ],
     cwd: seat.workDir,
-    home: isOwner ? ['owner', '--home', join(seat.dir, 'home')] : [
-      '--home', join(seat.dir, 'home'), '--write', slashed(seat.workDir), ...(await agyReads($, seat)).flatMap(folder => ['--read', folder]),
-    ],
+    home: [...(isOwner ? ['owner'] : []), '--home', join(seat.dir, 'home')],
     stdout: join(seat.dir, 'agy.jsonl'), stderr: join(seat.dir, 'agy.err'), exit: join(seat.dir, 'exit'), pid: join(seat.dir, 'pid'),
   }
-  await start($, seat, spec, isOwner ? await ownerEnv($) : undefined)
-}
-
-// A reviewer in a worktree also reads the worktree's git folders, which live in the
-// repository's own `.git`: without them every git command it runs fails.
-async function agyReads($: EngineInterface, seat: Seat): Promise<string[]> {
-  const git = seat.worktreePath === undefined ? [] : (await gitDirs($, seat.workDir)).map(slashed)
-  return [...new Set([...await briefReads($, seat), ...git, ...await toolReads($)])].sort()
-}
-
-// The folders under home an agy reviewer reads so the tools installed there run, by
-// their real paths (bin/tool-reads.mjs says which).
-async function toolReads($: EngineInterface): Promise<string[]> {
-  const home = await homeDir($)
-  if (home === undefined) return []
-  const ran = await $.process.run(['node', join($.plugin.root, 'bin', 'tool-reads.mjs'), home, await $.env.get('PATH') ?? ''], { timeoutMs: 10_000 })
-  return ran.exitCode === 0 ? ran.stdout.split('\n').map(line => line.trim()).filter(Boolean) : []
+  await start($, seat, spec, isOwner || seat.vendor === 'agy' ? await ownerEnv($) : undefined)
 }
 
 // What run-seat.mjs starts: a CLI (`{ file }` in argv is that file's text) or a wait.

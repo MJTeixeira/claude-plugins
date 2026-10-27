@@ -22,25 +22,19 @@ An explicit line runs exactly that model; it moves only when that vendor is out,
 candidates of the size its effort stands for (low or medium is light, high standard, xhigh or max
 heavy).
 
-- `reviewer` seats are sandboxed to their folder, with no network and no `.git` writes. A seat called without
-  `isolation: "worktree"` starts in an empty folder and reads only the absolute paths its brief names (never a drive
-  root, your home folder or a folder that holds it, such as `/Users` or `C:\Users`), so the session
-  is told to pass the worktree for any seat that reads the repository, a review included. A codex
+- `reviewer` seats report and are not meant to commit. A codex reviewer is sandboxed to its folder, with no
+  network and no `.git` writes; an agy reviewer runs outside agy's sandbox, as an owner does. A seat called without
+  `isolation: "worktree"` starts in an empty folder, so the session is told to pass the worktree for any seat that reads the repository, a review included. A codex
   reviewer also runs without your `~/.codex/config.toml` (so none of your codex MCP servers start)
   and with codex's apps, plugins and web search off. This needs codex-cli 0.163 or later; an older
   codex refuses the flags and the seat moves to its next model. An agy reviewer starts none of your
   agy MCP servers.
-- An agy reviewer in a worktree may read the worktree's git folders. It also reads the `bin` folders on your PATH
-  under your home folder, and the `lib` beside one that sits in a version manager's tree (`versions`,
-  `candidates`, `installs` or `toolchains`: nvm's node and npm, sdkman's java), since agy's sandbox hides
-  the home folder; never the install around them (nvm's `etc/npmrc` can hold registry tokens), nor anything
-  else under home, whatever PATH names. It decides on real paths (`bin/tool-reads.mjs`), so `..` or a symlink
-  in PATH cannot reach home or a folder such as `~/.ssh`.
-  Its own folder is granted for writing
-  (`write_file`): headless agy registers no workspace, and on Windows its sandbox would otherwise mount
-  that folder read-only and refuse even changing into it. When agy refuses an action but the
+- Every agy seat runs outside agy's sandbox (`--dangerously-skip-permissions`), behind the guard below.
+  agy offers no reviewer to a headless run, and its sandbox refuses what a seat needs: on Windows node
+  cannot even read the attributes of `%APPDATA%`, so no npm-installed CLI starts, and no read grant fixes
+  it. Permissions narrow later, once seats do their work. When agy refuses an action but the
   seat still answers, the answer is its report, with a line naming what agy refused; a seat that did not
-  answer fails and moves on. An agy owner whose guard hook could not run fails too, though agy calls
+  answer fails and moves on. An agy seat whose guard hook could not run fails too, though agy calls
   the run a success.
 - On Windows a codex reviewer runs codex's mxc sandbox where it starts (Windows 11 24H2 26100.9278 or
   25H2 26200.9278 and later; each session start checks, and a seat launched before the first check
@@ -58,8 +52,7 @@ heavy).
   owner runs in codex's sandbox and leaves it only for what codex's auto-reviewer approves
   (`--approve-for-me`): each commit, push or Docker call waits on a review, and codex ends the turn after
   three refusals in a row. On Windows a codex owner runs outside the sandbox (`danger-full-access`),
-  where codex's sandboxes break the tools an owner runs. An agy owner runs outside its sandbox (without
-  `--sandbox`, with `--dangerously-skip-permissions`), since agy offers no reviewer to a headless run. Force-push, `git reset --hard`, `rm -rf`,
+  where codex's sandboxes break the tools an owner runs. An agy owner runs outside its sandbox (`--dangerously-skip-permissions`), as an agy reviewer does. Force-push, `git reset --hard`, `rm -rf`,
   `gh pr merge --admin` and `gh repo delete` stay refused, however the command spells them
   (`git -C . reset --hard`, `rm -fr`): a PreToolUse hook (`bin/owner-guard.mjs`) checks every command
   and refuses with a deny decision, never exit 2, which codex on Windows reports as 1 and lets pass.
