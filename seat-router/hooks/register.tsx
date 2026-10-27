@@ -14,7 +14,7 @@ import { autoCandidates, familyOf, formatCandidate, parseAccounts, parseCandidat
 import type { Candidate, Family, Size } from './chain'
 import {
   accountNames, accountSetting, chooseInitial, claudeBrief, cliModels, delegateOf, delegateReason, delegateSetting, formatAccounts, foundAccounts, installedVendors, isRotating, ownerGuardReason, parseMarker, runningFamilies,
-  saveOptions, seatConfigFrom, setAccounts, setDelegate, setSeatConfig, setSize, SHELL_TOOLS, sizeCandidates, pruneSeats, singleFlightPoll, singleFlightQuotaRefresh, startExternal, stopSeat,
+  saveOptions, seatConfigFrom, setAccounts, setDelegate, setSeatConfig, setSize, SHELL_TOOLS, sizeCandidates, probeCodexSandbox, pruneSeats, singleFlightPoll, singleFlightQuotaRefresh, startExternal, stopSeat,
 } from './router'
 import type { Delegate, ExternalVendor, FoundAccount } from './router'
 
@@ -355,6 +355,7 @@ export const register: Register = (on, options) => {
       isDeferred: false,
     })
     void pruneSeats($).catch(() => undefined)
+    void probeCodexSandbox($).catch(() => undefined)
     $.clock.every(5_000, () => singleFlightPoll($))
     void singleFlightPoll($)
     $.clock.every(120_000, () => singleFlightQuotaRefresh($))
