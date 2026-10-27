@@ -21,8 +21,8 @@ const REMOVERS = ['rm', 'remove-item', 'ri', 'del', 'erase', 'rd', 'rmdir']
 const DEFAULT_BRANCHES = ['main', 'master', 'dev', 'develop', 'trunk']
 const PUSH_VALUE_OPTIONS = ['--repo', '--receive-pack', '--exec', '-o', '--push-option']
 
-/** A command line as simple commands, each a list of words; quotes are honoured, and every shell operator ends a command. */
-export function commands(line) {
+/** A command line as simple commands, each a list of words; quotes are honoured, and every shell operator ends a command. A `\` escapes the next character as in a POSIX shell; read the `windows` way, `\` is an ordinary character and cmd's `^` and PowerShell's `` ` `` escape the next one instead. */
+export function commands(line, windows = false) {
   const found = []
   let words = []
   let word = ''
@@ -48,10 +48,10 @@ export function commands(line) {
     } else if (char === '"') {
       started = true
       for (index += 1; index < line.length && line[index] !== '"'; index += 1) {
-        if (line[index] === '\\' && index + 1 < line.length) index += 1
+        if (!windows && line[index] === '\\' && index + 1 < line.length) index += 1
         word += line[index]
       }
-    } else if (char === '\\' && index + 1 < line.length && line[index + 1] !== '\n') {
+    } else if ((windows ? char === '^' || char === '`' : char === '\\') && index + 1 < line.length && line[index + 1] !== '\n') {
       word += line[index + 1]
       started = true
       index += 1
@@ -120,7 +120,7 @@ function refusal(words, branch) {
   if (!first) return undefined
   const name = programName(first)
   if (SHELLS.includes(name)) {
-    const script = args.findIndex(arg => /^-[a-z]*c$/i.test(arg) || /^\/c$/i.test(arg) || /^-(command|c)$/i.test(arg))
+    const script = args.findIndex(arg => /^-[a-z]*c$/i.test(arg) || /^\/c$/i.test(arg) || /^-c(o(m(m(a(n(d)?)?)?)?)?)?$/i.test(arg))
     return script === -1 ? undefined : check(args.slice(script + 1).join(' '), branch)
   }
   if (name === 'git') {
@@ -152,11 +152,17 @@ function refusal(words, branch) {
   return undefined
 }
 
-/** Why a command line is refused, or undefined when it may run; `branch` is the one checked out where it runs. */
+/**
+ * Why a command line is refused, or undefined when it may run; `branch` is the one checked out where it runs.
+ * The shell that runs a line is unknown: codex on Windows hands over `"C:\WINDOWS\...\powershell.exe" -Command '...'`,
+ * where a POSIX reading drops every `\`. A line is refused when either its POSIX or its Windows reading refuses it.
+ */
 export function check(line, branch) {
-  for (const words of commands(line)) {
-    const reason = refusal(words, branch)
-    if (reason) return reason
+  for (const windows of [false, true]) {
+    for (const words of commands(line, windows)) {
+      const reason = refusal(words, branch)
+      if (reason) return reason
+    }
   }
   return undefined
 }
