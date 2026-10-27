@@ -8,8 +8,11 @@
 // its deny list keeps the irreversible commands out besides. Nothing under the
 // operator's ~/.gemini is touched. `--home DIR` builds the HOME at DIR instead of the
 // shared one, so one seat's grants never reach another. Each `--read DIR` lets
-// the seat read DIR and everything under it; writes there stay refused.
-// Usage: node agy-seat-home.mjs [owner] [--home DIR] [--read DIR]...
+// the seat read DIR and everything under it; writes there stay refused. `--write DIR`
+// lets it write DIR too: headless agy registers no workspace, so on Windows its
+// AppContainer otherwise mounts the seat's own folder read-only, and even changing
+// into it is refused.
+// Usage: node agy-seat-home.mjs [owner] [--home DIR] [--write DIR]... [--read DIR]...
 import { copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, rmdirSync, statSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
@@ -24,6 +27,7 @@ while (args.length) {
   const arg = args.shift()
   if (arg === 'owner') tier = 'owner'
   else if (arg === '--home') home = args.shift()
+  else if (arg === '--write') reads.push(`write_file(${args.shift()})`)
   else if (arg === '--read') reads.push(`read_file(${args.shift()})`)
   else {
     console.error(`agy-seat-home: unknown argument ${arg}`)
