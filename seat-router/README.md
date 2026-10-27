@@ -29,7 +29,10 @@ heavy).
   and with codex's apps, plugins and web search off. This needs codex-cli 0.163 or later; an older
   codex refuses the flags and the seat moves to its next model. An agy reviewer starts none of your
   agy MCP servers.
-- An agy reviewer in a worktree may read the worktree's git folders. When agy refuses an action but the
+- An agy reviewer in a worktree may read the worktree's git folders. On Windows agy's sandbox refuses to
+  change into the seat's folder or any folder under it, so `git status`, `git diff` against the working
+  tree and tools that change folder fail there; an agy reviewer's brief says so and names the git
+  commands that work (`git log`, `git show`, `git diff <rev> <rev>`, `git ls-files`). When agy refuses an action but the
   seat still answers, the answer is its report, with a line naming what agy refused; a seat that did not
   answer fails and moves on. An agy owner whose guard hook could not run fails too, though agy calls
   the run a success.
