@@ -885,11 +885,9 @@ export async function probeCodexSandbox($: EngineInterface): Promise<void> {
 }
 
 // A codex or agy owner reaches the network, .git, Docker and the rest of the machine, as
-// a Claude account owner does, and owner-guard.mjs is the fence. A codex owner leaves its
-// sandbox only for what codex's auto-reviewer approves (`--approve-for-me`), except on
-// Windows, where codex's sandboxes break the tools an owner runs (openai/codex#19791,
-// #47868) and it runs outside the sandbox. A codex reviewer stays in the sandbox, writing
-// only its folder. agy offers no reviewer to a headless run, and its sandbox refuses the
+// a Claude account owner does, and owner-guard.mjs is the fence: a codex owner runs
+// outside codex's sandbox (`danger-full-access`), since an auto-reviewed escalation waits
+// on every commit and push. A codex reviewer stays in the sandbox, writing only its folder. agy offers no reviewer to a headless run, and its sandbox refuses the
 // tools a seat needs (on Windows node cannot even stat %APPDATA%, so no npm-installed CLI
 // starts), so every agy seat runs outside it behind the guard.
 async function launch($: EngineInterface, seat: Seat): Promise<void> {
@@ -909,7 +907,7 @@ async function launch($: EngineInterface, seat: Seat): Promise<void> {
   const spec: LaunchSpec = seat.vendor === 'codex' ? {
     argv: [
       'codex', 'exec', '--json', '-m', seat.model, '-c', 'model_reasoning_effort=' + seat.effort,
-      ...(!isOwner ? ['-s', 'workspace-write'] : windows ? ['-s', 'danger-full-access'] : ['--approve-for-me']),
+      '-s', isOwner ? 'danger-full-access' : 'workspace-write',
       '--skip-git-repo-check', '-C', seat.workDir,
       // A reviewer is held to its folder: the user's config would start their MCP servers
       // (computer use among them), and codex's apps, plugins and web search reach the network

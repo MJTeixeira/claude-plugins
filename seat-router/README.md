@@ -49,10 +49,7 @@ heavy).
   them, seat folders go under `%PUBLIC%\seat-router`, which every local user of the machine can read.
 - `owner` seats may commit, push and open pull requests, with your codex and agy config. Their commands
   reach the network, `.git`, Docker and the rest of the machine, as a Claude account owner's do. A codex
-  owner runs in codex's sandbox and leaves it only for what codex's auto-reviewer approves
-  (`--approve-for-me`): each commit, push or Docker call waits on a review, and codex ends the turn after
-  three refusals in a row. On Windows a codex owner runs outside the sandbox (`danger-full-access`),
-  where codex's sandboxes break the tools an owner runs. An agy owner runs outside its sandbox (`--dangerously-skip-permissions`), as an agy reviewer does. Force-push, `git reset --hard`, `rm -rf`,
+  owner runs outside codex's sandbox (`danger-full-access`). An agy owner runs outside its sandbox (`--dangerously-skip-permissions`), as an agy reviewer does. Force-push, `git reset --hard`, `rm -rf`,
   `gh pr merge --admin` and `gh repo delete` stay refused, however the command spells them
   (`git -C . reset --hard`, `rm -fr`): a PreToolUse hook (`bin/owner-guard.mjs`) checks every command
   and refuses with a deny decision, never exit 2, which codex on Windows reports as 1 and lets pass.
