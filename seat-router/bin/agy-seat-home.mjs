@@ -81,7 +81,10 @@ if (tier === 'owner') {
   const operator = join(real, '.gemini', 'config', 'hooks.json')
   const hooks = existsSync(operator) ? JSON.parse(readFileSync(operator, 'utf8')) : {}
   const guard = join(dirname(fileURLToPath(import.meta.url)), 'owner-guard.mjs').replaceAll('\\', '/')
-  hooks['seat-router-owner-guard'] = { PreToolUse: [{ matcher: 'run_command', hooks: [{ command: `node "${guard}"` }] }] }
+  // agy on Windows hands the command to node with its quotes still in the path, so the
+  // path is quoted only when it has to be.
+  const command = /\s/.test(guard) ? `node "${guard}"` : `node ${guard}`
+  hooks['seat-router-owner-guard'] = { PreToolUse: [{ matcher: 'run_command', hooks: [{ command }] }] }
   writeFileSync(join(config, 'hooks.json'), JSON.stringify(hooks, null, 2) + '\n')
   // git identity and gh config, read where the operator keeps them
   link(join(real, '.gitconfig'), join(seat, '.gitconfig'))
