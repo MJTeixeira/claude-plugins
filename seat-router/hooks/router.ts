@@ -40,6 +40,11 @@ const NO_SHELL_NOTE = 'This seat has no shell: Bash and PowerShell are refused h
 const AGY_WINDOWS_NOTE = 'On this machine your shell cannot change into this folder or any folder under it, so `git status`, '
   + '`git diff` against the working tree, and tools that change folder (pytest, npm) fail here. Use `git log`, `git show`, '
   + '`git diff <rev> <rev>` and `git ls-files`, read files with your file tools, and say in your report what you could not run.\n'
+// codex's Windows sandbox refuses every process node starts (EPERM), whatever the
+// program; PowerShell and python start them.
+const CODEX_WINDOWS_NOTE = 'On this machine node cannot start other programs here (EPERM), so npm scripts and node tools '
+  + 'that run git or another program (depcruise, vitest\'s changed mode) fail. Run git and other programs from PowerShell '
+  + 'or python, and say in your report what you could not run.\n'
 type AgentInput = Extract<ToolCallInput, { tool: 'Agent' }>
 export type ExternalVendor = Exclude<SeatVendor, 'claude'>
 
@@ -886,7 +891,8 @@ async function launch($: EngineInterface, seat: Seat): Promise<void> {
   }
   const windows = await isWindows($)
   const isOwner = seat.tier === 'owner'
-  await $.fs.write(join(seat.dir, 'brief.md'), seat.brief + (windows && seat.vendor === 'agy' && !isOwner ? '\n' + AGY_WINDOWS_NOTE : ''))
+  const note = !windows || isOwner ? '' : seat.vendor === 'agy' ? AGY_WINDOWS_NOTE : CODEX_WINDOWS_NOTE
+  await $.fs.write(join(seat.dir, 'brief.md'), seat.brief + (note ? '\n' + note : ''))
   const spec: LaunchSpec = seat.vendor === 'codex' ? {
     argv: [
       'codex', 'exec', '--json', '-m', seat.model, '-c', 'model_reasoning_effort=' + seat.effort,
