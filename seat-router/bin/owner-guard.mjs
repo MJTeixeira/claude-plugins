@@ -1,7 +1,12 @@
 #!/usr/bin/env node
 // The owner seat's PreToolUse hook on codex and agy: refuses the commands an
-// owner may never run (force push, git reset --hard, rm -rf, gh pr merge
-// --admin, gh repo delete) however the command line spells them. One force push
+// owner may never run (force push, git reset --hard, git worktree remove or move,
+// git branch -D, rm -rf, gh pr merge --admin, gh repo delete) however the command
+// line spells them. Every worktree is refused: another is someone else's checkout,
+// and the mod removes the seat's own when the seat ends, keeping it when it holds
+// uncommitted work. For the same reason clean -f, checkout, restore and a forced
+// switch are refused when -C, --work-tree or GIT_WORK_TREE aim them at another
+// directory than the one the command runs in. One force push
 // passes: `--force-with-lease=<branch>:<sha>` to the branch checked out where the
 // command runs, when that is no default branch, as a rebase flow needs. The CLIs'
 // own prefix rules miss `git -C . reset --hard`, `rm -fr` and any line their
@@ -14,6 +19,7 @@
 // Usage: node owner-guard.mjs < hook-input.json
 import { spawnSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const SHELLS = ['sh', 'bash', 'zsh', 'dash', 'ksh', 'fish', 'pwsh', 'powershell', 'cmd']
@@ -117,13 +123,37 @@ function isLeasedPush(args, branch) {
   })
 }
 
-function refusal(words, branch) {
+// Where a git command's working tree is: `cwd` moved by each `-C`, then `--work-tree` or GIT_WORK_TREE.
+function gitTree(options, assigned, cwd) {
+  let dir = cwd
+  let tree = assigned === undefined ? undefined : resolve(cwd, assigned)
+  for (let index = 0; index < options.length; index += 1) {
+    if (options[index] === '-C') dir = resolve(dir, options[index + 1] ?? '')
+    else if (options[index] === '--work-tree') tree = resolve(dir, options[index + 1] ?? '')
+    else if (options[index].startsWith('--work-tree=')) tree = resolve(dir, options[index].slice('--work-tree='.length))
+    if (GIT_VALUE_OPTIONS.includes(options[index])) index += 1
+  }
+  return tree ?? dir
+}
+
+const samePath = (a, b) => process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b
+
+// `checkout` discards work with no flag too: `checkout <path>` reads like `checkout <branch>`.
+// `switch` takes no paths.
+function discardsWork(sub, rest) {
+  const forced = rest.includes('--force') || rest.some(arg => shortFlags(arg).includes('f'))
+  return (sub === 'clean' && forced) || sub === 'checkout' || sub === 'restore'
+    || (sub === 'switch' && (forced || rest.includes('--discard-changes')))
+}
+
+function refusal(words, branch, cwd) {
+  const assigned = words.find(word => word.startsWith('GIT_WORK_TREE='))?.slice('GIT_WORK_TREE='.length)
   const [first, ...args] = strip(words)
   if (!first) return undefined
   const name = programName(first)
   if (SHELLS.includes(name)) {
     const script = args.findIndex(arg => /^-[a-z]*c$/i.test(arg) || /^\/c$/i.test(arg) || /^-c(o(m(m(a(n(d)?)?)?)?)?)?$/i.test(arg))
-    return script === -1 ? undefined : check(args.slice(script + 1).join(' '), branch)
+    return script === -1 ? undefined : check(args.slice(script + 1).join(' '), branch, cwd)
   }
   if (name === 'git') {
     let index = 0
@@ -133,6 +163,17 @@ function refusal(words, branch) {
     const sub = args[index]
     const rest = args.slice(index + 1)
     if (sub === 'reset' && rest.includes('--hard')) return 'Use a reversible Git operation instead of git reset --hard.'
+    if (sub === 'worktree' && (rest[0] === 'remove' || rest[0] === 'move')) {
+      return 'Leave every worktree where it is and, when a branch you need is checked out in another, work from a new branch or a detached HEAD.'
+    }
+    if (discardsWork(sub, rest) && !samePath(gitTree(args.slice(0, index), assigned, cwd), resolve(cwd))) {
+      return 'Discard changes only in the worktree the command runs in: another worktree is someone else\'s checkout.'
+    }
+    const short = rest.map(shortFlags).join('')
+    const deletes = short.includes('d') || rest.includes('--delete')
+    if (sub === 'branch' && (short.includes('D') || (deletes && (short.includes('f') || rest.includes('--force'))))) {
+      return 'Delete a branch only with git branch -d, which keeps unmerged commits: another agent may own the branch.'
+    }
     if (sub === 'push' && !isLeasedPush(rest, branch) && rest.some(arg => arg === '--force' || arg.startsWith('--force-with-lease') || arg === '--force-if-includes'
       || shortFlags(arg).includes('f') || (arg.startsWith('+') && arg.length > 1))) {
       return 'Use a non-force push, or --force-with-lease=<branch>:<sha> onto the branch checked out here.'
@@ -159,10 +200,10 @@ function refusal(words, branch) {
  * The shell that runs a line is unknown: codex on Windows hands over `"C:\WINDOWS\...\powershell.exe" -Command '...'`,
  * where a POSIX reading drops every `\`. A line is refused when either its POSIX or its Windows reading refuses it.
  */
-export function check(line, branch) {
+export function check(line, branch, cwd = process.cwd()) {
   for (const windows of [false, true]) {
     for (const words of commands(line, windows)) {
-      const reason = refusal(words, branch)
+      const reason = refusal(words, branch, cwd)
       if (reason) return reason
     }
   }
@@ -175,7 +216,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const line = agy ?? input.tool_input?.command
   const cwd = input.toolCall?.args?.Cwd ?? input.workspacePaths?.[0] ?? input.cwd ?? process.cwd()
   const branch = () => spawnSync('git', ['-C', cwd, 'branch', '--show-current'], { encoding: 'utf8', windowsHide: true }).stdout?.trim()
-  const reason = typeof line === 'string' ? check(line, /\bpush\b/.test(line) ? branch() : undefined) : undefined
+  const reason = typeof line === 'string' ? check(line, /\bpush\b/.test(line) ? branch() : undefined, cwd) : undefined
   if (reason && agy !== undefined) process.stdout.write(JSON.stringify({ decision: 'deny', reason: 'seat-router owner guard: ' + reason }) + '\n')
   else if (reason) {
     const hookSpecificOutput = { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: 'seat-router owner guard: ' + reason }

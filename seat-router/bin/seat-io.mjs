@@ -51,6 +51,7 @@ async function grep(flags, source, files) {
         count += 1
         if (flags.includes('q')) process.exit(0)
         if (flags.includes('o')) out += found.map(match => match[0] + '\n').join('')
+        else if (!flags.includes('c')) out += line + '\n'
       }
     } catch {}
   }
