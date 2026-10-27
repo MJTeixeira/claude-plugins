@@ -37,7 +37,8 @@ heavy).
   seat still answers, the answer is its report, with a line naming what agy refused; a seat that did not
   answer fails and moves on. An agy owner whose guard hook could not run fails too, though agy calls
   the run a success.
-- On Windows a codex reviewer runs codex's unelevated sandbox, and codex seats start without the
+- On Windows a codex reviewer runs codex's unelevated sandbox, where node cannot start other programs
+  (npm scripts and node tools that run git fail; its brief says so and points it to PowerShell or python), and codex seats start without the
   `WindowsApps` folders on PATH (the Store's `pwsh.exe` cannot start inside that sandbox). The
   sandbox cannot write to a folder whose path has non-ASCII letters, so when your profile path has
   them, seat folders go under `%PUBLIC%\seat-router`, which every local user of the machine can read.
