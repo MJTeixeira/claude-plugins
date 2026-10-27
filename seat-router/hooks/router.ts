@@ -1017,18 +1017,26 @@ function reportText(seat: Seat, text: string, worktree?: string): string {
   return lines.join('\n')
 }
 
-function agyResult(jsonl: string): { text: string, valid: boolean, denied: string[] } {
+// agy reports a seat whose guard hook crashed as a success: every shell command failed
+// with the hook's error, which shows only in the tool steps.
+const GUARD_CRASH = /^JSON hook "jsonhook__seat-router-owner-guard_[^"]*" failed:/
+
+function agyResult(jsonl: string): { text: string, valid: boolean, denied: string[], guardCrashed: boolean } {
   let last: Record<string, unknown> | undefined
+  let guardCrashed = false
   for (const line of jsonl.split('\n')) {
     const parsed = asObject(readJson(line))
-    if (parsed) last = parsed
+    if (!parsed) continue
+    last = parsed
+    const error = asObject(asObject(asObject(parsed.step_update)?.tool_info)?.error)
+    if (GUARD_CRASH.test(textAt(error?.message) ?? '')) guardCrashed = true
   }
-  if (last?.event !== 'result' && last?.type !== 'result') return { text: '', valid: false, denied: [] }
+  if (last?.event !== 'result' && last?.type !== 'result') return { text: '', valid: false, denied: [], guardCrashed }
   const result = asObject(last?.result)
   // agy leaves denied_actions out when nothing was refused.
   const denied = result?.denied_actions
   const names = Array.isArray(denied) ? denied.map(action => textAt(asObject(action)?.action) ?? '?') : []
-  return { text: textAt(result?.response) ?? '', valid: result?.status === 'SUCCESS', denied: names }
+  return { text: textAt(result?.response) ?? '', valid: result?.status === 'SUCCESS', denied: names, guardCrashed }
 }
 
 export function failedSeat(vendor: ExternalVendor, exitCode: number | undefined, text: string, transcript: string, stderr: string): Check {
@@ -1051,9 +1059,10 @@ export function failedSeat(vendor: ExternalVendor, exitCode: number | undefined,
 export function failedAgy(exitCode: number | undefined, jsonl: string, stderr: string): Check {
   const result = agyResult(jsonl)
   const base = failedSeat('agy', exitCode, result.text, jsonl, stderr)
-  const failed = base.failed || !result.valid
+  const failed = base.failed || !result.valid || result.guardCrashed
   const refused = result.denied.length ? 'denied ' + result.denied.join(', ') : ''
-  const detail = base.quota ? base.detail : [base.detail || (!result.valid ? 'agy result failed' : ''), failed ? refused : ''].filter(Boolean).join(', ')
+  const reason = base.detail || (result.guardCrashed ? 'owner guard could not run' : !result.valid ? 'agy result failed' : '')
+  const detail = base.quota ? base.detail : [reason, failed ? refused : ''].filter(Boolean).join(', ')
   return { ...base, failed, detail, ...(result.denied.length ? { refused: result.denied } : {}) }
 }
 
