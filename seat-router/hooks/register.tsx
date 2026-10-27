@@ -10,13 +10,13 @@ import {
 import type { Card } from './art'
 import { cardRaster, headerRaster, queueRaster, quotaRaster, runningRaster } from './raster'
 import type { Drawing } from './raster'
-import { autoCandidates, familyOf, formatCandidate, parseCandidates, SIZES } from './chain'
+import { autoCandidates, familyOf, formatCandidate, parseAccounts, parseCandidates, SIZES } from './chain'
 import type { Candidate, Family, Size } from './chain'
 import {
-  chooseInitial, claudeBrief, cliModels, delegateOf, delegateReason, delegateSetting, installedVendors, ownerGuardReason, parseMarker, runningFamilies, saveOptions, seatConfigFrom,
-  setDelegate, setSeatConfig, setSize, sizeCandidates, pruneSeats, singleFlightPoll, singleFlightQuotaRefresh, startExternal, stopSeat,
+  accountNames, accountSetting, chooseInitial, claudeBrief, cliModels, delegateOf, delegateReason, delegateSetting, formatAccounts, foundAccounts, installedVendors, isRotating, ownerGuardReason, parseMarker, runningFamilies,
+  saveOptions, seatConfigFrom, setAccounts, setDelegate, setSeatConfig, setSize, SHELL_TOOLS, sizeCandidates, pruneSeats, singleFlightPoll, singleFlightQuotaRefresh, startExternal, stopSeat,
 } from './router'
-import type { Delegate, ExternalVendor } from './router'
+import type { Delegate, ExternalVendor, FoundAccount } from './router'
 
 const seatsState = atom({ plugin: 'seat-router', key: 'seats' } as const, [], { shape: 'seat-display-3' })
 const quotasState = atom({ plugin: 'seat-router', key: 'quotas' } as const, {}, { shape: 'quota-windows-1' })
@@ -29,7 +29,7 @@ const seatPanelState = atom({ plugin: 'seat-router', key: 'seatPanel' } as const
 const PANE = 'seats'
 
 // The seat rules, naming only the CLIs this machine has and the candidates they serve.
-const seatRules = (vendors: readonly ExternalVendor[], sizes: Record<Size, Candidate[]>, mixFanouts: boolean): string => {
+const seatRules = (vendors: readonly ExternalVendor[], sizes: Record<Size, Candidate[]>, mixFanouts: boolean, accounts: readonly string[]): string => {
   const usable = (size: Size) => sizes[size].filter(candidate => candidate.vendor === 'claude' || vendors.includes(candidate.vendor as ExternalVendor))
   const others = [...new Set(SIZES.flatMap(size => usable(size).map(familyOf)))].filter((family): family is Exclude<Family, 'claude' | 'other'> => family !== 'claude' && family !== 'other')
   return 'The seat-router mod is loaded: an Agent call whose prompt starts with a seat line runs on another CLI ('
@@ -47,6 +47,11 @@ const seatRules = (vendors: readonly ExternalVendor[], sizes: Record<Size, Candi
     + 'brief names. A seat '
     + 'cannot be continued: give follow-up work to a fresh seat with the whole scope. The mod falls back along the size\'s '
     + 'candidates; when a report says no CLI could take the seat, start the Agent it asks for yourself, in that turn.'
+    + (accounts.length > 0
+      ? '\nOther Claude accounts on this machine: ' + accounts.join(', ') + '. `seat: <account> <light|standard|heavy> <reviewer|owner>` '
+        + 'runs that size\'s Claude model on that account, only when the person asks for it; it moves to the size\'s other candidates '
+        + 'only when the account is out of quota.'
+      : '')
     + (mixFanouts && others.length > 0
       ? '\nEvery review or verification fan-out mixes model families: beside the Claude agents, add one seat per other family ('
         + others.map(family => '`seat: ' + family + ' <size> reviewer`').join(', ') + '), all in one message.'
@@ -104,7 +109,6 @@ const LATE_MS = 9_000
 // whose shell commands pass the same owner guard as codex and agy owners.
 const ownerCalls = new Set<string>()
 const claudeOwners = new Set<string>()
-const SHELL_TOOLS = ['Bash', 'PowerShell']
 let claudePicks: number[] = []
 
 const isRunning = (status: string): boolean => status === 'running' || status === 'waiting'
@@ -113,7 +117,7 @@ const externalCard = (seat: SeatDisplay): Card => ({
   id: seat.id,
   vendor: seat.vendor,
   description: seat.description,
-  model: seat.model,
+  model: seat.account === undefined ? seat.model : seat.account + ' · ' + seat.model,
   effort: seat.effort,
   status: isRunning(seat.status) ? 'running' : 'done',
   startedAt: seat.startedAt,
@@ -226,6 +230,7 @@ const AUTO = 'Auto (recommended)'
 // Asks, size by size, which model goes first, offering the auto candidates the CLIs
 // report, then the delegate mode, and saves every answer at once.
 async function setup($: EngineInterface): Promise<string> {
+  const finding = foundAccounts($)
   const models = await cliModels($)
   const lines: string[] = []
   const sizes: Partial<Record<Size, string>> = {}
@@ -257,10 +262,13 @@ async function setup($: EngineInterface): Promise<string> {
       if (!delegate) lines.push('delegate: kept as it was; "' + answer + '" is not Auto, On or Off.')
     } catch {
       lines.push('delegate: not asked, kept as it was.')
+      asked = false
     }
   }
+  const accounts = asked ? await askAccounts($, await finding, lines) : undefined
   const values: Record<string, string> = Object.fromEntries(Object.entries(sizes).map(([size, setting]) => [size + 'Seats', setting]))
   if (delegate) values.delegate = delegate
+  if (accounts) values.claudeAccounts = formatAccounts(accounts)
   if (Object.keys(values).length === 0) return 'Seat settings:\n' + lines.join('\n')
   const refused = await saveOptions($, values)
   if (refused) return 'Seat settings not saved: ' + refused + '.\n' + lines.join('\n')
@@ -272,7 +280,41 @@ async function setup($: EngineInterface): Promise<string> {
     setDelegate(delegate)
     lines.push('delegate: ' + delegate + '.')
   }
+  if (accounts) {
+    setAccounts(accounts)
+    lines.push('accounts: ' + (formatAccounts(accounts) || 'none') + '.')
+  }
   return 'Seat settings:\n' + lines.join('\n') + '\nChange them again with /seats setup.'
+}
+
+const NO_ACCOUNTS = 'None'
+
+// Offers the other Claude accounts already set and the logged-in config folders
+// found in the home folder (searched while the other questions are asked); asks nothing when there are neither. Returns the
+// accounts to save, or undefined to keep the setting.
+async function askAccounts($: EngineInterface, found: readonly FoundAccount[], lines: string[]): Promise<Record<string, string> | undefined> {
+  const offered = { ...Object.fromEntries(found.filter(account => account.plan !== undefined).map(account => [account.name, account.dir])), ...parseAccounts(accountSetting()) }
+  const loggedOut = found.filter(account => account.plan === undefined && !(account.name in offered))
+  if (Object.keys(offered).length === 0) return undefined
+  const plans = found.filter(account => account.plan !== undefined).map(account => account.dir + ' (' + account.plan + ')')
+  const question = 'Other Claude accounts: which may seats run on? A seat line naming one (`seat: <name> standard reviewer`) runs Claude on it.'
+    + (plans.length > 0 ? ' Logged in: ' + plans.join(', ') + '.' : '')
+    + (loggedOut.length > 0 ? ' Not logged in: ' + loggedOut.map(account => account.dir).join(', ') + '.' : '')
+    + ' Under Other, type `<name> <config folder>` entries, comma-separated.'
+  let answer: string
+  try {
+    answer = await $.ui.ask(question, { header: 'Accounts', multiSelect: true, options: [...Object.entries(offered).slice(0, 3).map(([name, dir]) => name + ' ' + dir), NO_ACCOUNTS] })
+  } catch {
+    lines.push('accounts: not asked, kept as they were.')
+    return undefined
+  }
+  const picked = answer.split(',').map(entry => entry.trim()).filter(entry => entry !== '' && entry !== NO_ACCOUNTS).join(', ')
+  const accounts = parseAccounts(picked)
+  if (picked !== '' && Object.keys(accounts).length === 0) {
+    lines.push('accounts: kept as they were; "' + answer + '" is not `<name> <config folder>`.')
+    return undefined
+  }
+  return accounts
 }
 
 const DELEGATE_QUESTION = 'Delegate mode: when does code work (features, fixes, PR owners) go to owner seats on your other CLIs? '
@@ -291,7 +333,7 @@ export const register: Register = (on, options) => {
     const vendors = await installedVendors($)
     if (vendors.length === 0) return composed
     const sizes = Object.fromEntries(await Promise.all(SIZES.map(async size => [size, await sizeCandidates($, size)] as const))) as Record<Size, Candidate[]>
-    const text = seatRules(vendors, sizes, mixFanouts) + delegateRules(delegateSetting(), await delegateReason($))
+    const text = seatRules(vendors, sizes, mixFanouts, accountNames()) + delegateRules(delegateSetting(), await delegateReason($))
     return { sections: [...composed.sections, { id: 'seat-router:loaded', text, scope: 'session' }] }
   })
 
@@ -348,14 +390,13 @@ export const register: Register = (on, options) => {
     const picked = await oneAtATime(async () => {
       const now = await $.clock.now()
       claudePicks = claudePicks.filter(at => now - at < CLAUDE_PICK_MS)
-      // Only a sized line naming no CLI or family rotates across families.
-      const rotating = !('vendor' in marker) && marker.prefer === undefined
+      const rotating = isRotating(marker)
       const listed = rotating ? (await $.agent.list()).filter(agent => isRunning(agent.status)).length : 0
       const initial = await chooseInitial($, marker, rotating ? await runningFamilies($, Math.max(listed, claudePicks.length)) : {})
       // Past the engine's tool.call budget the Agent already ran as a plain subagent: a seat would run the task twice.
       if ((await $.clock.now()) - began >= LATE_MS) return { kind: 'late' as const }
       const chosen = initial.allOut ? undefined : initial.chain[initial.position ?? 0]
-      if (chosen?.vendor === 'claude') {
+      if (chosen?.vendor === 'claude' && chosen.account === undefined) {
         claudePicks.push(now)
         return { kind: 'claude' as const, claude: chosen, initial }
       }

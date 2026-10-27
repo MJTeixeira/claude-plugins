@@ -41,6 +41,39 @@ heavy).
   hook from the command line only past its trust check; for that run codex also runs any hook in your
   codex config or the repo's `.codex/` that you have not trusted.
 
+## Other Claude accounts
+
+```
+seat: <account> <light|standard|heavy> <reviewer|owner>
+<the brief>
+```
+
+A second Claude subscription on the same machine (a work account, say) lives in its own config
+folder, the one `CLAUDE_CONFIG_DIR` points at when you run it. `/seats setup` finds the `~/.claude-<name>`
+folders that are logged in and offers them, named after the folder; one kept elsewhere is typed
+under Other. Once listed under `claudeAccounts`, a seat line naming it runs the size's Claude model (sonnet high for light, opus medium for
+standard, opus high for heavy) as `claude -p` on that account. It runs only where a seat line names
+it, never by rotation, and stays on the account while its quota is busy; only when the account is
+out, or its folder is missing, does the seat move to the size's other candidates. The mod reads
+the account's quota without a model turn (`bin/claude-usage.mjs`); the band above the prompt still
+shows the session's own Claude.
+
+- A reviewer runs in Claude Code's sandbox: its shell writes only its folder and has no network,
+  its file tools are kept off `.git` (a worktree's git folders are denied by absolute path, since
+  the sandbox would leave them writable), and it gets only the tools that read and edit files
+  (`--tools`): none that fetches, publishes, schedules or messages another session, and no MCP
+  server. Should the sandbox not start, the seat fails and moves on rather than run unsandboxed.
+- On Windows, where Claude Code's sandbox does not run (it sits behind a feature gate), a reviewer
+  has no shell: Bash and PowerShell are denied, and its brief says so. It reads, searches and
+  edits with its file tools, which stay held to its folder.
+- An owner runs without permission prompts and with the account's own MCP servers; its Bash and
+  PowerShell commands pass `bin/owner-guard.mjs`, as codex and agy owners do.
+- No mod loads in the seat: nobody would see or approve what it asks. Neither the mods this
+  session loads through `--plugin-dir` or `CLAUDE_CODE_PLUGIN_DIRS` (this one among them, so a
+  seat cannot start seats) nor those the account's settings name. The account's installed
+  plugins, its skills and its settings still load; an account that installs seat-router from the
+  marketplace would give its seats the seat line too.
+
 The session learns the seat line from the mod itself: you do not write rules for it. The mod also
 shows running seats and each vendor's quota above the prompt, and `/seats` opens a pane with one
 card per seat. The session can stop a seat with the mod's `stop` tool (TaskStop does not reach
@@ -71,7 +104,7 @@ goes (codex ships its default model at low). Claude runs sonnet high for light, 
 opus high for heavy.
 
 To choose which model a size tries first, run `/seats setup`: it asks once per size and offers the models
-your CLIs report, then asks for delegate mode. Pick one, keep **Auto**, or type `<codex|agy|claude> <model> [effort]` under Other.
+your CLIs report, then asks for delegate mode, then which other Claude accounts seats may use, when it finds any. Pick one, keep **Auto**, or type `<codex|agy|claude> <model> [effort]` under Other.
 
 The fields themselves, with `claude plugin configure seat-router@code4food` (`/seats setup` saves through it; the `/config` menu does not list plugin fields):
 
@@ -80,6 +113,7 @@ The fields themselves, with `claude plugin configure seat-router@code4food` (`/s
 | `heavySeats`, `standardSeats`, `lightSeats` | `auto` | The models a size tries, in order: `auto`, or comma-separated `<codex\|agy\|claude> <model> [effort]`. |
 | `busyAt` | `80` | A model is busy once its 5-hour or weekly quota is this used, or its week is used faster than it has passed; a sized seat then passes it over. |
 | `mixFanouts` | on | Asks the session to add one seat per other model family beside the Claude agents in every review or verification fan-out. |
+| `claudeAccounts` | empty | Other Claude accounts on this machine, comma-separated `<name> <config folder>`: `work ~/.claude-work, sub2 ~/.claude-sub2`. A name may not be a CLI, family, size or tier word. `/seats setup` asks it after delegate mode, when the home folder has a logged-in `.claude-<name>` folder or the setting has an account. |
 | `delegate` | `auto` | When code work (features, fixes, bug and performance tasks, PR owners and their fix rounds) goes to owner seats, which the mod spreads across model families: `auto` while Claude's quota is busy by the `busyAt` rule, `on` always, `off` never. `/seats setup` asks it after the sizes. |
 
 A model's family comes from its name, so `agy claude-opus-5-5` counts as Claude, not as variety.

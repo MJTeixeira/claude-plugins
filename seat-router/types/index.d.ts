@@ -8,6 +8,8 @@ export type SeatDisplay = {
   vendor: SeatVendor
   model: string
   effort: string
+  // The other Claude account a claude seat ran on.
+  account?: string
   tier: SeatTier
   status: SeatStatus
   startedAt: number
@@ -64,8 +66,8 @@ declare module 'claude-code' {
       vendors: Shaped<Exclude<SeatVendor, 'claude'>[] | null>
       // The models each installed CLI reports; null until asked.
       models: Shaped<Partial<Record<Exclude<SeatVendor, 'claude'>, { model: string, efforts: string[], isDefault?: boolean }[]>> | null>
-      // Each CLI's last usage output and when it was read.
-      usage: Shaped<Partial<Record<Exclude<SeatVendor, 'claude'>, { at: number, stdout: string }>>>
+      // Each CLI's (or `claude:<account>`'s) last usage output and when it was read.
+      usage: Shaped<Partial<Record<Exclude<SeatVendor, 'claude'> | `claude:${string}`, { at: number, stdout: string }>>>
     }
   }
 

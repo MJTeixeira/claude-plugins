@@ -6,8 +6,8 @@ export type Size = typeof SIZES[number]
 export const FAMILIES = ['claude', 'gpt', 'gemini'] as const
 export type Family = typeof FAMILIES[number] | 'other'
 
-/** One place a seat can run: a CLI (or a Claude subagent), its model and effort. */
-export type Candidate = { vendor: SeatVendor, model: string, effort: string }
+/** One place a seat can run: a CLI (or a Claude subagent), its model and effort; `account` runs Claude as a CLI on that other account. */
+export type Candidate = { vendor: SeatVendor, model: string, effort: string, account?: string }
 
 /** A candidate's load in percent: its worst 5-hour and weekly windows, and how much of that week has passed. */
 export type Load = { fiveHour?: number, weekly?: number, weekElapsed?: number }
@@ -29,7 +29,21 @@ export const parseCandidates = (text: string): Candidate[] => text.split(',').fl
 })
 
 export const formatCandidate = (candidate: Candidate): string =>
-  [candidate.vendor, candidate.model, candidate.effort].filter(Boolean).join(' ')
+  [candidate.account ?? candidate.vendor, candidate.model, candidate.effort].filter(Boolean).join(' ')
+
+// Words a seat line already gives a meaning, which no account may take.
+export const RESERVED: readonly string[] = ['codex', 'agy', 'claude', 'gpt', 'gemini', 'other', 'light', 'standard', 'heavy', 'reviewer', 'owner']
+
+/** The other Claude accounts setting: `<name> <config folder>` entries separated by commas; a reserved or repeated name is dropped. */
+export const parseAccounts = (text: string): Record<string, string> => {
+  const accounts: Record<string, string> = {}
+  for (const entry of text.split(',')) {
+    const match = /^\s*([\w-]+)\s+(.+?)\s*$/.exec(entry)
+    if (!match?.[1] || !match[2] || RESERVED.includes(match[1]) || match[1] in accounts) continue
+    accounts[match[1]] = match[2]
+  }
+  return accounts
+}
 
 /** The size an explicit effort stands for, so an explicit seat falls back within that size. */
 export const sizeOf = (effort: string): Size =>
@@ -103,6 +117,9 @@ const CLAUDE_BY_SIZE: Record<Size, Candidate> = {
   standard: { vendor: 'claude', model: 'opus', effort: 'medium' },
   heavy: { vendor: 'claude', model: 'opus', effort: 'high' },
 }
+
+/** The size's Claude model and effort, run on another account. */
+export const accountCandidate = (size: Size, account: string): Candidate => ({ ...CLAUDE_BY_SIZE[size], account })
 
 /** `agy models` lines are `<model>-<effort>\t<name>`: one model per base, with its efforts. */
 export const parseAgyModels = (text: string): CliModel[] => {
