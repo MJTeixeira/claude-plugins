@@ -1,11 +1,11 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, ToolCallInput } from 'claude-code'
 import type { SeatDisplay, SeatQuotaDisplay, SeatStatus, SeatTier, SeatVendor } from '../types/index'
-import { autoCandidates, familyOf, formatCandidate, isAuto, isBusy, isPreferred, parseAgyModels, parseCandidates, pick, rotate, SIZES, sizeOf } from './chain'
+import { accountCandidate, autoCandidates, familyOf, FAMILIES, formatCandidate, isAuto, isBusy, isPreferred, parseAccounts, parseAgyModels, parseCandidates, pick, RESERVED, rotate, SIZES, sizeOf } from './chain'
 import type { Candidate, CliModel, CliModels, Load, Running, Size } from './chain'
 
 const EXPLICIT = /^seat: (codex|agy) (\S+) (\S+) (reviewer|owner)\n/
-const SIZED = /^seat: (?:(codex|agy|claude|gpt|gemini) )?(light|standard|heavy) (reviewer|owner)\n/
+const SIZED = /^seat: (?:([\w-]+) )?(light|standard|heavy) (reviewer|owner)\n/
 const WEEK_MS = 7 * 24 * 60 * 60 * 1000
 
 const seatsState = atom({ plugin: 'seat-router', key: 'seats' } as const, [], {
@@ -26,20 +26,26 @@ const modelsState = atom({ plugin: 'seat-router', key: 'models' } as const, null
 // 10s, and seats of one message pick one at a time, so a pick reads a recent
 // output (the band refreshes it every two minutes) or joins a read under way.
 const QUOTA_FRESH_MS = 150_000
-const usageState = atom({ plugin: 'seat-router', key: 'usage' } as const, {} as Partial<Record<ExternalVendor, { at: number, stdout: string }>>, {
+const usageState = atom({ plugin: 'seat-router', key: 'usage' } as const, {} as Partial<Record<UsageSource, { at: number, stdout: string }>>, {
   shape: 'usage-reads-1',
 })
-const usageReading = new Map<ExternalVendor, Promise<string | undefined>>()
+// A CLI, or another Claude account by its name.
+type UsageSource = ExternalVendor | `claude:${string}`
+const usageReading = new Map<UsageSource, Promise<string | undefined>>()
+// The shell tools Claude Code runs commands through.
+export const SHELL_TOOLS = ['Bash', 'PowerShell']
+const NO_SHELL_NOTE = 'This seat has no shell: Bash and PowerShell are refused here. Read, search and edit files with your file tools, and say in your report what you could not run.\n'
 const OWNER_NOTE = 'Commands starting with git, gh, npm, npx, node, pnpm, yarn or curl need network or .git writes: run each of them with your run_command tool\'s BypassSandbox set to true. Run every other command inside the sandbox.\n'
 type AgentInput = Extract<ToolCallInput, { tool: 'Agent' }>
 export type ExternalVendor = Exclude<SeatVendor, 'claude'>
 
-// Each size's setting (`auto`, or a list of candidates), the busy threshold and
-// when code work goes to owner seats, from the plugin's userConfig.
+// Each size's setting (`auto`, or a list of candidates), the busy threshold,
+// when code work goes to owner seats and the other Claude accounts (name to
+// config folder), from the plugin's userConfig.
 export type Delegate = 'auto' | 'on' | 'off'
-export type SeatConfig = { sizes: Record<Size, string>, busyAt: number, delegate: Delegate }
+export type SeatConfig = { sizes: Record<Size, string>, busyAt: number, delegate: Delegate, accounts: Record<string, string> }
 
-let seatConfig: SeatConfig = { sizes: { light: 'auto', standard: 'auto', heavy: 'auto' }, busyAt: 80, delegate: 'auto' }
+let seatConfig: SeatConfig = { sizes: { light: 'auto', standard: 'auto', heavy: 'auto' }, busyAt: 80, delegate: 'auto', accounts: {} }
 
 export function setSeatConfig(config: SeatConfig): void {
   seatConfig = config
@@ -51,7 +57,53 @@ export function setSize(size: Size, setting: string): void {
 
 export function seatConfigFrom(options: Readonly<Record<string, unknown>>): SeatConfig {
   const sizes = Object.fromEntries(SIZES.map(size => [size, String(options[size + 'Seats'] ?? 'auto')])) as Record<Size, string>
-  return { sizes, busyAt: typeof options.busyAt === 'number' ? options.busyAt : 80, delegate: delegateOf(options.delegate) }
+  return {
+    sizes, busyAt: typeof options.busyAt === 'number' ? options.busyAt : 80, delegate: delegateOf(options.delegate),
+    accounts: parseAccounts(String(options.claudeAccounts ?? '')),
+  }
+}
+
+export const accountNames = (): string[] => Object.keys(seatConfig.accounts)
+
+export function setAccounts(accounts: Record<string, string>): void {
+  seatConfig = { ...seatConfig, accounts }
+}
+
+export const formatAccounts = (accounts: Record<string, string>): string =>
+  Object.entries(accounts).map(([name, dir]) => name + ' ' + dir).join(', ')
+
+export const accountSetting = (): string => formatAccounts(seatConfig.accounts)
+
+export type FoundAccount = { name: string, dir: string, plan?: string }
+
+// The Claude config folders in the home folder besides the session's own
+// (`~/.claude-<name>` holding a `.claude.json`), each with the plan a quota read
+// reports, or no plan when the read fails: not logged in.
+export async function foundAccounts($: EngineInterface): Promise<FoundAccount[]> {
+  const found = await homeDir($)
+  if (found === undefined) return []
+  const home = slashed(found)
+  const own = slashed(await $.env.get('CLAUDE_CONFIG_DIR') ?? '').replace(/\/+$/, '')
+  let entries: Awaited<ReturnType<EngineInterface['fs']['list']>>
+  try {
+    entries = await $.fs.list(home)
+  } catch {
+    return []
+  }
+  const named = entries.flatMap(entry => {
+    const name = /^\.claude-([\w-]+)$/.exec(entry.name)?.[1]
+    return entry.kind === 'dir' && name !== undefined && !RESERVED.includes(name) && home + '/' + entry.name !== own ? [{ name, folder: entry.name }] : []
+  })
+  const accounts = await Promise.all(named.map(async ({ name, folder }): Promise<FoundAccount | undefined> => {
+    const path = home + '/' + folder
+    if (!await $.fs.exists(path + '/.claude.json')) return undefined
+    const read = await $.process.run(['node', join($.plugin.root, 'bin', 'claude-usage.mjs')], { timeoutMs: 60_000, env: { CLAUDE_CONFIG_DIR: path } })
+      .catch(() => undefined)
+    if (read?.exitCode !== 0) return { name, dir: '~/' + folder }
+    const plan = asObject(readJson(read.stdout))?.plan
+    return { name, dir: '~/' + folder, plan: typeof plan === 'string' ? plan : 'unknown plan' }
+  }))
+  return accounts.filter((account): account is FoundAccount => account !== undefined).sort((a, b) => a.name.localeCompare(b.name))
 }
 
 export const delegateOf = (value: unknown): Delegate => value === 'on' || value === 'off' ? value : 'auto'
@@ -106,7 +158,7 @@ export async function sizeCandidates($: EngineInterface, size: Size): Promise<Ca
 export type Marker = {
   tier: SeatTier
   brief: string
-} & ({ vendor: ExternalVendor, model: string, effort: string } | { size: Size, prefer?: string })
+} & ({ vendor: ExternalVendor, model: string, effort: string } | { size: Size, prefer?: string, account?: string })
 
 type Quota = {
   vendor: SeatVendor
@@ -136,6 +188,8 @@ type Seat = {
   vendor: SeatVendor
   model: string
   effort: string
+  // The other Claude account a `claude` seat runs on, as a CLI.
+  account?: string
   tier: SeatTier
   chainPosition: number
   status: SeatStatus
@@ -169,9 +223,13 @@ export type Check = {
 export function parseMarker(prompt: string): Marker | undefined {
   const sized = SIZED.exec(prompt)
   if (sized) {
-    const [line, prefer, size, tier] = sized
+    const [line, named, size, tier] = sized
     if (!line || !SIZES.includes(size as Size) || (tier !== 'reviewer' && tier !== 'owner')) return undefined
-    return { size: size as Size, ...(prefer === undefined ? {} : { prefer }), tier, brief: prompt.slice(line.length) }
+    const brief = prompt.slice(line.length)
+    if (named === undefined) return { size: size as Size, tier, brief }
+    if (['codex', 'agy', ...FAMILIES].includes(named)) return { size: size as Size, prefer: named, tier, brief }
+    if (named in seatConfig.accounts) return { size: size as Size, account: named, tier, brief }
+    return undefined
   }
   const match = EXPLICIT.exec(prompt)
   if (!match) return undefined
@@ -346,29 +404,56 @@ export async function installedVendors($: EngineInterface): Promise<ExternalVend
   return vendors
 }
 
-// A CLI's usage output no older than `maxAgeMs`; undefined when the CLI failed.
-async function usageOutput($: EngineInterface, vendor: ExternalVendor, maxAgeMs: number): Promise<string | undefined> {
-  const kept = (await read($, usageState))[vendor]
+// A CLI's or an account's usage output no older than `maxAgeMs`; undefined when the read failed.
+async function usageOutput($: EngineInterface, source: UsageSource, maxAgeMs: number): Promise<string | undefined> {
+  const kept = (await read($, usageState))[source]
   if (kept && (await $.clock.now()) - kept.at < maxAgeMs) return kept.stdout
-  const running = usageReading.get(vendor)
+  const running = usageReading.get(source)
   if (running) return running
   const reading = (async () => {
     try {
-      const result = vendor === 'codex'
+      const result = source === 'codex'
         ? await $.process.run(['node', join($.plugin.root, 'bin', 'codex-usage.mjs')], { timeoutMs: 60_000 })
-        : await io($, ['exec', 'agy', '-p', '/usage', '--output-format', 'json'], { timeoutMs: 60_000 })
+        : source === 'agy'
+          ? await io($, ['exec', 'agy', '-p', '/usage', '--output-format', 'json'], { timeoutMs: 60_000 })
+          : await $.process.run(['node', join($.plugin.root, 'bin', 'claude-usage.mjs')], {
+            timeoutMs: 60_000, env: { CLAUDE_CONFIG_DIR: await accountDir($, source.slice('claude:'.length)) },
+          })
       if (result.exitCode !== 0) return undefined
       const at = await $.clock.now()
-      await update($, usageState, current => ({ ...current, [vendor]: { at, stdout: result.stdout } }))
+      await update($, usageState, current => ({ ...current, [source]: { at, stdout: result.stdout } }))
       return result.stdout
     } catch {
       return undefined
     } finally {
-      usageReading.delete(vendor)
+      usageReading.delete(source)
     }
   })()
-  usageReading.set(vendor, reading)
+  usageReading.set(source, reading)
   return reading
+}
+
+// An account's config folder, `~` taken as the home folder.
+async function accountDir($: EngineInterface, account: string): Promise<string> {
+  const dir = slashed(seatConfig.accounts[account] ?? '')
+  return dir === '~' || dir.startsWith('~/') ? slashed(await homeDir($) ?? '') + dir.slice(1) : dir
+}
+
+// Another account's quota stays off the band, which shows the session's own Claude.
+async function accountQuota($: EngineInterface, account: string, maxAgeMs = QUOTA_FRESH_MS): Promise<Quota> {
+  const dir = await accountDir($, account)
+  try {
+    if ((await $.fs.stat(dir)).kind !== 'dir') throw new Error('not a folder')
+  } catch {
+    return { vendor: 'claude', known: true, out: true, detail: 'no folder ' + (dir || '(unset)') }
+  }
+  const output = await usageOutput($, `claude:${account}`, maxAgeMs)
+  const data = output === undefined ? undefined : readJson(output)
+  return data === undefined ? { vendor: 'claude', known: false, out: false } : claudeQuota(data)
+}
+
+function candidateQuota($: EngineInterface, candidate: Candidate): Promise<Quota> {
+  return candidate.account === undefined ? quota($, candidate.vendor, candidate.model) : accountQuota($, candidate.account)
 }
 
 async function quota($: EngineInterface, vendor: SeatVendor, model: string, maxAgeMs = QUOTA_FRESH_MS): Promise<Quota> {
@@ -411,6 +496,9 @@ function loadOf(quota: Quota, now: number): Load {
 
 const sameCandidate = (a: Candidate, b: Candidate): boolean => a.vendor === b.vendor && a.model === b.model
 
+// A candidate as fallback trails name it: its CLI or account, then its model.
+const choiceName = (candidate: Candidate): string => (candidate.account ?? candidate.vendor) + ' ' + candidate.model
+
 // The candidates a seat line may run on, in the order tried, CLIs this machine lacks left out.
 async function chainFor($: EngineInterface, marker: Marker): Promise<Candidate[]> {
   const installed: SeatVendor[] = ['claude', ...await installedVendors($)]
@@ -420,6 +508,7 @@ async function chainFor($: EngineInterface, marker: Marker): Promise<Candidate[]
     return [named, ...usable(await sizeCandidates($, sizeOf(marker.effort))).filter(candidate => !sameCandidate(candidate, named))]
   }
   const list = usable(await sizeCandidates($, marker.size))
+  if (marker.account !== undefined) return [accountCandidate(marker.size, marker.account), ...list]
   if (marker.prefer === undefined) return list
   const prefer = marker.prefer
   return [...list.filter(candidate => isPreferred(candidate, prefer)), ...list.filter(candidate => !isPreferred(candidate, prefer))]
@@ -553,11 +642,35 @@ export function agyTokens(text: string): number | undefined {
 
 export type Activity = { steps: number, lastAction?: string }
 
+/** The transcript a seat's CLI writes: codex, agy, or Claude on another account. */
+export type Transcript = ExternalVendor | 'claude'
+
+// A Claude subagent seat writes no transcript of its own.
+const transcriptOf = (seat: Pick<Seat, 'vendor' | 'account'>): Transcript | undefined =>
+  seat.account !== undefined ? 'claude' : seat.vendor === 'claude' ? undefined : seat.vendor
+
 // A step is one finished tool call: codex streams item.started then item.completed,
-// agy streams ACTIVE then DONE (or ERROR) for the same step.
-export const STEP_PATTERN: Record<ExternalVendor, string> = {
+// agy streams ACTIVE then DONE (or ERROR) for the same step, Claude a tool_result.
+export const STEP_PATTERN: Record<Transcript, string> = {
   codex: '"type":"item\\.completed","item":\\{"id":"[^"]*","type":"(command_execution|file_change|mcp_tool_call)"',
   agy: '"state":"(DONE|ERROR)","step_type":"tool"',
+  claude: '"type":"tool_result"',
+}
+
+const claudeUsageTokens = (usage: Record<string, unknown> | undefined): number =>
+  ['input_tokens', 'output_tokens', 'cache_read_input_tokens', 'cache_creation_input_tokens'].reduce((sum, key) => sum + (numberAt(usage?.[key]) ?? 0), 0)
+
+/** A Claude transcript's tokens: its result's total once it has one, else each assistant message's usage once. */
+export function claudeTokens(jsonl: string): number | undefined {
+  const messages = new Map<string, number>()
+  for (const line of jsonl.split('\n')) {
+    const event = asObject(readJson(line))
+    if (event?.type === 'result' && asObject(event.usage)) return claudeUsageTokens(asObject(event.usage))
+    const message = asObject(event?.message)
+    const id = textAt(message?.id)
+    if (event?.type === 'assistant' && id && asObject(message?.usage)) messages.set(id, claudeUsageTokens(asObject(message?.usage)))
+  }
+  return messages.size ? [...messages.values()].reduce((sum, value) => sum + value, 0) : undefined
 }
 
 function oneLine(value: string): string {
@@ -596,13 +709,28 @@ function agyAction(step: Record<string, unknown>): string | undefined {
   return name.replace(/_/g, ' ') + (path ? ' ' + fileName(path) : '')
 }
 
+function claudeAction(event: Record<string, unknown>): string | undefined {
+  const content = asObject(event.message)?.content
+  if (event.type !== 'assistant' || !Array.isArray(content)) return undefined
+  let action: string | undefined
+  for (const block of content.map(asObject)) {
+    const input = asObject(block?.input) ?? {}
+    const command = textAt(input.command)
+    const path = textAt(input.file_path) ?? textAt(input.path)
+    if (block?.type === 'tool_use' && command) action = 'Ran ' + command
+    else if (block?.type === 'tool_use') action = (textAt(block.name) ?? 'tool') + (path ? ' ' + fileName(path) : '')
+    else if (block?.type === 'text') action = textAt(block.text)?.split('\n')[0] ?? action
+  }
+  return action
+}
+
 /** The newest action in a transcript tail, as one short line. */
-export function lastAction(vendor: ExternalVendor, text: string): string | undefined {
+export function lastAction(vendor: Transcript, text: string): string | undefined {
   let action: string | undefined
   for (const line of text.split('\n')) {
     const event = asObject(readJson(line))
-    const item = asObject(vendor === 'codex' ? event?.item : event?.step_update)
-    const found = item && (vendor === 'codex' ? codexAction(item) : agyAction(item))
+    const item = asObject(vendor === 'codex' ? event?.item : vendor === 'agy' ? event?.step_update : event)
+    const found = item && (vendor === 'codex' ? codexAction(item) : vendor === 'agy' ? agyAction(item) : claudeAction(item))
     if (found?.trim()) action = oneLine(found)
   }
   return action
@@ -647,20 +775,21 @@ async function writeSeat($: EngineInterface, seat: Seat): Promise<void> {
 }
 
 async function readActivity($: EngineInterface, seat: Seat): Promise<Activity | undefined> {
-  if (seat.status !== 'running' || seat.vendor === 'claude') return undefined
-  const transcript = join(seat.dir, seat.vendor + '.jsonl')
+  const kind = transcriptOf(seat)
+  if (seat.status !== 'running' || kind === undefined) return undefined
+  const transcript = join(seat.dir, kind + '.jsonl')
   let steps = 0
   try {
-    steps = Number.parseInt((await io($, ['grep', '-cE', STEP_PATTERN[seat.vendor], transcript])).stdout, 10) || 0
+    steps = Number.parseInt((await io($, ['grep', '-cE', STEP_PATTERN[kind], transcript])).stdout, 10) || 0
   } catch {}
-  const action = lastAction(seat.vendor, await tail($, transcript, 20))
+  const action = lastAction(kind, await tail($, transcript, 20))
   return { steps, ...(action === undefined ? {} : { lastAction: action }) }
 }
 
 function display(seat: Seat, liveTokens: number | undefined, activity: Activity): SeatDisplay {
   return {
     id: seat.id, description: seat.description, vendor: seat.vendor, model: seat.model, effort: seat.effort,
-    tier: seat.tier, status: seat.status, steps: activity.steps,
+    ...(seat.account === undefined ? {} : { account: seat.account }), tier: seat.tier, status: seat.status, steps: activity.steps,
     startedAt: seat.startedAt, ...(seat.endedAt === undefined ? {} : { endedAt: seat.endedAt }),
     ...(liveTokens === undefined ? {} : { liveTokens }),
     ...(activity.lastAction === undefined ? {} : { lastAction: activity.lastAction }),
@@ -685,9 +814,58 @@ async function putSeat($: EngineInterface, seat: Seat, liveTokens?: number, acti
   })
 }
 
+// A reviewer's built-in tools besides its shell: none reaches the network or another session.
+const REVIEWER_TOOLS = ['Read', 'Grep', 'Glob', 'Edit', 'Write', 'NotebookEdit', 'Skill']
+
+// Claude on another account, with no mod loaded: nobody sees or approves what a mod asks.
+// A reviewer's shell runs in Claude Code's sandbox, writing only its folder with no network
+// (failIfUnavailable: should the sandbox not start, the seat fails and moves on rather than
+// run unsandboxed). The sandbox leaves a worktree's git folders writable, so they are denied
+// by absolute path (`//`), which the sandbox and the file tools both honour. On Windows,
+// where Claude Code's sandbox does not run, a reviewer has no shell at all; its file tools
+// stay held to its folder by acceptEdits. A reviewer gets only the tools that read and edit
+// files (`--tools`), none that publishes, schedules or messages, and no MCP server.
+// An owner runs without prompts, its account's MCP servers on, its shell commands past
+// owner-guard.mjs.
+async function launchAccount($: EngineInterface, seat: Seat & { account: string }): Promise<void> {
+  const isReviewer = seat.tier === 'reviewer'
+  const windows = isReviewer && await isWindows($)
+  if (windows) await $.fs.write(join(seat.dir, 'brief.md'), seat.brief + '\n' + NO_SHELL_NOTE)
+  const gitDenied = isReviewer ? (await gitDirs($, seat.workDir)).map(dir => 'Edit(/' + (dir.startsWith('/') ? '' : '/') + slashed(dir) + '/**)') : []
+  const tiered = !isReviewer ? {
+    hooks: { PreToolUse: [{ matcher: SHELL_TOOLS.join('|'), hooks: [{ type: 'command', command: 'node "' + slashed($.plugin.root) + '/bin/owner-guard.mjs"' }] }] },
+  } : windows ? {
+    permissions: { deny: [...SHELL_TOOLS, 'Edit(.git/**)', ...gitDenied, 'WebFetch', 'WebSearch'] },
+  } : {
+    sandbox: {
+      enabled: true, failIfUnavailable: true, autoAllowBashIfSandboxed: true, allowUnsandboxedCommands: false,
+      network: { allowedDomains: [] },
+    },
+    permissions: { deny: ['Edit(.git/**)', ...gitDenied, 'WebFetch', 'WebSearch'] },
+  }
+  // Flag settings outrank the account's own, whose env names its mods.
+  const settings = { env: { CLAUDE_CODE_PLUGIN_DIRS: '' }, ...tiered }
+  await $.fs.write(join(seat.dir, 'settings.json'), JSON.stringify(settings, null, 2))
+  const spec: LaunchSpec = {
+    argv: [
+      'claude', '-p', '--model', seat.model, ...(seat.effort ? ['--effort', seat.effort] : []),
+      '--output-format', 'stream-json', '--verbose', '--settings', join(seat.dir, 'settings.json'),
+      ...(isReviewer
+        ? ['--tools=' + [...(windows ? [] : ['Bash']), ...REVIEWER_TOOLS].join(','), '--strict-mcp-config', '--permission-mode', 'acceptEdits']
+        : ['--permission-mode', 'bypassPermissions']),
+    ],
+    cwd: seat.workDir, stdin: join(seat.dir, 'brief.md'),
+    stdout: join(seat.dir, 'claude.jsonl'), stderr: join(seat.dir, 'claude.err'), exit: join(seat.dir, 'exit'), pid: join(seat.dir, 'pid'),
+  }
+  // The session's own mods, this one among them, would also come in through the environment.
+  const env = { CLAUDE_CONFIG_DIR: await accountDir($, seat.account), CLAUDE_CODE_PLUGIN_DIRS: '' }
+  await start($, seat, spec, isReviewer ? env : { ...await ownerEnv($), ...env })
+}
+
 async function launch($: EngineInterface, seat: Seat): Promise<void> {
   const brief = seat.tier === 'owner' && seat.vendor === 'agy' ? seat.brief + '\n' + OWNER_NOTE : seat.brief
   await $.fs.write(join(seat.dir, 'brief.md'), brief)
+  if (seat.account !== undefined) return launchAccount($, { ...seat, account: seat.account })
   const windows = await isWindows($)
   const spec: LaunchSpec = seat.vendor === 'codex' ? {
     argv: [
@@ -797,7 +975,7 @@ async function makeSeat($: EngineInterface, input: AgentInput, marker: Marker, c
   const first = chain[0] ?? { vendor: 'claude', model: 'opus', effort: '' }
   const seat: Seat = {
     id, sessionId, description: input.description, vendor: first.vendor, model: first.model,
-    effort: first.effort, tier: marker.tier, chainPosition: 0, status: 'running', startedAt: now,
+    effort: first.effort, ...(first.account === undefined ? {} : { account: first.account }), tier: marker.tier, chainPosition: 0, status: 'running', startedAt: now,
     reported: false, dir, workDir: dir, sessionCwd, brief: marker.brief, chain, fallbackTrail: [],
     ...(input.isolation === 'worktree' ? { isolation: 'worktree' as const } : {}),
   }
@@ -812,8 +990,11 @@ async function makeSeat($: EngineInterface, input: AgentInput, marker: Marker, c
   return seat
 }
 
+const seatName = (seat: Pick<Seat, 'vendor' | 'account'>): string =>
+  seat.account === undefined ? seat.vendor : 'claude on the ' + seat.account + ' account'
+
 function reportText(seat: Seat, text: string): string {
-  const lines = ['Seat ' + seat.id + ' ("' + seat.description + '", ' + seat.vendor + ' ' + seat.model + ' ' + seat.effort + ' ' + seat.tier + ') finished.']
+  const lines = ['Seat ' + seat.id + ' ("' + seat.description + '", ' + seatName(seat) + ' ' + seat.model + ' ' + seat.effort + ' ' + seat.tier + ') finished.']
   if (seat.fallbackTrail.length) lines.push('Fallback: ' + seat.fallbackTrail.join(' → '))
   if (seat.waitedMs !== undefined) lines.push('Waited ' + Math.ceil(seat.waitedMs / 1000) + ' seconds for quota reset.')
   if (seat.tier === 'owner' && seat.worktreeBranch && seat.worktreePath) lines.push('Worktree: ' + seat.worktreeBranch + ' at ' + seat.worktreePath)
@@ -859,8 +1040,35 @@ export function failedAgy(exitCode: number | undefined, jsonl: string, stderr: s
   return { ...base, failed, detail: base.quota ? base.detail : detail }
 }
 
+// A Claude run passes when its last result event is a success with text; events such as
+// a task summary may follow it. It is out of quota when its stream says the rate limit
+// rejected it or the API answered 429.
+export function failedClaude(exitCode: number | undefined, tailText: string, rejected: boolean): Check {
+  const event = tailText.split('\n').map(line => asObject(readJson(line.trim()))).filter(found => found?.type === 'result').at(-1)
+  const isResult = event !== undefined
+  const text = isResult ? textAt(event.result) ?? '' : ''
+  const quota = rejected || (isResult && event.api_error_status === 429)
+  const ok = isResult && event.subtype === 'success' && event.is_error !== true
+  const failed = exitCode !== 0 || !ok || !text.trim()
+  const detail = quota ? 'usage limit reached'
+    : exitCode !== 0 ? 'exit ' + String(exitCode)
+    : !isResult ? 'no result event'
+    : !ok ? 'result ' + String(event.subtype) + (event.is_error === true ? ' (error)' : '')
+    : !text.trim() ? 'empty final text' : ''
+  return { text, failed, quota, detail }
+}
+
 async function checkSeat($: EngineInterface, seat: Seat): Promise<Check> {
   const exitCode = Number((await readText($, join(seat.dir, 'exit'))).trim())
+  if (seat.account !== undefined) {
+    const transcript = join(seat.dir, 'claude.jsonl')
+    const rejected = await matches($, '"type":"rate_limit_event","rate_limit_info":\\{"status":"rejected"', [transcript])
+    const checked = failedClaude(Number.isNaN(exitCode) ? undefined : exitCode, await tail($, transcript, 20), rejected)
+    if (!checked.failed || checked.detail.startsWith('usage')) return checked
+    // A run that never started a turn (a refused sandbox, a bad flag) says why only on stderr.
+    const stderr = oneLine(await readText($, join(seat.dir, 'claude.err')))
+    return stderr ? { ...checked, detail: checked.detail + ': ' + stderr } : checked
+  }
   if (seat.vendor === 'codex') {
     const text = await readText($, join(seat.dir, 'final.md'))
     const transcript = join(seat.dir, 'codex.jsonl')
@@ -912,22 +1120,24 @@ async function runCandidate($: EngineInterface, seat: Seat, start: number, readi
   for (let position = start; position < choices.length; position += 1) {
     const choice = choices[position]
     if (!choice) continue
-    const available = readings[position] ?? await quota($, choice.vendor, choice.model)
+    const available = readings[position] ?? await candidateQuota($, choice)
     if (available.out) {
-      seat.fallbackTrail.push(choice.vendor + ' ' + choice.model + ' out (' + (available.detail || 'quota unavailable') + ')')
+      seat.fallbackTrail.push(choiceName(choice) + ' out (' + (available.detail || 'quota unavailable') + ')')
       if (available.resetAt !== undefined) earliest = earliest === undefined ? available.resetAt : Math.min(earliest, available.resetAt)
       continue
     }
-    if (seat.fallbackTrail.length) seat.fallbackTrail.push(choice.vendor + ' ' + choice.model)
+    if (seat.fallbackTrail.length) seat.fallbackTrail.push(choiceName(choice))
     seat.vendor = choice.vendor
     seat.model = choice.model
     seat.effort = choice.effort
+    if (choice.account === undefined) delete seat.account
+    else seat.account = choice.account
     seat.chainPosition = position
     if (choice.vendor === 'codex') {
       seat.rolloutPath = undefined
       seat.rolloutSearched = false
     }
-    if (choice.vendor === 'claude') {
+    if (choice.vendor === 'claude' && choice.account === undefined) {
       // A plugin's own $.agent.spawn gets no auto-mode verdict outside a request,
       // so the session starts the Claude agent itself, inside its turn.
       await report($, seat, 'codex and agy could not take this seat. Start an Agent yourself (' + claudeAgent(choice) + ', '
@@ -951,7 +1161,8 @@ async function codexSessions($: EngineInterface): Promise<string> {
 }
 
 async function liveTokens($: EngineInterface, seat: Seat): Promise<number | undefined> {
-  if (seat.status !== 'running' || seat.vendor === 'claude') return undefined
+  if (seat.status !== 'running' || transcriptOf(seat) === undefined) return undefined
+  if (seat.account !== undefined) return claudeTokens(await readText($, join(seat.dir, 'claude.jsonl')))
   if (seat.vendor === 'agy') return agyTokens(await grepTokens($, join(seat.dir, 'agy.jsonl')))
   if (!seat.rolloutPath && !seat.rolloutSearched) {
     const id = threadId(await head($, join(seat.dir, 'codex.jsonl')))
@@ -1016,8 +1227,8 @@ async function launcherGone($: EngineInterface, seat: Seat): Promise<boolean> {
 }
 
 async function partialOutput($: EngineInterface, seat: Seat): Promise<string> {
-  return (await readText($, join(seat.dir, 'final.md'))).trim() || lastAction(seat.vendor === 'agy' ? 'agy' : 'codex',
-    await tail($, join(seat.dir, seat.vendor === 'agy' ? 'agy.jsonl' : 'codex.jsonl'), 20)) || ''
+  const kind = transcriptOf(seat) ?? 'codex'
+  return (await readText($, join(seat.dir, 'final.md'))).trim() || lastAction(kind, await tail($, join(seat.dir, kind + '.jsonl'), 20)) || ''
 }
 
 /** Ends a seat of this session that is still running or waiting, with everything it started; returns its report. */
@@ -1085,7 +1296,10 @@ export async function runningFamilies($: EngineInterface, claude: number): Promi
   return running
 }
 
-// An explicit line keeps its order and moves on only past a vendor that is out.
+/** Only a sized line naming no CLI, family or account rotates across families. */
+export const isRotating = (marker: Marker): boolean => !('vendor' in marker) && marker.prefer === undefined && marker.account === undefined
+
+// An explicit line, or a line naming an account, keeps its order and moves on only past a candidate that is out.
 // A sized line naming a CLI or family runs the first of those candidates that is
 // not busy, else the least loaded; any other sized line goes to the family with
 // the fewest seats in `running` (see rotate), and to the least loaded when every
@@ -1097,19 +1311,21 @@ export async function chooseInitial($: EngineInterface, marker: Marker, running:
   let resetAt: number | undefined
   const now = await $.clock.now()
   const loads: Array<Load | 'out'> = []
-  const rotating = !('vendor' in marker) && marker.prefer === undefined
+  const rotating = isRotating(marker)
+  // A named model or account runs unless it is out.
+  const pinned = 'vendor' in marker || marker.account !== undefined
   for (const choice of chain) {
-    const available = await quota($, choice.vendor, choice.model)
+    const available = await candidateQuota($, choice)
     readings.push(available)
     if (available.out) {
-      trail.push(choice.vendor + ' ' + choice.model + ' out (' + (available.detail || 'quota unavailable') + ')')
+      trail.push(choiceName(choice) + ' out (' + (available.detail || 'quota unavailable') + ')')
       if (available.resetAt !== undefined) resetAt = resetAt === undefined ? available.resetAt : Math.min(resetAt, available.resetAt)
       loads.push('out')
       continue
     }
     const load = loadOf(available, now)
     loads.push(load)
-    if (!rotating && ('vendor' in marker || !isBusy(load, seatConfig.busyAt))) break
+    if (!rotating && (pinned || !isBusy(load, seatConfig.busyAt))) break
   }
   const order = rotating ? rotate(chain, loads, running, seatConfig.busyAt) : []
   if (order.length) {
@@ -1121,10 +1337,10 @@ export async function chooseInitial($: EngineInterface, marker: Marker, running:
       readings: order.map(index => readings[index]).filter((value): value is Quota => value !== undefined),
     }
   }
-  const position = 'vendor' in marker ? loads.findIndex(load => load !== 'out') : pick(loads, seatConfig.busyAt)
+  const position = pinned ? loads.findIndex(load => load !== 'out') : pick(loads, seatConfig.busyAt)
   if (position === -1) return { chain, trail, resetAt, allOut: true, readings }
   const chosen = chain[position]
-  if (!chosen || 'vendor' in marker) return { chain, trail, allOut: false, position, readings }
+  if (!chosen || pinned) return { chain, trail, allOut: false, position, readings }
   // A sized seat starts on the chosen candidate; the ones it passed over stay behind as its fallback.
   const busy = chain.slice(0, position).filter((_, index) => loads[index] !== 'out').map(formatCandidate)
   return {

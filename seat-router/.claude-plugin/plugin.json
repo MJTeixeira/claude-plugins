@@ -1,6 +1,6 @@
 {
   "name": "seat-router",
-  "version": "1.0.9",
+  "version": "1.1.0",
   "description": "Routes marked Agent calls through durable external seats",
   "license": "MIT",
   "types": "./types/index.d.ts",
@@ -40,6 +40,12 @@
       "title": "Delegate code work: auto, on or off (leave as auto)",
       "description": "Sends features, fixes and PR owners to owner seats on your other CLIs: auto while Claude's quota is busy, on always, off never. /seats setup asks it too.",
       "default": "auto"
+    },
+    "claudeAccounts": {
+      "type": "string",
+      "title": "Other Claude accounts (leave empty)",
+      "description": "Claude subscriptions on this machine besides the session's own, as comma-separated <name> <config folder>, e.g. work ~/.claude-work. A seat line naming one (seat: work standard reviewer) runs Claude on that account.",
+      "default": ""
     }
   }
 }
