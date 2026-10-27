@@ -962,7 +962,16 @@ async function launch($: EngineInterface, seat: Seat): Promise<void> {
 // repository's own `.git`: without them every git command it runs fails.
 async function agyReads($: EngineInterface, seat: Seat): Promise<string[]> {
   const git = seat.worktreePath === undefined ? [] : (await gitDirs($, seat.workDir)).map(slashed)
-  return [...new Set([...await briefReads($, seat), ...git])].sort()
+  return [...new Set([...await briefReads($, seat), ...git, ...await toolReads($)])].sort()
+}
+
+// The folders under home an agy reviewer reads so the tools installed there run, by
+// their real paths (bin/tool-reads.mjs says which).
+async function toolReads($: EngineInterface): Promise<string[]> {
+  const home = await homeDir($)
+  if (home === undefined) return []
+  const ran = await $.process.run(['node', join($.plugin.root, 'bin', 'tool-reads.mjs'), home, await $.env.get('PATH') ?? ''], { timeoutMs: 10_000 })
+  return ran.exitCode === 0 ? ran.stdout.split('\n').map(line => line.trim()).filter(Boolean) : []
 }
 
 // What run-seat.mjs starts: a CLI (`{ file }` in argv is that file's text) or a wait.
