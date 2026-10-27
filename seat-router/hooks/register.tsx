@@ -43,7 +43,7 @@ const seatRules = (vendors: readonly ExternalVendor[], sizes: Record<Size, Candi
     + 'the task, the grounding it cannot read from its folder, and its output format. Tier `owner` is for a seat that '
     + 'commits, pushes, opens or merges a PR, or needs the network or tools outside its folder (Docker, a database); it may '
     + 'leave its CLI\'s sandbox, and its report names the branch it leaves, its worktree removed. Every other seat is '
-    + '`reviewer`, sandboxed to its folder with no network and no .git writes. Pass `isolation: "worktree"` whenever the seat reads or changes this '
+    + '`reviewer`: it reports and does not commit. Pass `isolation: "worktree"` whenever the seat reads or changes this '
     + 'repository, a review included: without it the seat starts in an empty folder and sees only the absolute paths its '
     + 'brief names. A seat '
     + 'cannot be continued: give follow-up work to a fresh seat with the whole scope. The mod falls back along the size\'s '
