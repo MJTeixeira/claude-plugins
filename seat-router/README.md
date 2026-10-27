@@ -51,8 +51,9 @@ heavy).
   reach the network, `.git`, Docker and the rest of the machine, as a Claude account owner's do. A codex
   owner runs outside codex's sandbox (`danger-full-access`). An agy owner runs outside its sandbox (`--dangerously-skip-permissions`), as an agy reviewer does. Force-push, `git reset --hard`, `rm -rf`,
   `gh pr merge --admin` and `gh repo delete` stay refused, however the command spells them
-  (`git -C . reset --hard`, `rm -fr`): a PreToolUse hook (`bin/owner-guard.mjs`) checks every command
-  and refuses with a deny decision, never exit 2, which codex on Windows reports as 1 and lets pass.
+  (`git -C . reset --hard`, `rm -fr`): a PreToolUse hook (`bin/owner-guard.mjs`) checks every command line, and
+  the brief tells the seat a refusal is final, since python, node or a script could reach the same result
+  (it refuses with a deny decision, never exit 2, which codex on Windows reports as 1 and lets pass).
   One force push passes: `--force-with-lease=<branch>:<sha>` onto the branch checked out where the
   command runs, when that is not `main`, `master`, `dev`, `develop` or `trunk`, as a rebase flow needs. An owner seat whose turn falls to Claude runs as a Claude subagent, and the mod refuses the same commands in its Bash and PowerShell calls. A codex owner runs with `--dangerously-bypass-hook-trust`, since codex runs a
   hook from the command line only past its trust check; for that run codex also runs any hook in your

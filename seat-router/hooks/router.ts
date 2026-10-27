@@ -34,6 +34,11 @@ type UsageSource = ExternalVendor | `claude:${string}`
 const usageReading = new Map<UsageSource, Promise<string | undefined>>()
 // The shell tools Claude Code runs commands through.
 export const SHELL_TOOLS = ['Bash', 'PowerShell']
+// The guard reads command lines, so an interpreter (python, node, a script) can reach what
+// it refused; an owner seat is told that a refusal is final.
+const OWNER_GUARD_NOTE = 'An owner guard refuses force pushes, git reset --hard, forced recursive deletes, gh pr merge --admin '
+  + 'and gh repo delete. A refusal is final: do not reach the same result another way (another shell, python, node or a '
+  + 'script). Say in your report what was refused and why you needed it.\n'
 const NO_SHELL_NOTE = 'This seat has no shell: Bash and PowerShell are refused here. Read, search and edit files with your file tools, and say in your report what you could not run.\n'
 // codex's unelevated Windows sandbox refuses a process node starts with piped stdio (EPERM,
 // openai/codex#47868); one that inherits or ignores stdio starts, and so do
@@ -891,19 +896,20 @@ export async function probeCodexSandbox($: EngineInterface): Promise<void> {
 // tools a seat needs (on Windows node cannot even stat %APPDATA%, so no npm-installed CLI
 // starts), so every agy seat runs outside it behind the guard.
 async function launch($: EngineInterface, seat: Seat): Promise<void> {
+  const isOwner = seat.tier === 'owner'
+  const brief = isOwner ? seat.brief + '\n' + OWNER_GUARD_NOTE : seat.brief
   if (seat.account !== undefined) {
-    await $.fs.write(join(seat.dir, 'brief.md'), seat.brief)
+    await $.fs.write(join(seat.dir, 'brief.md'), brief)
     return launchAccount($, { ...seat, account: seat.account })
   }
   const windows = await isWindows($)
-  const isOwner = seat.tier === 'owner'
   const windowsReviewer = windows && !isOwner && seat.vendor === 'codex'
   const sandbox = windowsReviewer ? (await readText($, await codexSandboxFile($))).trim() : ''
   const mxc = sandbox === 'mxc'
   const temp = join(seat.dir, 'tmp')
   if (mxc) await io($, ['mkdir', temp])
   const note = mxc ? codexMxcNote(temp) : windowsReviewer ? CODEX_WINDOWS_NOTE : ''
-  await $.fs.write(join(seat.dir, 'brief.md'), seat.brief + (note ? '\n' + note : ''))
+  await $.fs.write(join(seat.dir, 'brief.md'), brief + (note ? '\n' + note : ''))
   const spec: LaunchSpec = seat.vendor === 'codex' ? {
     argv: [
       'codex', 'exec', '--json', '-m', seat.model, '-c', 'model_reasoning_effort=' + seat.effort,
