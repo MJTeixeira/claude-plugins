@@ -6,8 +6,8 @@
 // keeps the irreversible commands out besides. A reviewer starts none of the
 // operator's MCP servers (its config/mcp_config.json lists none); an owner keeps
 // them. Nothing under the operator's ~/.gemini is touched. `--home DIR` builds the
-// HOME at DIR instead of the shared one.
-// Usage: node agy-seat-home.mjs [owner] [--home DIR]
+// HOME at DIR instead of the shared one; `--own DIR` names the seat's folder to the guard.
+// Usage: node agy-seat-home.mjs [owner] [--home DIR] [--own DIR]
 import { copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, rmdirSync, statSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
@@ -16,11 +16,13 @@ import { fileURLToPath } from 'node:url'
 const real = homedir()
 let tier = 'reviewer'
 let home = ''
+let seatDir = ''
 const args = process.argv.slice(2)
 while (args.length) {
   const arg = args.shift()
   if (arg === 'owner') tier = 'owner'
   else if (arg === '--home') home = args.shift()
+  else if (arg === '--own') seatDir = args.shift()
   else {
     console.error(`agy-seat-home: unknown argument ${arg}`)
     process.exit(2)
@@ -75,9 +77,10 @@ if (process.platform === 'darwin') {
 const operator = join(real, '.gemini', 'config', 'hooks.json')
 const hooks = existsSync(operator) ? JSON.parse(readFileSync(operator, 'utf8')) : {}
 const guard = join(dirname(fileURLToPath(import.meta.url)), 'owner-guard.mjs').replaceAll('\\', '/')
-// agy on Windows hands the command to node with its quotes still in the path, so the
+// agy on Windows hands the command to node with its quotes still in the path, so a
 // path is quoted only when it has to be.
-const command = /\s/.test(guard) ? `node "${guard}"` : `node ${guard}`
+const quoted = path => /\s/.test(path) ? `"${path}"` : path
+const command = `node ${quoted(guard)}${seatDir ? ` --own ${quoted(seatDir)}` : ''}`
 hooks['seat-router-owner-guard'] = { PreToolUse: [{ matcher: 'run_command', hooks: [{ command }] }] }
 writeFileSync(join(config, 'hooks.json'), JSON.stringify(hooks, null, 2) + '\n')
 if (tier !== 'owner') writeFileSync(join(config, 'mcp_config.json'), JSON.stringify({ mcpServers: {} }) + '\n')

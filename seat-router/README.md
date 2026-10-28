@@ -66,12 +66,44 @@ heavy).
   (`git -C . reset --hard`, `rm -fr`), and so do `git worktree remove` and `git worktree move` of any
   worktree: another is someone else's checkout, and the mod removes the seat's own when it ends. So do
   `git clean -f`, `git checkout`, `git restore` and a forced `git switch` that `-C`, `--work-tree` or
-  `GIT_WORK_TREE` aims at a directory other than the one the command runs in, and `git branch -D` of any
-  branch, which another agent may own (`git branch -d` keeps unmerged commits and passes). A PreToolUse hook (`bin/owner-guard.mjs`) checks every command line, and
+  `GIT_WORK_TREE` aims at a directory other than the one the command runs in, and so does `git branch -D` of any
+  branch, which another agent may own (`git branch -d` keeps unmerged commits and passes). `git clean -f`,
+  `git checkout`, `git restore`, a forced `git switch`, `git stash`, `git rm`, `git reset` (but `--soft` with no other mode),
+  `git read-tree -u`, `git checkout-index -f` and `--abort`, `--quit` or `--skip` of a `git rebase`, `merge`, `cherry-pick`,
+  `revert` or `am` run only on a line the guard reads whole: plain `cd`, `pushd`
+  or `Set-Location` commands to folders it can place, and plain git commands, each of those git commands inside
+  the seat's own folder. A line runs one when one of its commands runs git with it, or when a wrapper, a nested
+  shell, an interpreter, a variable as the command or a command substitution sits on a line that names it; a
+  commit message, a PR body or an `echo` that only mentions one does not. Anything else on such a line refuses
+  it: a wrapper (`nice`, `timeout`, `sudo`, `env`), a nested shell, an interpreter, `find`, `xargs`, `npm` or
+  `echo`, a pipe or `||`, an escape or a comment, a git option other than `-C` or `--work-tree`, an argument
+  naming git or another discarding command given to a git command that runs it (`rebase -x`, `submodule
+  foreach`; refused with its own reason: run those commands as separate calls), a quote that never closes. In
+  PowerShell on Windows a backslash is a folder separator (`cd src\sub`); on macOS and Linux, and in a Claude
+  account owner's Bash tool (Git Bash on Windows), it is an escape and refuses the line. So does a folder the guard
+  cannot tell (`cd $HOME`, `cd -`, a PowerShell provider path), one a link leads out of, or one a git command
+  earlier on the line may have made; a `cd` that fails before a `;` leaves the folder it started from in play.
+  Redirections, braces, globs and variables after the git subcommand pass (`2>&1`, `stash@{0}`, `-- *`,
+  `-- "$f"`), and a line that is only codex's Windows PowerShell wrapper (`"…\powershell.exe" -NoProfile
+  -Command '…'`) is judged by the script inside it. Run such a git command as
+  its own plain call, after at most a plain `cd`. The guard fences accidents by a confused agent (the wrong
+  folder, a forgotten `cd`, a wrapper around git, a stash in the wrong tree), not an adversary: obfuscated
+  commands (an escaped program name, a variable or expansion as the command, an encoded command such as
+  `pwsh -EncodedCommand`, a startup file, an alias set by an earlier call, git quoted inside `awk`, `php`,
+  `osascript`, `deno` or `ssh`, a git option that runs a command: `grep -O`, `fetch`/`ls-remote --upload-pack`,
+  `clone -u`, `push --receive-pack`, `archive --exec`, `-c core.fsmonitor=`, `-c core.sshCommand=`, or a
+  `git config core.pager` before a later git) are refused where that is cheap and otherwise out of its reach. `git stash
+  clear` and `git stash drop` pass inside the seat's folder, though every worktree of a repository shares its stashes.
+  A scratch clone a brief needs belongs inside the seat's folder. A PreToolUse hook (`bin/owner-guard.mjs`) checks every command line, and
   the brief tells the seat a refusal is final, since python, node or a script could reach the same result
   (it refuses with a deny decision, never exit 2, which codex on Windows reports as 1 and lets pass).
+  Reading the line, it cannot see a `cd` in one shell call that the next call inherits, `git config
+  core.worktree` set earlier, a folder that a `git checkout`, `switch`, `merge` or `pull` earlier on the line
+  replaces with a committed link before a later `cd` into it, or what a script or interpreter does; and a codex call's own `workdir`
+  reaches the hook only once the installed codex has openai/codex#57198, so before that the guard judges
+  such a call from the seat's worktree.
   One force push passes: `--force-with-lease=<branch>:<sha>` onto the branch checked out where the
-  command runs, when that is not `main`, `master`, `dev`, `develop` or `trunk`, as a rebase flow needs. An owner seat whose turn falls to Claude runs as a Claude subagent, and the mod refuses the same commands in its Bash and PowerShell calls. A codex owner runs with `--dangerously-bypass-hook-trust`, since codex runs a
+  command runs, run there, inside the seat's folder and not after a `cd`, when that branch is not `main`, `master`, `dev`, `develop` or `trunk`, as a rebase flow needs. An owner seat whose turn falls to Claude runs as a Claude subagent, and the mod refuses the same commands in its Bash and PowerShell calls, except the seat-folder check: the mod knows neither the subagent's folder nor where its command runs, so a `cd` before those git commands is not followed. A codex owner runs with `--dangerously-bypass-hook-trust`, since codex runs a
   hook from the command line only past its trust check; for that run codex also runs any hook in your
   codex config or the repo's `.codex/` that you have not trusted.
 
