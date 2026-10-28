@@ -2,7 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, ToolCallInput } from 'claude-code'
 import type { SeatDisplay, SeatQuotaDisplay, SeatStatus, SeatTier, SeatVendor } from '../types/index'
 import { accountCandidate, autoCandidates, busyReason, familyOf, FAMILIES, formatCandidate, isAuto, isBusy, isPreferred, parseAccounts, parseAgyModels, parseCandidates, pick, RESERVED, rotate, SIZES, sizeOf } from './chain'
-import type { Candidate, CliModel, CliModels, Family, Load, Running, Size } from './chain'
+import type { Candidate, CliModel, CliModels, Load, Running, Size } from './chain'
 
 const EXPLICIT = /^seat: (codex|agy) (\S+) (\S+) (reviewer|owner)\n/
 const SIZED = /^seat: (?:([\w-]+) )?(light|standard|heavy) (reviewer|owner)\n/
@@ -986,10 +986,10 @@ async function launchAccount($: EngineInterface, seat: Seat & { account: string 
 }
 
 // codex's mxc Windows sandbox starts on Windows 11 24H2 26100.9278 or 25H2 26200.9278 and
-// later and holds a seat to its folder with no network, as the unelevated one does, without
-// that one's bugs (openai/codex#19791, #47868). Whether it starts here is asked off the Agent
-// hook's clock, as starting codex can take seconds: each session start asks and the answer
-// lands in the seat root, and a seat launched before the first answer runs the unelevated sandbox.
+// later and holds a seat to its folder, as the unelevated one does, without that one's bugs
+// (openai/codex#19791, #47868). Whether it starts here is asked off the Agent hook's clock, as
+// starting codex can take seconds: each session start asks and the answer lands in the seat
+// root, and a seat launched before the first answer runs the unelevated sandbox.
 async function codexSandboxFile($: EngineInterface): Promise<string> {
   return join(await seatRoot($), 'codex-sandbox')
 }
@@ -1002,7 +1002,8 @@ export async function probeCodexSandbox($: EngineInterface): Promise<void> {
 // A codex or agy owner reaches the network, .git, Docker and the rest of the machine, as
 // a Claude account owner does, and owner-guard.mjs is the fence: a codex owner runs
 // outside codex's sandbox (`danger-full-access`), since an auto-reviewed escalation waits
-// on every commit and push. A codex reviewer stays in the sandbox, writing only its folder. agy offers no reviewer to a headless run, and its sandbox refuses the
+// on every commit and push. A codex reviewer stays in the sandbox, writing only its folder,
+// with the network on so a brief can have it fetch an issue or a page. agy offers no reviewer to a headless run, and its sandbox refuses the
 // tools a seat needs (on Windows node cannot even stat %APPDATA%, so no npm-installed CLI
 // starts), so every agy seat runs outside it behind the guard.
 async function launch($: EngineInterface, seat: Seat): Promise<void> {
@@ -1025,11 +1026,11 @@ async function launch($: EngineInterface, seat: Seat): Promise<void> {
   const spec: LaunchSpec = seat.vendor === 'codex' ? {
     argv: [
       'codex', 'exec', '--json', '-m', seat.model, '-c', 'model_reasoning_effort=' + seat.effort,
-      '-s', isOwner ? 'danger-full-access' : 'workspace-write',
+      ...(isOwner ? ['-s', 'danger-full-access'] : ['-s', 'workspace-write', '-c', 'sandbox_workspace_write.network_access=true']),
       '--skip-git-repo-check', '-C', seat.workDir,
       // A reviewer is held to its folder: the user's config would start their MCP servers
-      // (computer use among them), and codex's apps, plugins and web search reach the network
-      // from the cloud. An owner keeps all of them, as a development session does.
+      // (computer use among them), and codex's apps, plugins and web search act from the
+      // cloud. An owner keeps all of them, as a development session does.
       ...(seat.tier === 'reviewer' ? [
         '--ignore-user-config', '--disable', 'apps', '--disable', 'plugins', '--disable', 'remote_plugin',
         '-c', 'web_search="disabled"',
@@ -1183,23 +1184,39 @@ function reportText(seat: Seat, text: string, worktree?: string): string {
 const GUARD_CRASH = /^JSON hook "jsonhook__seat-router-owner-guard_[^"]*" failed:/
 // The lines of an agy stream that can carry GUARD_CRASH, found without reading the stream whole.
 const GUARD_CRASH_LINE = 'jsonhook__seat-router-owner-guard_[^ ]* failed:'
+const AGY_TEXT_LINE = '"text_delta":'
 
+// agy's result response joins the text of every agent_response step, so a seat that
+// narrated while it worked would report the narration; its answer is the last step's text.
 function agyResult(jsonl: string): { text: string, valid: boolean, error: string, denied: string[], guardCrashed: boolean } {
   let last: Record<string, unknown> | undefined
   let guardCrashed = false
+  let answerStep: unknown
+  let answer: string | undefined
+  let all = ''
   for (const line of jsonl.split('\n')) {
     const parsed = asObject(readJson(line))
     if (!parsed) continue
     last = parsed
-    const error = asObject(asObject(asObject(parsed.step_update)?.tool_info)?.error)
+    const step = asObject(parsed.step_update)
+    const error = asObject(asObject(step?.tool_info)?.error)
     if (GUARD_CRASH.test(textAt(error?.message) ?? '')) guardCrashed = true
+    const delta = step?.step_type === 'agent_response' ? textAt(step.text_delta) : undefined
+    if (delta === undefined) continue
+    if (answer === undefined || step?.step_index !== answerStep) answer = ''
+    answerStep = step?.step_index
+    answer += delta
+    all += delta
   }
   if (last?.event !== 'result' && last?.type !== 'result') return { text: '', valid: false, error: '', denied: [], guardCrashed }
   const result = asObject(last?.result)
   // agy leaves denied_actions out when nothing was refused.
   const denied = result?.denied_actions
   const names = Array.isArray(denied) ? denied.map(action => textAt(asObject(action)?.action) ?? '?') : []
-  return { text: textAt(result?.response) ?? '', valid: result?.status === 'SUCCESS', error: textAt(result?.error) ?? '', denied: names, guardCrashed }
+  const valid = result?.status === 'SUCCESS'
+  const response = textAt(result?.response) ?? ''
+  // A run that failed keeps every step's text: the work done before the error is what the parent recovers from.
+  return { text: valid ? answer ?? response : response || all, valid, error: textAt(result?.error) ?? '', denied: names, guardCrashed }
 }
 
 export function failedSeat(vendor: ExternalVendor, exitCode: number | undefined, text: string, transcript: string, stderr: string): Check {
@@ -1274,8 +1291,8 @@ async function checkSeat($: EngineInterface, seat: Seat): Promise<Check> {
   }
   const transcript = join(seat.dir, 'agy.jsonl')
   const limited = await matches($, 'RESOURCE_EXHAUSTED|exhausted your quota|out of quota', [transcript, join(seat.dir, 'agy.err')])
-  const crashes = await grepLines($, GUARD_CRASH_LINE, transcript)
-  return failedAgy(Number.isNaN(exitCode) ? undefined : exitCode, crashes + await tail($, transcript), limited ? 'RESOURCE_EXHAUSTED' : '')
+  const steps = await grepLines($, GUARD_CRASH_LINE + '|' + AGY_TEXT_LINE, transcript)
+  return failedAgy(Number.isNaN(exitCode) ? undefined : exitCode, steps + await tail($, transcript), limited ? 'RESOURCE_EXHAUSTED' : '')
 }
 
 async function seatsFor($: EngineInterface, sessionId: string): Promise<Seat[]> {
@@ -1655,8 +1672,10 @@ export async function chooseInitial($: EngineInterface, marker: Marker, running:
     if (isBusy(load, seatConfig.busyAt)) return [formatCandidate(candidate) + ' busy (' + busyReason(load, seatConfig.busyAt) + ')']
     const lead = chain[chosen]
     if (!rotating || lead === undefined) return [formatCandidate(candidate) + ' passed over']
-    const count = (family: Family): string => family + ' runs ' + (running[family] ?? 0)
-    return [formatCandidate(candidate) + ' passed over (' + count(familyOf(candidate)) + ', ' + count(familyOf(lead)) + ')']
+    const [family, leader] = [familyOf(candidate), familyOf(lead)]
+    const [runs, leaderRuns] = [running[family] ?? 0, running[leader] ?? 0]
+    if (runs === leaderRuns) return [formatCandidate(candidate) + ' passed over (tie at ' + runs + ' running, ' + leader + ' listed first)']
+    return [formatCandidate(candidate) + ' passed over (' + family + ' runs ' + runs + ', ' + leader + ' runs ' + leaderRuns + ')']
   })
   const order = rotating ? rotate(chain, loads, running, seatConfig.busyAt) : []
   if (order.length) {

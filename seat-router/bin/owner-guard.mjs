@@ -19,7 +19,7 @@
 // Usage: node owner-guard.mjs < hook-input.json
 import { spawnSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
-import { resolve } from 'node:path'
+import nodePath from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const SHELLS = ['sh', 'bash', 'zsh', 'dash', 'ksh', 'fish', 'pwsh', 'powershell', 'cmd']
@@ -124,36 +124,36 @@ function isLeasedPush(args, branch) {
 }
 
 // Where a git command's working tree is: `cwd` moved by each `-C`, then `--work-tree` or GIT_WORK_TREE.
-function gitTree(options, assigned, cwd) {
-  let dir = resolve(cwd)
-  let tree = assigned === undefined ? undefined : resolve(cwd, assigned)
+function gitTree(options, assigned, cwd, path) {
+  let dir = path.resolve(cwd)
+  let tree = assigned === undefined ? undefined : path.resolve(cwd, assigned)
   for (let index = 0; index < options.length; index += 1) {
-    if (options[index] === '-C') dir = resolve(dir, options[index + 1] ?? '')
-    else if (options[index] === '--work-tree') tree = resolve(dir, options[index + 1] ?? '')
-    else if (options[index].startsWith('--work-tree=')) tree = resolve(dir, options[index].slice('--work-tree='.length))
+    if (options[index] === '-C') dir = path.resolve(dir, options[index + 1] ?? '')
+    else if (options[index] === '--work-tree') tree = path.resolve(dir, options[index + 1] ?? '')
+    else if (options[index].startsWith('--work-tree=')) tree = path.resolve(dir, options[index].slice('--work-tree='.length))
     if (GIT_VALUE_OPTIONS.includes(options[index])) index += 1
   }
   return tree ?? dir
 }
 
-const samePath = (a, b) => process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b
+const samePath = (a, b, path) => path.sep === '\\' ? a.toLowerCase() === b.toLowerCase() : a === b
 
-// `checkout` discards work with no flag too: `checkout <path>` reads like `checkout <branch>`.
-// `switch` takes no paths.
-function discardsWork(sub, rest) {
+// `checkout` may discard work with no flag: `checkout <path>` reads like `checkout <branch>`,
+// so `checkout -b` is caught too. `switch` takes no paths.
+function mayDiscardWork(sub, rest) {
   const forced = rest.includes('--force') || rest.some(arg => shortFlags(arg).includes('f'))
   return (sub === 'clean' && forced) || sub === 'checkout' || sub === 'restore'
     || (sub === 'switch' && (forced || rest.includes('--discard-changes')))
 }
 
-function refusal(words, branch, cwd) {
+function refusal(words, branch, cwd, path) {
   const assigned = words.find(word => word.startsWith('GIT_WORK_TREE='))?.slice('GIT_WORK_TREE='.length)
   const [first, ...args] = strip(words)
   if (!first) return undefined
   const name = programName(first)
   if (SHELLS.includes(name)) {
     const script = args.findIndex(arg => /^-[a-z]*c$/i.test(arg) || /^\/c$/i.test(arg) || /^-c(o(m(m(a(n(d)?)?)?)?)?)?$/i.test(arg))
-    return script === -1 ? undefined : check(args.slice(script + 1).join(' '), branch, cwd)
+    return script === -1 ? undefined : check(args.slice(script + 1).join(' '), branch, cwd, path)
   }
   if (name === 'git') {
     let index = 0
@@ -166,8 +166,8 @@ function refusal(words, branch, cwd) {
     if (sub === 'worktree' && (rest[0] === 'remove' || rest[0] === 'move')) {
       return 'Leave every worktree where it is and, when a branch you need is checked out in another, work from a new branch or a detached HEAD.'
     }
-    if (discardsWork(sub, rest) && !samePath(gitTree(args.slice(0, index), assigned, cwd), resolve(cwd))) {
-      return 'Discard changes only in the worktree the command runs in: another worktree is someone else\'s checkout.'
+    if (mayDiscardWork(sub, rest) && !samePath(gitTree(args.slice(0, index), assigned, cwd, path), path.resolve(cwd), path)) {
+      return `Run git ${sub} only in the folder the command runs in: -C, --work-tree or GIT_WORK_TREE point this one at another folder.`
     }
     const short = rest.map(shortFlags).join('')
     const deletes = short.includes('d') || rest.includes('--delete')
@@ -197,13 +197,14 @@ function refusal(words, branch, cwd) {
 
 /**
  * Why a command line is refused, or undefined when it may run; `branch` is the one checked out where it runs.
+ * `path` resolves folders: node:path, or path.win32 to decide as Windows does.
  * The shell that runs a line is unknown: codex on Windows hands over `"C:\WINDOWS\...\powershell.exe" -Command '...'`,
  * where a POSIX reading drops every `\`. A line is refused when either its POSIX or its Windows reading refuses it.
  */
-export function check(line, branch, cwd = process.cwd()) {
+export function check(line, branch, cwd = process.cwd(), path = nodePath) {
   for (const windows of [false, true]) {
     for (const words of commands(line, windows)) {
-      const reason = refusal(words, branch, cwd)
+      const reason = refusal(words, branch, cwd, path)
       if (reason) return reason
     }
   }

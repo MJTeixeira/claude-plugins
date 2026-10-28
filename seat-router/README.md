@@ -23,7 +23,8 @@ candidates of the size its effort stands for (low or medium is light, high stand
 heavy).
 
 - `reviewer` seats report and are not meant to commit. A codex reviewer is sandboxed to its folder, with no
-  network and no `.git` writes; an agy reviewer runs outside agy's sandbox, as an owner does. A seat called without
+  `.git` writes; its commands reach the network, so a brief can have it run `gh issue view` or fetch a
+  page; an agy reviewer runs outside agy's sandbox, as an owner does. A seat called without
   `isolation: "worktree"` starts in an empty folder, so the session is told to pass the worktree for any seat that reads the repository, a review included. A codex
   reviewer also runs without your `~/.codex/config.toml` (so none of your codex MCP servers start)
   and with codex's apps, plugins and web search off. This needs codex-cli 0.163 or later; an older
