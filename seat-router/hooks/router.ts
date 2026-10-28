@@ -1336,6 +1336,57 @@ async function report($: EngineInterface, seat: Seat, text: string, submit = tru
   await putSeat($, seat)
 }
 
+const UNFINISHED = 'didn\'t finish before the previous session ended'
+
+// What pollSession does with a seat of this session in each status, said to a resumed session.
+const RESUMED: Record<SeatStatus, (seat: Seat) => string> = {
+  reported: seat => 'seat-router delivered its report earlier in this conversation (' + seat.dir + '/report.md). '
+    + 'That report gives its outcome and says whether anything is left to do.',
+  running: () => 'has not reported yet; seat-router checks it and reports its outcome here.',
+  waiting: () => 'has not reported yet; seat-router checks it and reports its outcome here.',
+  reporting: seat => 'the previous session ended while seat-router delivered its report, so it may not be in this conversation, '
+    + 'and seat-router does not deliver it again. Its report: ' + seat.dir + '/report.md',
+  finished: seat => 'seat-router has not reported it and does not check it again. Its folder: ' + seat.dir,
+}
+
+// Claude Code tracks a seat as a background agent (the Agent call answers async_launched) but
+// never learns that it ended: the report reaches the session as a prompt. Resuming a session,
+// it lists every such seat as an agent that did not finish. Each seat of this session the
+// notice names is told as it stands; a notice naming only such seats is replaced, one naming
+// other tasks too keeps its text for them.
+export async function correctUnfinishedNotice($: EngineInterface, text: string): Promise<string> {
+  if (!text.includes(UNFINISHED)) return text
+  const root = await seatRoot($)
+  const sessionId = await $.session.id()
+  return replaceAsync(text, /<task-notification>[\s\S]*?<\/task-notification>/g, async block => {
+    if (!block.includes(UNFINISHED)) return block
+    const ids = [...block.matchAll(/<task-id>([^<]*)<\/task-id>/g)].map(match => match[1] ?? '')
+    const seats: Seat[] = []
+    for (const id of ids) {
+      if (!/^seat-\w+$/.test(id)) continue
+      const seat = asObject(readJson(await readText($, join(root, 'seat.' + id.slice('seat-'.length), 'seat.json')))) as unknown as Seat | undefined
+      if (seat?.id === id && seat.sessionId === sessionId && typeof seat.dir === 'string' && Object.hasOwn(RESUMED, seat.status)) seats.push(seat)
+    }
+    if (seats.length === 0) return block
+    const lines = seats.map(seat => '- ' + seat.id + ' ("' + seat.description + '"): ' + RESUMED[seat.reported ? 'reported' : seat.status](seat))
+    const others = ids.filter(id => !seats.some(seat => seat.id === id))
+    const named = seats.map(seat => seat.id).join(', ')
+    const head = others.length === 0
+      ? 'seat-router: Claude Code\'s notice listed ' + named + ' as background agents that did not finish. '
+        + 'Seats run outside Claude Code, which keeps no record of their end, so that notice is wrong about them.'
+      : 'seat-router: Claude Code\'s notice above is wrong about ' + named + ', which are seats: they run outside Claude Code, '
+        + 'which keeps no record of their end. It stands as Claude Code wrote it for ' + others.join(', ') + '.'
+    const note = [head, ...lines].join('\n')
+    return others.length === 0 ? note : block + '\n' + note
+  })
+}
+
+async function replaceAsync(text: string, pattern: RegExp, replace: (match: string) => Promise<string>): Promise<string> {
+  const replaced = await Promise.all([...text.matchAll(pattern)].map(match => replace(match[0])))
+  let index = 0
+  return text.replace(pattern, () => replaced[index++] ?? '')
+}
+
 async function runCandidate($: EngineInterface, seat: Seat, start: number, readings: Quota[] = [], failedOutput = ''): Promise<void> {
   const choices = seat.chain
   let earliest: number | undefined

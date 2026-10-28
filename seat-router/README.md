@@ -128,6 +128,12 @@ A report leaves out each background-task notice agy fed its model and the model 
 seat's output (a `<SYSTEM_MESSAGE>` block in agy's exact shape, with its preamble line), with a
 line saying how many it removed. A seat's own mention of the tag stays, and so does a block with
 no closing line.
+Claude Code never learns that a seat ended, so resuming a session it lists every seat of it as a
+background agent that did not finish. The mod rewrites that notice before the model reads it, for
+each seat of this session it names: one that reported points at the report it delivered, one
+running or waiting is yet to report and will report here, and one cut off while reporting points at
+its report. A notice naming only such seats says nothing else. One naming other tasks too keeps
+Claude Code's words, and the note names the seats it corrects and the tasks it leaves alone.
 
 ## Requirements
 
