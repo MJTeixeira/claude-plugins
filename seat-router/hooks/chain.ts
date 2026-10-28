@@ -54,6 +54,15 @@ export const isBusy = (load: Load, busyAt: number): boolean =>
   (load.fiveHour ?? 0) >= busyAt || (load.weekly ?? 0) >= busyAt
   || (load.weekly !== undefined && load.weekElapsed !== undefined && load.weekly > load.weekElapsed)
 
+/** Why a load is busy, as fallback trails name it: the window at or past `busyAt`, else the week used faster than it has passed. */
+export const busyReason = (load: Load, busyAt: number): string => {
+  const percent = (value: number): string => Math.round(value) + '%'
+  if ((load.fiveHour ?? 0) >= busyAt) return '5h ' + percent(load.fiveHour ?? 0) + ' used'
+  if ((load.weekly ?? 0) >= busyAt) return '7d ' + percent(load.weekly ?? 0) + ' used'
+  // Rounded apart, so a week used only just faster than it passed still reads as ahead.
+  return '7d ' + Math.ceil(load.weekly ?? 0) + '% used, ' + Math.floor(load.weekElapsed ?? 0) + '% of the week passed'
+}
+
 export const pressure = (load: Load): number => Math.max(load.fiveHour ?? 0, load.weekly ?? 0)
 
 /** Whether a candidate is the CLI or family a seat line asked for. */
