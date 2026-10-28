@@ -56,7 +56,8 @@ async function grep(flags, source, files) {
     } catch {}
   }
   process.stdout.write(flags.includes('c') ? count + '\n' : out)
-  process.exit(count ? 0 : 1)
+  // process.exit would cut a pipe write still pending, which on macOS is anything past the pipe buffer.
+  process.exitCode = count ? 0 : 1
 }
 
 function find(dir, glob) {

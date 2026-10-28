@@ -41,11 +41,11 @@ const seatRules = (vendors: readonly ExternalVendor[], sizes: Record<Size, Candi
     + SIZES.map(size => size + ' = ' + usable(size).map(formatCandidate).join(', ')).join('; ') + '.\n'
     + 'A seat is a fresh context: it sees only its brief and its folder, so the brief carries '
     + 'the task, the grounding it cannot read from its folder, and its output format. Tier `owner` is for a seat that '
-    + 'commits, pushes, opens or merges a PR, or needs the network or tools outside its folder (Docker, a database); it may '
+    + 'commits, pushes, opens or merges a PR, or needs tools outside its folder (Docker, a database); it may '
     + 'leave its CLI\'s sandbox, and its report names the branch it leaves, its worktree removed. Every other seat is '
-    + '`reviewer`: it reports and does not commit. Pass `isolation: "worktree"` whenever the seat reads or changes this '
-    + 'repository, a review included: without it the seat starts in an empty folder and sees only the absolute paths its '
-    + 'brief names. A seat '
+    + '`reviewer`: it reports and does not commit, and its commands reach the network unless it runs on another Claude '
+    + 'account. Pass `isolation: "worktree"` whenever the seat reads or changes this repository, a review included: '
+    + 'without it the seat starts in an empty folder and sees only the absolute paths its brief names. A seat '
     + 'cannot be continued: give follow-up work to a fresh seat with the whole scope. The mod falls back along the size\'s '
     + 'candidates; when a report says no CLI could take the seat, start the Agent it asks for yourself, in that turn.'
     + (accounts.length > 0
@@ -102,7 +102,10 @@ const oneAtATime = <T,>(work: () => Promise<T>): Promise<T> => {
   picking = turn.catch(() => undefined)
   return turn
 }
-// Claude seats handed to the session, which $.agent.list may not show for a moment.
+// Claude seats handed to the session and not yet listed by $.agent.list, counted
+// as running on top of it. One is dropped once listed, when its Agent call returns
+// without spawning, or after this long, as a subagent that ended before any later
+// pick saw it listed.
 const CLAUDE_PICK_MS = 60_000
 // The engine skips a tool.call hook after 10s; a pick this late launches nothing.
 const LATE_MS = 9_000
@@ -110,7 +113,8 @@ const LATE_MS = 9_000
 // whose shell commands pass the same owner guard as codex and agy owners.
 const ownerCalls = new Set<string>()
 const claudeOwners = new Set<string>()
-let claudePicks: number[] = []
+type ClaudePick = { at: number, toolUseId?: string, agentId?: string }
+let claudePicks: ClaudePick[] = []
 
 const isRunning = (status: string): boolean => status === 'running' || status === 'waiting'
 
@@ -341,7 +345,7 @@ export const register: Register = (on, options) => {
   on('session.append', async ($, e, next) => {
     if (e.origin.kind !== 'task-notification') return next(e)
     const content = await Promise.all(e.message.content.map(async block =>
-      block.type === 'text' ? { ...block, text: await correctUnfinishedNotice($, block.text) } : block))
+      block.type === 'text' && typeof block.text === 'string' ? { ...block, text: await correctUnfinishedNotice($, block.text) } : block))
     return next({ ...e, message: { ...e.message, content } })
   })
 
@@ -398,27 +402,33 @@ export const register: Register = (on, options) => {
     const began = await $.clock.now()
     const picked = await oneAtATime(async () => {
       const now = await $.clock.now()
-      claudePicks = claudePicks.filter(at => now - at < CLAUDE_PICK_MS)
       const rotating = isRotating(marker)
-      const listed = rotating ? (await $.agent.list()).filter(agent => isRunning(agent.status)).length : 0
-      const initial = await chooseInitial($, marker, rotating ? await runningFamilies($, Math.max(listed, claudePicks.length)) : {})
+      const agents = rotating ? await $.agent.list() : []
+      const listed = new Set(agents.map(agent => agent.id))
+      claudePicks = claudePicks.filter(pick => now - pick.at < CLAUDE_PICK_MS && (pick.agentId === undefined || !listed.has(pick.agentId)))
+      // A pick's agent can be listed before agent.spawn attaches its id, counting it twice
+      // for a moment: AgentInfo carries no tool_use_id to reconcile the two.
+      const claude = agents.filter(agent => isRunning(agent.status)).length + claudePicks.length
+      const initial = await chooseInitial($, marker, rotating ? await runningFamilies($, claude) : {})
       // Past the engine's tool.call budget the Agent already ran as a plain subagent: a seat would run the task twice.
       if ((await $.clock.now()) - began >= LATE_MS) return { kind: 'late' as const }
       const chosen = initial.allOut ? undefined : initial.chain[initial.position ?? 0]
       if (chosen?.vendor === 'claude' && chosen.account === undefined) {
-        claudePicks.push(now)
-        return { kind: 'claude' as const, claude: chosen, initial }
+        const pick: ClaudePick = { at: now, ...(e.tool_use_id ? { toolUseId: e.tool_use_id } : {}) }
+        claudePicks.push(pick)
+        return { kind: 'claude' as const, claude: chosen, initial, pick }
       }
       return { kind: 'external' as const, seat: await startExternal($, e, marker, initial) }
     })
     if (picked.kind === 'late') return next(e)
     if (picked.kind === 'claude') {
-      const { claude, initial } = picked
+      const { claude, initial, pick } = picked
       if (marker.tier === 'owner' && e.tool_use_id) ownerCalls.add(e.tool_use_id)
       const launched = await next({
         ...e, prompt: marker.brief, model: claude.model as typeof e.model,
         ...(claude.effort ? { effort: claude.effort as typeof e.effort } : {}),
       })
+      if (pick.toolUseId !== undefined && pick.agentId === undefined) claudePicks = claudePicks.filter(other => other !== pick)
       // The trail goes to the session that placed the seat, as an external seat's report carries it.
       if (!initial.trail.length || 'deny' in launched && launched.deny !== undefined || launched.isError) return launched
       return { ...launched, context: [...launched.context ?? [], 'Fallback: ' + [...initial.trail, 'claude ' + claude.model].join(' → ')] }
@@ -436,6 +446,8 @@ export const register: Register = (on, options) => {
   on('agent.spawn', async ($, e, next) => {
     const spawned = await next(e)
     if (ownerCalls.delete(e.tool_use_id) && spawned.agentId) claudeOwners.add(spawned.agentId)
+    const pick = e.tool_use_id ? claudePicks.find(other => other.toolUseId === e.tool_use_id) : undefined
+    if (pick && spawned.agentId) pick.agentId = spawned.agentId
     if (spawned.agentId) await recordClaudeSeat($, spawned.agentId, await $.clock.now(), () => ({ description: e.description }))
     return spawned
   })
