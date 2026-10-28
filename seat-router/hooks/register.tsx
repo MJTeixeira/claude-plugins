@@ -13,7 +13,7 @@ import type { Drawing } from './raster'
 import { autoCandidates, familyOf, formatCandidate, parseAccounts, parseCandidates, SIZES } from './chain'
 import type { Candidate, Family, Size } from './chain'
 import {
-  accountNames, accountSetting, chooseInitial, claudeBrief, cliModels, delegateOf, delegateReason, delegateSetting, formatAccounts, foundAccounts, installedVendors, isRotating, ownerGuardReason, parseMarker, runningFamilies,
+  accountNames, accountSetting, chooseInitial, claudeBrief, cliModels, correctUnfinishedNotice, delegateOf, delegateReason, delegateSetting, formatAccounts, foundAccounts, installedVendors, isRotating, ownerGuardReason, parseMarker, runningFamilies,
   saveOptions, seatConfigFrom, setAccounts, setDelegate, setSeatConfig, setSize, SHELL_TOOLS, sizeCandidates, probeCodexSandbox, pruneSeats, singleFlightPoll, singleFlightQuotaRefresh, startExternal, stopSeat,
 } from './router'
 import type { Delegate, ExternalVendor, FoundAccount } from './router'
@@ -336,6 +336,13 @@ export const register: Register = (on, options) => {
     const sizes = Object.fromEntries(await Promise.all(SIZES.map(async size => [size, await sizeCandidates($, size)] as const))) as Record<Size, Candidate[]>
     const text = seatRules(vendors, sizes, mixFanouts, accountNames()) + delegateRules(delegateSetting(), await delegateReason($))
     return { sections: [...composed.sections, { id: 'seat-router:loaded', text, scope: 'session' }] }
+  })
+
+  on('session.append', async ($, e, next) => {
+    if (e.origin.kind !== 'task-notification') return next(e)
+    const content = await Promise.all(e.message.content.map(async block =>
+      block.type === 'text' ? { ...block, text: await correctUnfinishedNotice($, block.text) } : block))
+    return next({ ...e, message: { ...e.message, content } })
   })
 
   on('session.start', async ($, e, next) => {
