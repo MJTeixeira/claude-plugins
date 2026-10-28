@@ -13,7 +13,7 @@ import type { Drawing } from './raster'
 import { autoCandidates, familyOf, formatCandidate, parseAccounts, parseCandidates, SIZES } from './chain'
 import type { Candidate, Family, Size } from './chain'
 import {
-  accountNames, accountSetting, chooseInitial, claudeBrief, cliModels, correctUnfinishedNotice, delegateOf, delegateReason, delegateSetting, formatAccounts, foundAccounts, installedVendors, isRotating, ownerGuardReason, parseMarker, runningFamilies,
+  accountNames, accountSetting, chooseInitial, cliModels, correctUnfinishedNotice, delegateOf, delegateReason, delegateSetting, formatAccounts, foundAccounts, installedVendors, isRotating, ownerGuardReason, parseMarker, runningFamilies,
   saveOptions, seatConfigFrom, setAccounts, setDelegate, setSeatConfig, setSize, SHELL_TOOLS, sizeCandidates, probeCodexSandbox, pruneSeats, singleFlightPoll, singleFlightQuotaRefresh, startExternal, stopSeat,
 } from './router'
 import type { Delegate, ExternalVendor, FoundAccount } from './router'
@@ -415,10 +415,13 @@ export const register: Register = (on, options) => {
     if (picked.kind === 'claude') {
       const { claude, initial } = picked
       if (marker.tier === 'owner' && e.tool_use_id) ownerCalls.add(e.tool_use_id)
-      return next({
-        ...e, prompt: claudeBrief(marker.brief, initial.trail), model: claude.model as typeof e.model,
+      const launched = await next({
+        ...e, prompt: marker.brief, model: claude.model as typeof e.model,
         ...(claude.effort ? { effort: claude.effort as typeof e.effort } : {}),
       })
+      // The trail goes to the session that placed the seat, as an external seat's report carries it.
+      if (!initial.trail.length || 'deny' in launched && launched.deny !== undefined || launched.isError) return launched
+      return { ...launched, context: [...launched.context ?? [], 'Fallback: ' + [...initial.trail, 'claude ' + claude.model].join(' → ')] }
     }
     const seat = picked.seat
     void startElapsedTick($)

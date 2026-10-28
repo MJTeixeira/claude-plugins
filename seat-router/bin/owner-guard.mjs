@@ -125,7 +125,7 @@ function isLeasedPush(args, branch) {
 
 // Where a git command's working tree is: `cwd` moved by each `-C`, then `--work-tree` or GIT_WORK_TREE.
 function gitTree(options, assigned, cwd) {
-  let dir = cwd
+  let dir = resolve(cwd)
   let tree = assigned === undefined ? undefined : resolve(cwd, assigned)
   for (let index = 0; index < options.length; index += 1) {
     if (options[index] === '-C') dir = resolve(dir, options[index + 1] ?? '')

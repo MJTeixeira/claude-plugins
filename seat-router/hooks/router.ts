@@ -1,8 +1,8 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, ToolCallInput } from 'claude-code'
 import type { SeatDisplay, SeatQuotaDisplay, SeatStatus, SeatTier, SeatVendor } from '../types/index'
-import { accountCandidate, autoCandidates, familyOf, FAMILIES, formatCandidate, isAuto, isBusy, isPreferred, parseAccounts, parseAgyModels, parseCandidates, pick, RESERVED, rotate, SIZES, sizeOf } from './chain'
-import type { Candidate, CliModel, CliModels, Load, Running, Size } from './chain'
+import { accountCandidate, autoCandidates, busyReason, familyOf, FAMILIES, formatCandidate, isAuto, isBusy, isPreferred, parseAccounts, parseAgyModels, parseCandidates, pick, RESERVED, rotate, SIZES, sizeOf } from './chain'
+import type { Candidate, CliModel, CliModels, Family, Load, Running, Size } from './chain'
 
 const EXPLICIT = /^seat: (codex|agy) (\S+) (\S+) (reviewer|owner)\n/
 const SIZED = /^seat: (?:([\w-]+) )?(light|standard|heavy) (reviewer|owner)\n/
@@ -635,9 +635,6 @@ function ownerGuard($: EngineInterface): string[] {
   return ['--dangerously-bypass-hook-trust', '-c', 'hooks.PreToolUse=[{matcher="Bash",hooks=[{type="command",command=' + JSON.stringify(command) + '}]}]']
 }
 
-export function claudeBrief(brief: string, trail: string[]): string {
-  return trail.length === 0 ? brief : 'Fallback trail (repeat this as the first line of your report): ' + trail.join(' → ') + '\n\n' + brief
-}
 
 export function tokenCount(jsonl: string): number | undefined {
   let total: number | undefined
@@ -1419,7 +1416,7 @@ async function runCandidate($: EngineInterface, seat: Seat, start: number, readi
       // so the session starts the Claude agent itself, inside its turn.
       await report($, seat, 'codex and agy could not take this seat. Start an Agent yourself (' + claudeAgent(choice) + ', '
         + (seat.isolation === 'worktree' ? 'isolation worktree, ' : '') + 'no seat line) with this brief:\n\n'
-        + claudeBrief(seat.brief, seat.fallbackTrail))
+        + seat.brief)
       return
     }
     seat.status = 'running'
@@ -1651,13 +1648,22 @@ export async function chooseInitial($: EngineInterface, marker: Marker, running:
     loads.push(load)
     if (!rotating && (pinned || !isBusy(load, seatConfig.busyAt))) break
   }
+  // Why each candidate ahead of the chosen one, and not out, was passed over.
+  const passed = (chosen: number): string[] => chain.slice(0, chosen).flatMap((candidate, index) => {
+    const load = loads[index]
+    if (load === undefined || load === 'out') return []
+    if (isBusy(load, seatConfig.busyAt)) return [formatCandidate(candidate) + ' busy (' + busyReason(load, seatConfig.busyAt) + ')']
+    const lead = chain[chosen]
+    if (!rotating || lead === undefined) return [formatCandidate(candidate) + ' passed over']
+    const count = (family: Family): string => family + ' runs ' + (running[family] ?? 0)
+    return [formatCandidate(candidate) + ' passed over (' + count(familyOf(candidate)) + ', ' + count(familyOf(lead)) + ')']
+  })
   const order = rotating ? rotate(chain, loads, running, seatConfig.busyAt) : []
   if (order.length) {
     const first = order[0] as number
-    const busy = chain.slice(0, first).filter((_, index) => { const load = loads[index]; return load !== 'out' && load !== undefined && isBusy(load, seatConfig.busyAt) })
     return {
       chain: order.map(index => chain[index]).filter((value): value is Candidate => value !== undefined),
-      trail: busy.length ? [...trail, 'busy: ' + busy.map(formatCandidate).join(', ')] : trail, allOut: false, position: 0,
+      trail: [...trail, ...passed(first)], allOut: false, position: 0,
       readings: order.map(index => readings[index]).filter((value): value is Quota => value !== undefined),
     }
   }
@@ -1670,10 +1676,9 @@ export async function chooseInitial($: EngineInterface, marker: Marker, running:
   const chosen = chain[position]
   if (!chosen || pinned) return { chain, trail, allOut: false, position, readings }
   // A sized seat starts on the chosen candidate; the ones it passed over stay behind as its fallback.
-  const busy = chain.slice(0, position).filter((_, index) => loads[index] !== 'out').map(formatCandidate)
   return {
     chain: [chosen, ...chain.filter((_, index) => index !== position)],
-    trail: busy.length ? [...trail, 'busy: ' + busy.join(', ')] : trail,
+    trail: [...trail, ...passed(position)],
     allOut: false, position: 0,
     readings: [readings[position], ...readings.filter((_, index) => index !== position)].filter((value): value is Quota => value !== undefined),
   }
