@@ -63,6 +63,9 @@ const CODEX_WINDOWS_NOTE = 'On this machine node cannot read the output of a pro
 // Python on Windows reads and writes files in the ANSI code page (cp1252) unless told
 // otherwise, so a seat's python script turns UTF-8 text into mojibake (PEP 686).
 const PYTHON_UTF8 = { PYTHONUTF8: '1' }
+// agy starts a detached updater that runs `agy --version`; on Windows that child has no
+// console, so it opens a visible one for a moment.
+const AGY_NO_UPDATER = { AGY_CLI_DISABLE_AUTO_UPDATE: 'true' }
 const codexMxcNote = (temp: string): string => {
   const quoted = "'" + temp.replaceAll("'", "''") + "'"
   return 'This sandbox gives programs a temp folder they cannot clean up, so pip, python\'s tempfile and other tools '
@@ -588,7 +591,8 @@ async function seatRoot($: EngineInterface): Promise<string> {
 
 // The POSIX tools seat-io.mjs stands in for, on every platform.
 function io($: EngineInterface, args: string[], init?: { timeoutMs?: number, stdin?: string }): ReturnType<EngineInterface['process']['run']> {
-  return $.process.run(['node', join($.plugin.root, 'bin', 'seat-io.mjs'), ...args], init)
+  const agy = args[0] === 'exec' && args[1] === 'agy'
+  return $.process.run(['node', join($.plugin.root, 'bin', 'seat-io.mjs'), ...args], agy ? { ...init, env: AGY_NO_UPDATER } : init)
 }
 
 // Claude Code 2.1.310 lists no plugin userConfig rows in /config, so $.config.set
@@ -1055,7 +1059,7 @@ async function launch($: EngineInterface, seat: Seat): Promise<void> {
       'agy', '--output-format', 'stream-json', '--model', seat.model, '--effort', agyEffort(seat.effort),
       '--dangerously-skip-permissions', '-p', { file: join(seat.dir, 'brief.md') },
     ],
-    cwd: seat.workDir, ...env,
+    cwd: seat.workDir, env: { ...env.env, ...AGY_NO_UPDATER },
     home: [...(isOwner ? ['owner'] : []), '--home', join(seat.dir, 'home')],
     stdout: join(seat.dir, 'agy.jsonl'), stderr: join(seat.dir, 'agy.err'), exit: join(seat.dir, 'exit'), pid: join(seat.dir, 'pid'),
   }

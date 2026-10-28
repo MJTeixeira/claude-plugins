@@ -46,7 +46,7 @@ if (spec.sleep !== undefined) {
   try {
     const env = { ...process.env, ...spec.env }
     if (spec.home) {
-      const home = execFileSync(process.execPath, [join(dirname(self), 'agy-seat-home.mjs'), ...spec.home], { encoding: 'utf8' }).trim()
+      const home = execFileSync(process.execPath, [join(dirname(self), 'agy-seat-home.mjs'), ...spec.home], { encoding: 'utf8', windowsHide: true }).trim()
       env.HOME = home
       if (process.platform === 'win32') env.USERPROFILE = home
     }
