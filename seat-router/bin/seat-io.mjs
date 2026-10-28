@@ -94,7 +94,7 @@ function alive(pid) {
 
 // run-seat starts detached, so on POSIX its pid names the group of everything it started.
 function kill(pid) {
-  if (process.platform === 'win32') return execFileSync('taskkill', ['/T', '/F', '/PID', String(pid)], { stdio: 'ignore' })
+  if (process.platform === 'win32') return execFileSync('taskkill', ['/T', '/F', '/PID', String(pid)], { stdio: 'ignore', windowsHide: true })
   try { process.kill(-pid, 'SIGKILL') } catch { process.kill(pid, 'SIGKILL') }
 }
 
