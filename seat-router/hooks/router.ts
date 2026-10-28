@@ -37,7 +37,7 @@ export const SHELL_TOOLS = ['Bash', 'PowerShell']
 // The guard reads command lines, so an interpreter (python, node, a script) can reach what
 // it refused; an owner seat is told that a refusal is final.
 const OWNER_GUARD_NOTE = 'An owner guard refuses force pushes, git reset --hard, git worktree remove and move (seat-router removes '
-  + 'this seat\'s worktree when it ends), git branch -D, clean -f, checkout, restore and forced switch in another worktree (-C, --work-tree), forced recursive deletes, gh pr merge --admin and gh repo delete. A refusal is final: do not reach the same result another way (another shell, python, node or a '
+  + 'this seat\'s worktree when it ends), git branch -D, clean -f, checkout, restore and forced switch aimed at another folder (-C, --work-tree) or run outside this seat\'s folder (after a cd, say), forced recursive deletes, gh pr merge --admin and gh repo delete. A refusal is final: do not reach the same result another way (another shell, python, node or a '
   + 'script). Say in your report what was refused and why you needed it.\n'
 // In -p mode agy keeps a run open while a background task (a long run_command, a schedule
 // timer) runs and wakes the agent when it ends, so an answer given early is not the run's
@@ -630,9 +630,13 @@ export async function ownerGuardReason($: EngineInterface, command: string): Pro
 // node as exit 1, so the guard answers with a deny decision rather than exit 2
 // (openai/codex#48183).
 // The hook comes from the command line, which codex runs only past its hook trust check.
-function ownerGuard($: EngineInterface): string[] {
-  const command = 'node "' + slashed($.plugin.root) + '/bin/owner-guard.mjs"'
-  return ['--dangerously-bypass-hook-trust', '-c', 'hooks.PreToolUse=[{matcher="Bash",hooks=[{type="command",command=' + JSON.stringify(command) + '}]}]']
+function ownerGuard($: EngineInterface, seatDir: string): string[] {
+  return ['--dangerously-bypass-hook-trust', '-c', 'hooks.PreToolUse=[{matcher="Bash",hooks=[{type="command",command=' + JSON.stringify(guardCommand($, seatDir)) + '}]}]']
+}
+
+// `--own` names the seat's folder, outside which the guard refuses git commands that discard work.
+function guardCommand($: EngineInterface, seatDir: string): string {
+  return 'node "' + slashed($.plugin.root) + '/bin/owner-guard.mjs" --own "' + seatDir + '"'
 }
 
 
@@ -956,7 +960,8 @@ async function launchAccount($: EngineInterface, seat: Seat & { account: string 
   if (windows) await $.fs.write(join(seat.dir, 'brief.md'), seat.brief + '\n' + NO_SHELL_NOTE)
   const gitDenied = isReviewer ? (await gitDirs($, seat.workDir)).map(dir => 'Edit(/' + (dir.startsWith('/') ? '' : '/') + slashed(dir) + '/**)') : []
   const tiered = !isReviewer ? {
-    hooks: { PreToolUse: [{ matcher: SHELL_TOOLS.join('|'), hooks: [{ type: 'command', command: 'node "' + slashed($.plugin.root) + '/bin/owner-guard.mjs"' }] }] },
+    // --claude: the hook's tool_name names the shell, and Claude Code's Bash tool is a POSIX shell on Windows too.
+    hooks: { PreToolUse: [{ matcher: SHELL_TOOLS.join('|'), hooks: [{ type: 'command', command: guardCommand($, seat.dir) + ' --claude' }] }] },
   } : windows ? {
     permissions: { deny: [...SHELL_TOOLS, 'Edit(.git/**)', ...gitDenied, 'WebFetch', 'WebSearch'] },
   } : {
@@ -1039,7 +1044,7 @@ async function launch($: EngineInterface, seat: Seat): Promise<void> {
         ...(windows ? ['-c', 'windows.sandbox="' + (mxc ? 'mxc' : 'unelevated') + '"'] : []),
         ...(mxc ? ['--add-dir', temp] : []),
       ] : []),
-      ...(isOwner ? ['-c', 'shell_environment_policy.ignore_default_excludes=true', ...ownerGuard($)] : []),
+      ...(isOwner ? ['-c', 'shell_environment_policy.ignore_default_excludes=true', ...ownerGuard($, seat.dir)] : []),
       // PowerShell 5.1 reads a UTF-8 profile as ANSI, so a profile naming a non-ASCII path
       // prints an error ahead of every command; a non-login shell runs with -NoProfile.
       ...(windows ? ['-c', 'allow_login_shell=false'] : []),
@@ -1058,7 +1063,7 @@ async function launch($: EngineInterface, seat: Seat): Promise<void> {
       '--dangerously-skip-permissions', '-p', { file: join(seat.dir, 'brief.md') },
     ],
     cwd: seat.workDir, env: { ...env.env, ...AGY_NO_UPDATER },
-    home: [...(isOwner ? ['owner'] : []), '--home', join(seat.dir, 'home')],
+    home: [...(isOwner ? ['owner'] : []), '--home', join(seat.dir, 'home'), '--own', seat.dir],
     stdout: join(seat.dir, 'agy.jsonl'), stderr: join(seat.dir, 'agy.err'), exit: join(seat.dir, 'exit'), pid: join(seat.dir, 'pid'),
   }
   await start($, seat, spec, isOwner || seat.vendor === 'agy' ? await ownerEnv($) : undefined)
