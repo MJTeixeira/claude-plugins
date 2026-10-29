@@ -20,7 +20,7 @@ seat: <codex|agy> <model> <effort> <reviewer|owner>
 
 An explicit line runs exactly that model; it moves only when that vendor is out, then along the
 candidates of the size its effort stands for (low or medium is light, high standard, xhigh or max
-heavy).
+heavy), each at the effort the line named.
 
 - `reviewer` seats report and are not meant to commit. A codex reviewer is sandboxed to its folder, with no
   `.git` writes; its commands reach the network, so a brief can have it run `gh issue view` or fetch a

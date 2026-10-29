@@ -36,7 +36,7 @@ const seatRules = (vendors: readonly ExternalVendor[], sizes: Record<Size, Candi
     + vendors.join(', ') + '), and its report arrives later as a message from the seat-router plugin. A seat line is either '
     + '`seat: [<cli or family>] <light|standard|heavy> <reviewer|owner>`, where the mod picks the model of that size by '
     + 'quota, keeping to the named CLI (' + vendors.join('|') + ') or model family (claude|gpt|gemini) unless all of it is out, or '
-    + '`seat: <' + vendors.join('|') + '> <model> <effort> <reviewer|owner>`, which runs exactly that model. A task that names an '
+    + '`seat: <' + vendors.join('|') + '> <model> <effort> <reviewer|owner>`, which runs that model, and only while it is out moves to the models of its effort\'s size, at that effort. A task that names an '
     + 'effort maps to a size: low or medium is light, high is standard, xhigh or max is heavy. Sizes, in the order tried: '
     + SIZES.map(size => size + ' = ' + usable(size).map(formatCandidate).join(', ')).join('; ') + '.\n'
     + 'A seat is a fresh context: it sees only its brief and its folder, so the brief carries '
