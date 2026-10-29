@@ -157,8 +157,8 @@ reported as such. A failed owner moves to its next model only when its worktree 
 rerunning one that committed would repeat its work. A seat line naming a CLI or family stays in it: a
 failed candidate there moves the seat only to another of that CLI or family, and the seat is reported
 when none is left. A seat run again keeps each earlier attempt's logs in its folder, numbered
-(`agy.1.jsonl`, `agy.1.err`, `final.1.md`). Once a seat finishes, its worktree is removed (one with uncommitted changes or
-untracked files stays), so the branch it held can be checked out elsewhere; a reviewer's `seat/*`
+(`agy.1.jsonl`, `agy.1.err`, `final.1.md`). Once a seat finishes, its worktree is removed (one with uncommitted changes,
+untracked files or files git ignores stays, and its report names the ignored ones), so the branch it held can be checked out elsewhere; a reviewer's `seat/*`
 branch goes with it, and an owner's report names the branch it left. When a session starts,
 the mod deletes seat folders that ended more than a week ago, except a worktree with changes or
 untracked files; `seat/*` branches stay.

@@ -1344,6 +1344,13 @@ async function releaseWorktree($: EngineInterface, seat: Seat): Promise<string |
   const git = (args: string[]) => $.process.run(['git', '-C', tree, ...args])
   const branch = (await git(['branch', '--show-current'])).stdout.trim() || seat.worktreeBranch || 'a detached HEAD'
   const common = (await git(['rev-parse', '--path-format=absolute', '--git-common-dir'])).stdout.trim()
+  // git worktree remove keeps a worktree with untracked files but deletes the ones git ignores,
+  // which may be what the seat was asked to make.
+  const ignored = (await git(['status', '--porcelain', '--ignored'])).stdout.split('\n').filter(line => line.startsWith('!! ')).map(line => line.slice(3))
+  if (ignored.length) {
+    return 'Worktree: ' + branch + ' at ' + tree + ' (kept: it has files git ignores, which removing it would delete: '
+      + ignored.slice(0, 5).join(', ') + (ignored.length > 5 ? ', and ' + (ignored.length - 5) + ' more' : '') + ')'
+  }
   if ((await $.process.run(['git', '-C', seat.sessionCwd, 'worktree', 'remove', tree])).exitCode !== 0) {
     return 'Worktree: ' + branch + ' at ' + tree + ' (kept: it has uncommitted changes or untracked files)'
   }
@@ -1682,7 +1689,9 @@ export const isRotating = (marker: Marker): boolean => !('vendor' in marker) && 
 // family is busy.
 export async function chooseInitial($: EngineInterface, marker: Marker, running: Running = {}): Promise<Initial> {
   const chain = await chainFor($, marker)
-  const trail: string[] = []
+  // Each candidate found out, by its place in the chain: the trail names only those ahead of the one that runs.
+  const outs: Array<[number, string]> = []
+  const trail = (before: number): string[] => outs.filter(([index]) => index < before).map(([, text]) => text)
   const readings: Quota[] = []
   let resetAt: number | undefined
   const now = await $.clock.now()
@@ -1690,11 +1699,11 @@ export async function chooseInitial($: EngineInterface, marker: Marker, running:
   const rotating = isRotating(marker)
   // A named model or account runs unless it is out.
   const pinned = 'vendor' in marker || marker.account !== undefined
-  for (const choice of chain) {
+  for (const [index, choice] of chain.entries()) {
     const available = await candidateQuota($, choice)
     readings.push(available)
     if (available.out) {
-      trail.push(choiceName(choice) + ' out (' + (available.detail || 'quota unavailable') + ')')
+      outs.push([index, choiceName(choice) + ' out (' + (available.detail || 'quota unavailable') + ')'])
       if (available.resetAt !== undefined) resetAt = resetAt === undefined ? available.resetAt : Math.min(resetAt, available.resetAt)
       loads.push('out')
       continue
@@ -1720,7 +1729,7 @@ export async function chooseInitial($: EngineInterface, marker: Marker, running:
     const first = order[0] as number
     return {
       chain: order.map(index => chain[index]).filter((value): value is Candidate => value !== undefined),
-      trail: [...trail, ...passed(first)], allOut: false, position: 0,
+      trail: [...trail(first), ...passed(first)], allOut: false, position: 0,
       readings: order.map(index => readings[index]).filter((value): value is Quota => value !== undefined),
     }
   }
@@ -1729,13 +1738,13 @@ export async function chooseInitial($: EngineInterface, marker: Marker, running:
   const inFamily = prefer === undefined ? [] : loads.map((load, index) => chain[index] !== undefined && isPreferred(chain[index], prefer) ? load : 'out' as const)
   const position = pinned ? loads.findIndex(load => load !== 'out')
     : pick(inFamily.some(load => load !== 'out') ? inFamily : loads, seatConfig.busyAt)
-  if (position === -1) return { chain, trail, resetAt, allOut: true, readings }
+  if (position === -1) return { chain, trail: trail(chain.length), resetAt, allOut: true, readings }
   const chosen = chain[position]
-  if (!chosen || pinned) return { chain, trail, allOut: false, position, readings }
+  if (!chosen || pinned) return { chain, trail: trail(position), allOut: false, position, readings }
   // A sized seat starts on the chosen candidate; the ones it passed over stay behind as its fallback.
   return {
     chain: [chosen, ...chain.filter((_, index) => index !== position)],
-    trail: [...trail, ...passed(position)],
+    trail: [...trail(position), ...passed(position)],
     allOut: false, position: 0,
     readings: [readings[position], ...readings.filter((_, index) => index !== position)].filter((value): value is Quota => value !== undefined),
   }
