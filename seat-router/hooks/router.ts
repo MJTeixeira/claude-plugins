@@ -41,9 +41,21 @@ const OWNER_GUARD_NOTE = 'An owner guard refuses force pushes, git reset --hard,
   + 'script). Say in your report what was refused and why you needed it.\n'
 // In -p mode agy keeps a run open while a background task (a long run_command, a schedule
 // timer) runs and wakes the agent when it ends, so an answer given early is not the run's
-// last act: a failed wake-up call ends the run in error after a complete answer.
+// last act: a failed wake-up call ends the run in error after a complete answer. A subagent
+// wakes its parent only by messaging it, so one that never reports leaves the run idle and
+// agy ends it with whatever the parent last said.
 const AGY_TASKS_NOTE = 'agy keeps the run open while a background task you started is still running, and wakes you when it ends. '
-  + 'Before your final answer, wait for or stop (manage_task kill) every background task and schedule timer you started, so the final answer is the last thing you do.\n'
+  + 'Before your final answer, wait for or stop (manage_task kill) every background task and schedule timer you started, so the final answer is the last thing you do. '
+  + 'Any subagent you start must report back to you before your final answer.\n'
+// agy renews its sign-in only in the token's last 10 seconds, so a long request sent just
+// before then fails with UNAUTHENTICATED, and a -p run ends there. A new process signs in
+// afresh, so the seat resumes its conversation there, AGY_AUTH_RESUMES times at most; the
+// old process's subagents and background tasks ended with it.
+const AGY_AUTH_RESUMES = 3
+const AGY_UNAUTHENTICATED = /UNAUTHENTICATED \(code 401\)/
+const AGY_RESUME = 'Your previous session ended unexpectedly: its sign-in expired, not because of anything you did. '
+  + 'Any subagent or background task you had running ended with it; check what it left and start it again if you still need it. '
+  + 'Then continue the task from where you stopped and give your final answer as the original request asked.'
 // agy's Windows shell is Windows PowerShell 5.1 whatever else is installed, and a codex reviewer
 // without the WindowsApps PATH entries lands there too where PowerShell 7 came from the Store.
 // Neither CLI lets the mod pick the shell.
@@ -247,6 +259,9 @@ type Seat = {
   prefer?: string
   preferFailed?: boolean
   reruns?: number
+  // The agy conversation the next launch resumes, and how many times its sign-in ran out.
+  resumeConversation?: string
+  authResumes?: number
   fallbackTrail: string[]
   rolloutPath?: string
   rolloutSearched?: boolean
@@ -855,6 +870,11 @@ export function findLoop(calls: readonly Call[]): Loop | undefined {
   return undefined
 }
 
+function agyConversation(jsonl: string): string | undefined {
+  const event = asObject(readJson(jsonl))
+  return event?.event === 'init' ? textAt(event.conversation_id) : undefined
+}
+
 function threadId(jsonl: string): string | undefined {
   const event = asObject(readJson(jsonl))
   return event?.type === 'thread.started' ? textAt(event.thread_id) : undefined
@@ -1060,7 +1080,8 @@ async function launch($: EngineInterface, seat: Seat): Promise<void> {
   } : {
     argv: [
       'agy', '--output-format', 'stream-json', '--model', seat.model, '--effort', agyEffort(seat.effort),
-      '--dangerously-skip-permissions', '-p', { file: join(seat.dir, 'brief.md') },
+      ...(seat.resumeConversation ? ['--conversation', seat.resumeConversation] : []),
+      '--dangerously-skip-permissions', '-p', seat.resumeConversation ? AGY_RESUME : { file: join(seat.dir, 'brief.md') },
     ],
     cwd: seat.workDir, env: { ...env.env, ...AGY_NO_UPDATER },
     home: [...(isOwner ? ['owner'] : []), '--home', join(seat.dir, 'home'), '--own', seat.dir],
@@ -1239,16 +1260,16 @@ export function failedSeat(vendor: ExternalVendor, exitCode: number | undefined,
   return { text, failed, quota, detail }
 }
 
-// A run agy refused an action passes when it still answered: the answer says what it
-// could not do, and the report names what was refused.
+// A run agy refused an action fails: in -p mode a refusal halts the conversation that asked,
+// so a subagent's work never reaches its parent and the answer can be stale.
 export function failedAgy(exitCode: number | undefined, jsonl: string, stderr: string): Check {
   const result = agyResult(jsonl)
   const base = failedSeat('agy', exitCode, result.text, jsonl, stderr)
-  const failed = base.failed || !result.valid || result.guardCrashed
-  const refused = result.denied.length ? 'denied ' + result.denied.join(', ') : ''
+  const failed = base.failed || !result.valid || result.guardCrashed || result.denied.length > 0
+  const refused = result.denied.length ? 'agy refused ' + result.denied.join(', ') : ''
   const error = result.valid ? '' : result.error.replace(/\s+/g, ' ').trim()
   const reason = base.detail || (result.guardCrashed ? 'owner guard could not run' : !result.valid && !error ? 'agy result failed' : '')
-  const detail = base.quota ? base.detail : [reason, error ? 'agy\'s error: ' + error : '', failed ? refused : ''].filter(Boolean).join(', ')
+  const detail = base.quota ? base.detail : [reason, error ? 'agy\'s error: ' + error : '', refused].filter(Boolean).join(', ')
   // The answer may be complete with only a late call failing, so the parent gets both to judge.
   const text = !result.valid && result.text.trim()
     ? 'agy\'s error: ' + (error || '(none given)') + '\nThe text the seat produced before agy\'s error:\n\n' + result.text
@@ -1429,6 +1450,8 @@ async function runCandidate($: EngineInterface, seat: Seat, start: number, readi
     if (choice.account === undefined) delete seat.account
     else seat.account = choice.account
     seat.chainPosition = position
+    delete seat.resumeConversation
+    delete seat.authResumes
     if (choice.vendor === 'codex') {
       seat.rolloutPath = undefined
       seat.rolloutSearched = false
@@ -1528,7 +1551,17 @@ export async function pollSession($: EngineInterface, sessionId: string): Promis
     if (seat.status !== 'running') continue
     const checked = await checkSeat($, seat)
     if (!checked.failed) {
-      await report($, seat, checked.text + (checked.refused ? '\n\n(agy refused this seat: ' + checked.refused.join(', ') + ')' : ''))
+      await report($, seat, checked.text)
+      continue
+    }
+    const conversation = seat.vendor === 'agy' && seat.account === undefined && AGY_UNAUTHENTICATED.test(checked.detail)
+      && (seat.authResumes ?? 0) < AGY_AUTH_RESUMES ? agyConversation(await head($, join(seat.dir, 'agy.jsonl'))) ?? seat.resumeConversation : undefined
+    if (conversation) {
+      seat.authResumes = (seat.authResumes ?? 0) + 1
+      seat.resumeConversation = conversation
+      seat.fallbackTrail.push(choiceName(seat) + ' sign-in expired mid-run, resumed')
+      await writeSeat($, seat)
+      await launch($, seat)
       continue
     }
     await failOver($, seat, checked)

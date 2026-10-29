@@ -33,11 +33,16 @@ heavy).
 - Every agy seat runs outside agy's sandbox (`--dangerously-skip-permissions`), behind the guard below.
   agy offers no reviewer to a headless run, and its sandbox refuses what a seat needs: on Windows node
   cannot even read the attributes of `%APPDATA%`, so no npm-installed CLI starts, and no read grant fixes
-  it. Permissions narrow later, once seats do their work. When agy refuses an action but the
-  seat still answers, the answer is its report, with a line naming what agy refused; a seat that did not
-  answer fails and moves on. An agy seat whose guard hook could not run fails too, though agy calls
+  it. Permissions narrow later, once seats do their work. A seat's agy settings are your
+  `~/.gemini/antigravity-cli/settings.json` with the guard's deny list added, so it may do what your own agy
+  may (`allowNonWorkspaceAccess`, say). A run in which agy refused an action fails, naming the refusal, and
+  moves on: a refusal halts the conversation that asked, so a subagent's work never reaches the seat and its
+  answer can be stale. An agy seat whose guard hook could not run fails too, though agy calls
   the run a success. agy keeps a run open while a background task the seat started (a long command,
-  a timer) still runs, so the brief tells the seat to wait for or stop each one before its final answer.
+  a timer) still runs, so the brief tells the seat to wait for or stop each one before its final answer,
+  and to have any subagent it starts report back first. agy renews its sign-in only in the token's last
+  seconds, so a long run can end with `UNAUTHENTICATED (code 401)`; the seat then resumes its agy
+  conversation in a new process, told why, up to three times, before it moves on.
   A run agy ends in error still fails, and wherever its report is given, it carries agy's error and the
   text the seat produced before it.
 - On Windows a codex reviewer runs codex's mxc sandbox where it starts (Windows 11 24H2 26100.9278 or
