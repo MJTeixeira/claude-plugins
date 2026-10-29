@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, ToolCallInput } from 'claude-code'
 import type { SeatDisplay, SeatQuotaDisplay, SeatStatus, SeatTier, SeatVendor } from '../types/index'
-import { accountCandidate, autoCandidates, busyReason, familyOf, FAMILIES, formatCandidate, isAuto, isBusy, isPreferred, parseAccounts, parseAgyModels, parseCandidates, pick, RESERVED, rotate, SIZES, sizeOf } from './chain'
+import { accountCandidate, arrange, autoCandidates, busyReason, familyOf, FAMILIES, formatCandidate, isAuto, isBusy, isPreferred, parseAccounts, parseAgyModels, parseCandidates, pick, RESERVED, rotate, SIZES, sizeOf } from './chain'
 import type { Candidate, CliModel, CliModels, Load, Running, Size } from './chain'
 
 const EXPLICIT = /^seat: (codex|agy) (\S+) (\S+) (reviewer|owner)\n/
@@ -402,27 +402,27 @@ function agyBucketQuota(payload: unknown, model: string): Quota {
     }
   }
   const isGemini = model.startsWith('gemini')
-  const isArgon = model.includes('argon')
-  const ids = isGemini ? ['gemini-5h', 'gemini-weekly'] : ['3p-5h', '3p-weekly']
-  if (isArgon) ids.push('gemini-argon-wtu-weekly')
-  const selected = ids.map(id => buckets.find(bucket => bucket.id === id))
+  // Argon draws only on its own weekly bucket where agy lists one, and on Gemini's windows elsewhere.
+  const ownBucket = model.includes('argon') && buckets.some(bucket => bucket.id === 'gemini-argon-wtu-weekly')
+  const windows = ownBucket ? [{ id: 'gemini-argon-wtu-weekly', name: 'argon weekly', weekly: true }]
+    : isGemini ? [{ id: 'gemini-5h', name: '5h', weekly: false }, { id: 'gemini-weekly', name: 'weekly', weekly: true }]
+      : [{ id: '3p-5h', name: '3p 5h', weekly: false }, { id: '3p-weekly', name: '3p weekly', weekly: true }]
+  const selected = windows.map(window => buckets.find(bucket => bucket.id === window.id))
   if (selected.some(bucket => !bucket)) return { vendor: 'agy', known: false, out: false }
-  const exhausted = selected.map(bucket => {
+  const exhausted = windows.map((window, index) => {
+    const bucket = selected[index]
     const remaining = numberAt(bucket?.remaining_fraction)
     const used = remaining === undefined ? undefined : (1 - remaining) * 100
-    return { used, resetAt: resetTime(bucket?.reset_time) }
+    return { ...window, used, resetAt: resetTime(bucket?.reset_time) }
   })
   const band = ['gemini-5h', 'gemini-weekly'].map(id => {
     const bucket = buckets.find(item => item.id === id)
     const remaining = numberAt(bucket?.remaining_fraction)
     return remaining === undefined ? undefined : usageWindow(bucket, (1 - remaining) * 100)
   })
-  const weeks = exhausted.slice(1).filter(window => window.used !== undefined)
-  const worstWeek = weeks.reduce<typeof weeks[number] | undefined>((worst, window) => worst === undefined || (window.used ?? 0) > (worst.used ?? 0) ? window : worst, undefined)
-  const load = { fiveHour: exhausted[0]?.used, weekly: worstWeek?.used, weekResetAt: worstWeek?.resetAt }
-  const names = isGemini ? ['5h', 'weekly'] : ['3p 5h', '3p weekly']
-  if (isArgon) names.push('argon weekly')
-  const details = exhausted.map((window, index) => exceeded(window.used) ? usedDetail(names[index] ?? 'quota', window.used) : undefined)
+  const [five, week] = [exhausted.find(window => !window.weekly), exhausted.find(window => window.weekly)]
+  const load = { fiveHour: five?.used, weekly: week?.used, weekResetAt: week?.resetAt }
+  const details = exhausted.map(window => exceeded(window.used) ? usedDetail(window.name, window.used) : undefined)
     .filter((value): value is string => value !== undefined)
   return {
     vendor: 'agy', known: true, out: details.length > 0, detail: details.join(', '),
@@ -529,7 +529,8 @@ async function quota($: EngineInterface, vendor: SeatVendor, model: string, maxA
   const data = output === undefined ? undefined : readJson(output)
   const parsed = data === undefined ? { vendor, known: false, out: false } as Quota
     : vendor === 'codex' ? codexQuota(data) : agyBucketQuota(data, model)
-  await putQuota($, parsed)
+  // The band shows agy's Gemini windows, so a reading of Argon or agy's Claude leaves it as it is.
+  if (vendor === 'codex' || (model.startsWith('gemini') && !model.includes('argon'))) await putQuota($, parsed)
   return parsed
 }
 
@@ -1690,30 +1691,44 @@ export const isRotating = (marker: Marker): boolean => !('vendor' in marker) && 
 // the fewest seats in `running` (see rotate), and to the least loaded when every
 // family is busy.
 export async function chooseInitial($: EngineInterface, marker: Marker, running: Running = {}): Promise<Initial> {
-  const chain = await chainFor($, marker)
-  // Each candidate found out, by its place in the chain: the trail names only those ahead of the one that runs.
-  const outs: Array<[number, string]> = []
-  const trail = (before: number): string[] => outs.filter(([index]) => index < before).map(([, text]) => text)
-  const readings: Quota[] = []
-  let resetAt: number | undefined
+  const listed = await chainFor($, marker)
   const now = await $.clock.now()
-  const loads: Array<Load | 'out'> = []
   const rotating = isRotating(marker)
   // A named model or account runs unless it is out.
   const pinned = 'vendor' in marker || marker.account !== undefined
-  for (const [index, choice] of chain.entries()) {
+  const namesCli = !('vendor' in marker) && (marker.prefer === 'codex' || marker.prefer === 'agy')
+  const shareOf = (candidate: Candidate): string => familyOf(candidate) + (namesCli ? ' ' + candidate.vendor : '')
+  const read: Quota[] = []
+  const listedLoads: Array<Load | 'out'> = []
+  // Quotas are read only until the choice is settled, so a slow CLI's usage command never holds up one that
+  // was found first: a pinned candidate that is not out, else one not busy whose family (or CLI) was read in full.
+  // A rotating line weighs every family, so it reads them all.
+  const settles = (load: Load | 'out', index: number): boolean => load !== 'out' && !isBusy(load, seatConfig.busyAt)
+    && (!pinned || index > 0) && listed.every((other, at) => at < read.length || shareOf(other) !== shareOf(listed[index] as Candidate))
+  for (const choice of listed) {
     const available = await candidateQuota($, choice)
-    readings.push(available)
-    if (available.out) {
-      outs.push([index, choiceName(choice) + ' out (' + (available.detail || 'quota unavailable') + ')'])
-      if (available.resetAt !== undefined) resetAt = resetAt === undefined ? available.resetAt : Math.min(resetAt, available.resetAt)
-      loads.push('out')
-      continue
-    }
-    const load = loadOf(available, now)
-    loads.push(load)
-    if (!rotating && (pinned || !isBusy(load, seatConfig.busyAt))) break
+    read.push(available)
+    listedLoads.push(available.out ? 'out' : loadOf(available, now))
+    if (rotating) continue
+    if ((pinned && listedLoads[0] !== 'out') || listedLoads.some(settles)) break
   }
+  // Within each family, the candidates that can take the seat go first (see arrange); a pinned first candidate stays
+  // first, a line naming a CLI keeps that CLI's candidates on their places, and the ones not read follow in list order.
+  const known = read.length
+  const arranged = [
+    ...(pinned
+      ? [0, ...arrange(listed.slice(1, known), listedLoads.slice(1), seatConfig.busyAt).map(index => index + 1)]
+      : arrange(listed.slice(0, known), listedLoads, seatConfig.busyAt, namesCli)),
+    ...listed.slice(known).map((_, index) => known + index),
+  ]
+  const chain = arranged.map(index => listed[index] as Candidate)
+  const readings = arranged.slice(0, known).map(index => read[index] as Quota)
+  const loads = arranged.slice(0, known).map(index => listedLoads[index] as Load | 'out')
+  // Each candidate found out, by its place in the chain: the trail names only those ahead of the one that runs.
+  const outs = readings.flatMap((available, index): Array<[number, string]> => available.out
+    ? [[index, choiceName(chain[index] as Candidate) + ' out (' + (available.detail || 'quota unavailable') + ')']] : [])
+  const trail = (before: number): string[] => outs.filter(([index]) => index < before).map(([, text]) => text)
+  const resetAt = minimumReset(readings.filter(available => available.out).map(available => available.resetAt))
   // Why each candidate ahead of the chosen one, and not out, was passed over.
   const passed = (chosen: number): string[] => chain.slice(0, chosen).flatMap((candidate, index) => {
     const load = loads[index]

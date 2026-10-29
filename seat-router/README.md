@@ -20,7 +20,7 @@ seat: <codex|agy> <model> <effort> <reviewer|owner>
 
 An explicit line runs exactly that model; it moves only when that vendor is out, then along the
 candidates of the size its effort stands for (low or medium is light, high standard, xhigh or max
-heavy), each at the effort the line named.
+heavy), each at the effort the line named, and within a family a busy fallback after one that is not.
 
 - `reviewer` seats report and are not meant to commit. A codex reviewer is sandboxed to its folder, with no
   `.git` writes; its commands reach the network, so a brief can have it run `gh issue view` or fetch a
@@ -191,7 +191,7 @@ Claude Code's words, and the note names the seats it corrects and the tasks it l
 
 Nothing to set: leave every field as it is on the install screen. Each size starts as `auto`: the mod asks
 the CLIs you have for their models when a session starts and tries, in order, codex's default model, agy's
-Gemini Flash, then Claude, at the size's effort: light low, standard medium, heavy high, as far as each model
+Gemini Flash and Argon, then Claude, at the size's effort: light low, standard medium, heavy high, as far as each model
 goes (codex ships its default model at low). Claude runs sonnet high for light, opus medium for standard and
 opus high for heavy.
 
@@ -215,3 +215,8 @@ of this session's seats and Claude subagents running now, so three such seats in
 families. A family is passed over only when every candidate in it is busy or out: with native Claude
 busy, agy's Claude still serves the claude family. With every family busy, the least loaded model runs.
 `auto` sizes list agy's Claude (sonnet for light and standard, opus for heavy) after native Claude.
+
+Within a family, a candidate that is not busy is tried before a busy one, on any line: with native Claude
+busy, agy's Claude goes first. Of one family's models on one CLI, such as agy's Gemini Flash and Argon, the
+one with more quota left goes first. A model that is out keeps its place. agy's Argon is judged by its own
+weekly quota where agy lists one, not by Gemini's.
