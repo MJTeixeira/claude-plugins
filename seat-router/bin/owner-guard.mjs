@@ -190,13 +190,20 @@ function refusal(words, branch, cwd, path) {
     if (plain[0] === 'repo' && plain[1] === 'delete') return 'Do not delete repositories.'
     return undefined
   }
-  if (REMOVERS.includes(name)) {
+  // cmd ignores a leading @ and ends an internal command's name at a slash, so @rd/s/q is rd /s /q.
+  const cmdRemover = /^@?(rd|rmdir|del|erase)(\/.*)?$/i.exec(first)
+  const remover = cmdRemover ? cmdRemover[1].toLowerCase() : name
+  if (REMOVERS.includes(remover)) {
     const flags = args.filter(arg => arg.startsWith('-'))
     // PowerShell's -Force, or a prefix of it, is one parameter, not short flags with an r among them. Either
     // switch counts with any value after a colon (-Recurse:$true), $false included.
     const forceParameter = arg => /^-fo(r(c(e)?)?)?(:.*)?$/i.test(arg)
-    const recursive = flags.some(arg => arg === '--recursive' || /^-r(e(c(u(r(s(e)?)?)?)?)?)?(:.*)?$/i.test(arg) || (!forceParameter(arg) && /[rR]/.test(shortFlags(arg))))
-    const force = flags.some(arg => arg === '--force' || forceParameter(arg) || shortFlags(arg).includes('f'))
+    // GNU rm takes any prefix of a long option (--rec, --for). cmd's removers read a switch at every slash, glued to a
+    // path, a quote or another switch (x/s/q, /q"x", /s/q/ah); del's /f forces too. To rm, /tmp/s is a path.
+    const longOption = (arg, option) => arg.length > 2 && option.startsWith(arg)
+    const switches = cmdRemover ? [first, ...args].flatMap(arg => [...arg.matchAll(/\/([a-z])/gi)].map(match => match[1].toLowerCase())) : []
+    const recursive = switches.includes('s') || flags.some(arg => longOption(arg, '--recursive') || /^-r(e(c(u(r(s(e)?)?)?)?)?)?(:.*)?$/i.test(arg) || (!forceParameter(arg) && /[rR]/.test(shortFlags(arg))))
+    const force = switches.includes('q') || switches.includes('f') || flags.some(arg => longOption(arg, '--force') || forceParameter(arg) || shortFlags(arg).includes('f'))
     if (recursive && force) return 'Remove only explicit paths, without a forced recursive delete.'
   }
   return undefined

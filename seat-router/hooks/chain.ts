@@ -84,6 +84,37 @@ export const pick = (loads: ReadonlyArray<Load | 'out'>, busyAt: number): number
   return least
 }
 
+/**
+ * The order to try a chain's candidates in. A candidate that is out keeps its
+ * place; the others of a family share the places they hold, one that is not busy
+ * before one that is. Of one family's candidates on one CLI, the one with more
+ * room goes first, and one with no reading last. `byCli` keeps each CLI's
+ * candidates on its own places, for a line that names a CLI. Indexes into the chain.
+ */
+export const arrange = (chain: readonly Candidate[], loads: ReadonlyArray<Load | 'out'>, busyAt: number, byCli = false): number[] => {
+  const loadAt = (index: number): Load => loads[index] as Load
+  const standing = (index: number): number => isBusy(loadAt(index), busyAt) ? 1 : 0
+  const used = (index: number): number => {
+    const load = loadAt(index)
+    return load.fiveHour === undefined && load.weekly === undefined ? Number.MAX_VALUE : pressure(load)
+  }
+  const order = chain.map((_, index) => index)
+  const group = (index: number): string => (chain[index] as Candidate).vendor + ' ' + standing(index)
+  const shareOf = (candidate: Candidate): string => familyOf(candidate) + (byCli ? ' ' + candidate.vendor : '')
+  for (const share of new Set(chain.map(shareOf))) {
+    const slots = order.filter(index => shareOf(chain[index] as Candidate) === share && loads[index] !== undefined && loads[index] !== 'out')
+    const ranked = [...slots].sort((a, b) => standing(a) - standing(b))
+    // Candidates on one CLI with the same standing trade places by room.
+    for (const key of new Set(ranked.map(group))) {
+      const at = ranked.flatMap((index, place) => group(index) === key ? [place] : [])
+      const roomiest = at.map(place => ranked[place] as number).sort((a, b) => used(a) - used(b))
+      at.forEach((place, rank) => { ranked[place] = roomiest[rank] as number })
+    }
+    slots.forEach((slot, place) => { order[slot] = ranked[place] as number })
+  }
+  return order
+}
+
 /** Seats running now in each family, Claude subagents counted as claude. */
 export type Running = Partial<Record<Family, number>>
 
@@ -153,16 +184,16 @@ export const clampEffort = (wanted: string, efforts: readonly string[]): string 
 
 /**
  * A size's candidates when its setting is `auto`: codex's default model, agy's
- * Gemini Flash, then Claude, then agy's Claude, each at the size's effort as far
- * as the model takes it.
+ * Gemini Flash and Argon, then Claude, then agy's Claude, each at the size's
+ * effort as far as the model takes it.
  */
 export const autoCandidates = (size: Size, models: CliModels): Candidate[] => {
   const codex = models.codex?.find(entry => entry.isDefault) ?? models.codex?.[0]
-  const agy = models.agy?.find(entry => entry.model.startsWith('gemini') && entry.model.includes('flash'))
+  const gemini = ['flash', 'argon'].flatMap(name => models.agy?.find(entry => entry.model.startsWith('gemini') && entry.model.includes(name)) ?? [])
   const agyClaude = models.agy?.find(entry => entry.model.startsWith(AGY_CLAUDE_BY_SIZE[size]))
   return [
     ...(codex ? [{ vendor: 'codex' as const, model: codex.model, effort: clampEffort(SIZE_EFFORT[size], codex.efforts) }] : []),
-    ...(agy ? [{ vendor: 'agy' as const, model: agy.model, effort: clampEffort(SIZE_EFFORT[size], agy.efforts) }] : []),
+    ...gemini.map(agy => ({ vendor: 'agy' as const, model: agy.model, effort: clampEffort(SIZE_EFFORT[size], agy.efforts) })),
     CLAUDE_BY_SIZE[size],
     ...(agyClaude ? [{ vendor: 'agy' as const, model: agyClaude.model, effort: clampEffort(SIZE_EFFORT[size], agyClaude.efforts) }] : []),
   ]
