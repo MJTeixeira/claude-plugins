@@ -1248,11 +1248,15 @@ function agyResult(jsonl: string): { text: string, valid: boolean, error: string
   return { text: valid ? answer ?? response : response || all, valid, error: textAt(result?.error) ?? '', denied: names, guardCrashed }
 }
 
-export function failedSeat(vendor: ExternalVendor, exitCode: number | undefined, text: string, transcript: string, stderr: string): Check {
-  const all = text + '\n' + transcript + '\n' + stderr
-  const quota = vendor === 'codex'
-    ? /usageLimitExceeded|Usage limit reached/i.test(all)
-    : /RESOURCE_EXHAUSTED|exhausted your quota|out of quota/i.test(all)
+// A run is out of quota only when the CLI's own error says so: the agent's text and its
+// commands' output can quote these words, as a seat reading this file does.
+const QUOTA_ERROR = { codex: 'usageLimitExceeded|Usage limit reached|hit your usage limit', agy: 'RESOURCE_EXHAUSTED|quota reached|exhausted your quota|out of quota' }
+// codex writes its own errors as top-level events; an item's text is the agent's, and
+// codex.err's tool errors quote the agent's commands.
+const CODEX_ERROR_LINE = '^\\{"type":"(error|turn\\.failed)"'
+
+export function failedSeat(vendor: ExternalVendor, exitCode: number | undefined, text: string, transcript: string, errors: string): Check {
+  const quota = new RegExp(QUOTA_ERROR[vendor], 'i').test(errors)
   const blank = !text.trim()
   const completed = vendor !== 'codex' || transcript.split('\n').some(line => line.includes('"turn.completed"'))
   const failed = exitCode !== 0 || blank || !completed
@@ -1267,7 +1271,8 @@ export function failedSeat(vendor: ExternalVendor, exitCode: number | undefined,
 // so a subagent's work never reaches its parent and the answer can be stale.
 export function failedAgy(exitCode: number | undefined, jsonl: string, stderr: string): Check {
   const result = agyResult(jsonl)
-  const base = failedSeat('agy', exitCode, result.text, jsonl, stderr)
+  // agy's last error is its word on the run: a 401 there is not a quota failure, whatever ran before it.
+  const base = failedSeat('agy', exitCode, result.text, jsonl, result.valid || AGY_UNAUTHENTICATED.test(result.error) ? '' : result.error + '\n' + stderr)
   const failed = base.failed || !result.valid || result.guardCrashed || result.denied.length > 0
   const refused = result.denied.length ? 'agy refused ' + result.denied.join(', ') : ''
   const error = result.valid ? '' : result.error.replace(/\s+/g, ' ').trim()
@@ -1314,14 +1319,14 @@ async function checkSeat($: EngineInterface, seat: Seat): Promise<Check> {
     const transcript = join(seat.dir, 'codex.jsonl')
     const stderr = join(seat.dir, 'codex.err')
     const completed = await matches($, '"turn.completed"', [transcript])
-    const limited = await matches($, 'usageLimitExceeded|Usage limit reached', [transcript, stderr])
     return failedSeat('codex', Number.isNaN(exitCode) ? undefined : exitCode, text,
-      completed ? '"turn.completed"' : '', limited ? 'usageLimitExceeded' : '')
+      completed ? '"turn.completed"' : '', await grepLines($, CODEX_ERROR_LINE, transcript))
   }
   const transcript = join(seat.dir, 'agy.jsonl')
-  const limited = await matches($, 'RESOURCE_EXHAUSTED|exhausted your quota|out of quota', [transcript, join(seat.dir, 'agy.err')])
+  // agy.err ends each error with its message (error:) and its status (AGY_ERROR: RESOURCE_EXHAUSTED, UNAUTHENTICATED).
+  const lastError = (await grepLines($, '^(AGY_ERROR|error):', join(seat.dir, 'agy.err'))).trim().split('\n').slice(-2).join('\n')
   const steps = await grepLines($, GUARD_CRASH_LINE + '|' + AGY_TEXT_LINE, transcript)
-  return failedAgy(Number.isNaN(exitCode) ? undefined : exitCode, steps + await tail($, transcript), limited ? 'RESOURCE_EXHAUSTED' : '')
+  return failedAgy(Number.isNaN(exitCode) ? undefined : exitCode, steps + await tail($, transcript), lastError)
 }
 
 async function seatsFor($: EngineInterface, sessionId: string): Promise<Seat[]> {
