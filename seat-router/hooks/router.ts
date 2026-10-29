@@ -566,7 +566,9 @@ async function chainFor($: EngineInterface, marker: Marker): Promise<Candidate[]
   const usable = (list: Candidate[]): Candidate[] => list.filter(candidate => installed.includes(candidate.vendor))
   if ('vendor' in marker) {
     const named = { vendor: marker.vendor, model: marker.model, effort: marker.effort }
-    return [named, ...usable(await sizeCandidates($, sizeOf(marker.effort))).filter(candidate => !sameCandidate(candidate, named))]
+    // Its fallbacks are its size's models at the effort the line named; a model listed with no effort keeps none.
+    const fallbacks = usable(await sizeCandidates($, sizeOf(marker.effort))).map(candidate => candidate.effort ? { ...candidate, effort: marker.effort } : candidate)
+    return [named, ...fallbacks.filter(candidate => !sameCandidate(candidate, named))]
   }
   const list = usable(await sizeCandidates($, marker.size))
   if (marker.account !== undefined) return [accountCandidate(marker.size, marker.account), ...list]
