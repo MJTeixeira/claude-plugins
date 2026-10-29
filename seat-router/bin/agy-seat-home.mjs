@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Builds the HOME an agy seat runs under and prints its path.
 // It mirrors ~/.gemini through links, except antigravity-cli/settings.json,
-// which is the seat's own. Every seat runs outside agy's sandbox: its
+// which is the seat's own: the operator's settings with the deny list added. Every seat runs outside agy's sandbox: its
 // config/hooks.json adds owner-guard.mjs to the operator's hooks, and its deny list
 // keeps the irreversible commands out besides. A reviewer starts none of the
 // operator's MCP servers (its config/mcp_config.json lists none); an owner keeps
@@ -88,9 +88,12 @@ if (tier !== 'owner') writeFileSync(join(config, 'mcp_config.json'), JSON.string
 link(join(real, '.gitconfig'), join(seat, '.gitconfig'))
 mkdirSync(join(seat, '.config'), { recursive: true })
 link(join(real, '.config', 'gh'), join(seat, '.config', 'gh'))
-// A force push is left to the guard, which lets a lease onto the seat's own branch through.
-const settings = {
-  permissions: { deny: ['git reset --hard', 'gh pr merge --admin', 'gh repo delete', 'rm -rf'].map(name => `command(${name})`) },
-}
+// A seat gets what the operator's own agy may do (allowNonWorkspaceAccess, say): a refusal
+// in -p mode halts the conversation that asked. A force push is left to the guard, which lets
+// a lease onto the seat's own branch through.
+const operatorSettings = join(real, '.gemini', 'antigravity-cli', 'settings.json')
+const settings = existsSync(operatorSettings) ? JSON.parse(readFileSync(operatorSettings, 'utf8')) : {}
+const deny = ['git reset --hard', 'gh pr merge --admin', 'gh repo delete', 'rm -rf'].map(name => `command(${name})`)
+settings.permissions = { ...settings.permissions, deny: [...new Set([...(settings.permissions?.deny ?? []), ...deny])] }
 writeFileSync(join(seat, '.gemini', 'antigravity-cli', 'settings.json'), JSON.stringify(settings) + '\n')
 console.log(seat)

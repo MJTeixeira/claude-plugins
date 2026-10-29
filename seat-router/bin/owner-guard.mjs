@@ -192,8 +192,11 @@ function refusal(words, branch, cwd, path) {
   }
   if (REMOVERS.includes(name)) {
     const flags = args.filter(arg => arg.startsWith('-'))
-    const recursive = flags.some(arg => arg === '--recursive' || /^-r(e(c(u(r(s(e)?)?)?)?)?)?$/i.test(arg) || /[rR]/.test(shortFlags(arg)))
-    const force = flags.some(arg => arg === '--force' || /^-fo(r(c(e)?)?)?(:\$true)?$/i.test(arg) || shortFlags(arg).includes('f'))
+    // PowerShell's -Force, or a prefix of it, is one parameter, not short flags with an r among them. Either
+    // switch counts with any value after a colon (-Recurse:$true), $false included.
+    const forceParameter = arg => /^-fo(r(c(e)?)?)?(:.*)?$/i.test(arg)
+    const recursive = flags.some(arg => arg === '--recursive' || /^-r(e(c(u(r(s(e)?)?)?)?)?)?(:.*)?$/i.test(arg) || (!forceParameter(arg) && /[rR]/.test(shortFlags(arg))))
+    const force = flags.some(arg => arg === '--force' || forceParameter(arg) || shortFlags(arg).includes('f'))
     if (recursive && force) return 'Remove only explicit paths, without a forced recursive delete.'
   }
   return undefined
