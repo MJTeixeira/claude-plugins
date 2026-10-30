@@ -16,7 +16,6 @@ import { command } from './command.mjs'
 const CHUNK = 64 * 1024
 const [tool, ...args] = process.argv.slice(2)
 
-// The first or last n lines, read a chunk at a time from that end.
 function lines(path, n, fromEnd) {
   const fd = openSync(path, 'r')
   const size = fstatSync(fd).size
@@ -44,6 +43,7 @@ async function grep(flags, source, files) {
   let out = ''
   for (const file of files) {
     const input = createInterface({ input: createReadStream(file), crlfDelay: Infinity })
+    // A file that cannot be read has no matching lines, and the exit code says so.
     try {
       for await (const line of input) {
         const found = [...line.matchAll(pattern)]

@@ -40,7 +40,6 @@ export const LINE_H = 24
 const xml = (value: string): string =>
   value.replace(/[&<>"]/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[char] ?? char)
 
-// Rough advance of system UI text, in em; good enough to size a slot.
 const charEm = (char: string): number =>
   /[\s.,:;'|!il1()[\]]/.test(char) ? 0.3 : /[A-Zmw@%]/.test(char) ? 0.72 : 0.56
 
@@ -89,7 +88,6 @@ export const progress = (card: Card): number => card.status === 'done' ? 1 : car
 export const stepLine = (card: Card): string =>
   card.status === 'done' ? 'Done · ' + plural(card.steps, 'step') : 'Step ' + card.steps + (card.lastAction ? ' · ' + card.lastAction : '')
 
-// Fills and strokes that read on a light and a dark surface: ink flips with the scheme, tints are low-alpha.
 const THEME = '<style>'
   + '.t{fill:#1f1e1d}.s{fill:#6b6a66}.k{fill:#8a8984;fill-opacity:.22}.tk{fill:#8a8984;fill-opacity:.6}'
   + '.tile{fill:#8a8984;fill-opacity:.07;stroke:#8a8984;stroke-opacity:.3}'
@@ -112,7 +110,6 @@ const svg = (width: number, height: number, body: string): string =>
 const text = (x: number, y: number, size: number, value: string, attrs = ''): string =>
   `<text x="${x}" y="${y}" font-family="${FONT}" font-size="${size}" ${attrs}>${xml(value)}</text>`
 
-// Pixel Clawd: a 24×16 crab on a 30×28 grid; `la`/`lb` are the leg pairs, `bd` the rest.
 type Fill = (x: number, y: number, width: number, height: number, color: string, group?: string) => void
 
 const crabBody = (fill: Fill, color: string): void => {
@@ -138,8 +135,6 @@ export const crab = (x: number, y: number, color: string, scale: number, dim: bo
     + `<g class="${walking ? 'run' : ''}">${group('bd')}${group('la')}${group('lb')}</g></g>`
 }
 
-// codex and agy as pixel logos on the crab's grid, read from bitmaps: `#` is the vendor colour,
-// other characters name an animation group. The whole logo bobs on the crab's beat.
 const LOGO_CSS = '<style>'
   + '.logo.run{animation:lb .5s steps(1) infinite -.125s}@keyframes lb{50%{transform:translateY(1px)}}'
   + '.run .tp{animation:bl .5s steps(1) infinite}.run .cu{animation:bl 1s steps(1) infinite -.25s}@keyframes bl{50%{opacity:0}}'
@@ -149,7 +144,6 @@ const LOGO_CSS = '<style>'
 
 type Logo = { rows: string[], left: number, inks: string }
 
-// Gemini's four-point sparkle; `t` marks the tips, which twinkle.
 const SPARKLE: Logo = { left: 7, inks: '', rows: [
   '.......tt.......',
   '.......tt.......',
@@ -169,7 +163,6 @@ const SPARKLE: Logo = { left: 7, inks: '', rows: [
   '.......tt.......',
 ] }
 
-// Codex's cloud with a `>_` prompt in ink: `c` the chevron, which nudges, `u` the cursor, which blinks.
 const CLOUD: Logo = { left: 5, inks: 'cu', rows: [
   '......#####.........',
   '....#########.####..',
@@ -235,7 +228,6 @@ const statusMark = (x: number, y: number, status: Card['status']): string =>
     ? `<circle class="live" cx="${x}" cy="${y}" r="4" fill="${GREEN}"/>`
     : `<path d="M${x - 6} ${y}l4 4 7.5-8" fill="none" stroke="${GREEN}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>`
 
-// ◑: a ring with its left half filled.
 const halfMoon = (x: number, y: number, color: string): string =>
   `<circle cx="${x}" cy="${y}" r="5" fill="none" stroke="${color}" stroke-width="1.4"/><path d="M${x} ${y - 5}a5 5 0 0 0 0 10z" fill="${color}"/>`
 
@@ -315,7 +307,6 @@ export const rowSvg = (queue: QueueDisplay | null, running: number, width: numbe
 export const windowUsed = (quota: SeatQuotaDisplay | undefined, window: SeatQuotaWindow | undefined): number | undefined =>
   quota?.known && window ? window.used : undefined
 
-// A window inline: its label, a thin bar and the percent just after it, left-aligned.
 const meter = (x: number, width: number, label: string, used: number | undefined, out: boolean, color: string): string => {
   const trackX = x + 19
   const trackWidth = Math.max(16, width - 19 - 32)

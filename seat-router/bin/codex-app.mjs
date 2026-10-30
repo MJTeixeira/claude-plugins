@@ -14,6 +14,7 @@ export function request(name, method, params) {
     process.exit(1)
   }
   return new Promise(resolve => {
+    const timer = setTimeout(() => fail('no answer in 20 s'), 20_000)
     let buffer = ''
     server.stdout.on('data', chunk => {
       buffer += chunk
@@ -27,13 +28,13 @@ export function request(name, method, params) {
         }
         if (message.id === 2) {
           if (!message.result) fail(JSON.stringify(message.error))
+          clearTimeout(timer)
           server.kill()
           resolve(message.result)
         }
       }
     })
     server.on('error', error => fail(error.message))
-    setTimeout(() => fail('no answer in 20 s'), 20_000)
     send({ id: 1, method: 'initialize', params: { clientInfo: { name, version: '1' } } })
   })
 }

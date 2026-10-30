@@ -27,22 +27,23 @@ heavy), each at the effort the line named, and within a family a busy fallback a
   page; an agy reviewer runs outside agy's sandbox, as an owner does. A seat called without
   `isolation: "worktree"` starts in an empty folder, so the session is told to pass the worktree for any seat that reads the repository, a review included. A codex
   reviewer also runs without your `~/.codex/config.toml` (so none of your codex MCP servers start)
-  and with codex's apps, plugins and web search off. This needs codex-cli 0.163 or later; an older
+  and your codex rules (an `allow` rule would run its command outside the sandbox), and with codex's apps, plugins and web search off. This needs codex-cli 0.163 or later; an older
   codex refuses the flags and the seat moves to its next model. An agy reviewer starts none of your
   agy MCP servers.
 - Every agy seat runs outside agy's sandbox (`--dangerously-skip-permissions`), behind the guard below.
-  agy offers no reviewer to a headless run, and its sandbox refuses what a seat needs: on Windows node
+  agy's one headless mode with a reviewer, `--mode auto`, is for personal accounts only, and its sandbox refuses what a seat needs: on Windows node
   cannot even read the attributes of `%APPDATA%`, so no npm-installed CLI starts, and no read grant fixes
   it. Permissions narrow later, once seats do their work. A seat's agy settings are your
   `~/.gemini/antigravity-cli/settings.json` with the guard's deny list added, so it may do what your own agy
-  may (`allowNonWorkspaceAccess`, say). A run in which agy refused an action fails, naming the refusal, and
+  may (`allowNonWorkspaceAccess`, say), except that it never spends AI credits once the plan's quota runs out. A run in which agy refused an action fails, naming the refusal, and
   moves on: a refusal halts the conversation that asked, so a subagent's work never reaches the seat and its
   answer can be stale. An agy seat whose guard hook could not run fails too, though agy calls
   the run a success. agy keeps a run open while a background task the seat started (a long command,
   a timer) still runs, so the brief tells the seat to wait for or stop each one before its final answer,
-  and to have any subagent it starts report back first. agy renews its sign-in only in the token's last
-  seconds, so a long run can end with `UNAUTHENTICATED (code 401)`; the seat then resumes its agy
-  conversation in a new process, told why, up to three times, before it moves on.
+  and to have any subagent it starts report back first. A long run can end with
+  `UNAUTHENTICATED (code 401)` mid-turn (an open agy bug,
+  [antigravity-cli#1091](https://github.com/google-antigravity/antigravity-cli/issues/1091)); the seat then
+  resumes its agy conversation in a new process, told why, up to three times, before it moves on.
   A run agy ends in error still fails, and wherever its report is given, it carries agy's error and the
   text the seat produced before it.
 - On Windows a codex reviewer runs codex's mxc sandbox where it starts (Windows 11 24H2 26100.9278 or
@@ -127,7 +128,9 @@ standard, opus high for heavy) as `claude -p` on that account. It runs only wher
 it, never by rotation, and stays on the account while its quota is busy; only when the account is
 out, or its folder is missing, does the seat move to the size's other candidates. The mod reads
 the account's quota without a model turn (`bin/claude-usage.mjs`); the band above the prompt still
-shows the session's own Claude.
+shows the session's own Claude. The seat and that read run on the account's login alone: `ANTHROPIC_API_KEY`,
+`ANTHROPIC_AUTH_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN` and the `CLAUDE_CODE_USE_*` variables that pick a cloud provider
+(Bedrock, Mantle, Vertex, Foundry, Claude Platform on AWS) in the session's environment would outrank it, so they are dropped.
 
 - A reviewer runs in Claude Code's sandbox: its shell writes only its folder and has no network,
   its file tools are kept off `.git` (a worktree's git folders are denied by absolute path, since
@@ -139,11 +142,11 @@ shows the session's own Claude.
   edits with its file tools, which stay held to its folder.
 - An owner runs without permission prompts and with the account's own MCP servers; its Bash and
   PowerShell commands pass `bin/owner-guard.mjs`, as codex and agy owners do.
-- No mod loads in the seat: nobody would see or approve what it asks. Neither the mods this
-  session loads through `--plugin-dir` or `CLAUDE_CODE_PLUGIN_DIRS` (this one among them, so a
-  seat cannot start seats) nor those the account's settings name. The account's installed
-  plugins, its skills and its settings still load; an account that installs seat-router from the
-  marketplace would give its seats the seat line too.
+- The mods this session loads through `--plugin-dir` or `CLAUDE_CODE_PLUGIN_DIRS` stay out of the
+  seat (this one among them, so a seat cannot start seats), and so do those the account's settings
+  name through `CLAUDE_CODE_PLUGIN_DIRS`. The account's marketplace-installed plugins, mods among
+  them, still load, with its skills and its settings: an account that installs seat-router from the
+  marketplace gives its seats the seat line too.
 
 The session learns the seat line from the mod itself: you do not write rules for it. The mod also
 shows running seats and each vendor's quota above the prompt, and `/seats` opens a pane with one
@@ -206,7 +209,7 @@ The fields themselves, with `claude plugin configure seat-router@code4food` (`/s
 | `busyAt` | `80` | A model is busy once its 5-hour or weekly quota is this used, or its week is used faster than it has passed; a sized seat then passes it over. |
 | `mixFanouts` | on | Asks the session to add one seat per other model family beside the Claude agents in every review or verification fan-out. |
 | `claudeAccounts` | empty | Other Claude accounts on this machine, comma-separated `<name> <config folder>`: `work ~/.claude-work, sub2 ~/.claude-sub2`. A name may not be a CLI, family, size or tier word. `/seats setup` asks it after delegate mode, when the home folder has a logged-in `.claude-<name>` folder or the setting has an account. |
-| `delegate` | `auto` | When code work (features, fixes, bug and performance tasks, PR owners and their fix rounds) goes to owner seats, which the mod spreads across model families: `auto` while Claude's quota is busy by the `busyAt` rule, `on` always, `off` never. `/seats setup` asks it after the sizes. |
+| `delegate` | `auto` | When code work (features, fixes, bug and performance tasks, PR owners and their fix rounds) goes to owner seats, which the mod spreads across model families: `auto` while Claude's quota is busy by the `busyAt` rule, `on` always, `off` never. A line in the transcript says when it turns on, and why, and when it turns off. `/seats setup` asks it after the sizes. |
 
 A model's family comes from its name, so `agy claude-opus-5-5` counts as Claude, not as variety.
 
@@ -219,4 +222,6 @@ busy, agy's Claude still serves the claude family. With every family busy, the l
 Within a family, a candidate that is not busy is tried before a busy one, on any line: with native Claude
 busy, agy's Claude goes first. Of one family's models on one CLI, such as agy's Gemini Flash and Argon, the
 one with more quota left goes first. A model that is out keeps its place. agy's Argon is judged by its own
-weekly quota where agy lists one, not by Gemini's.
+weekly quota where agy lists one, not by Gemini's. A window a vendor keeps for one model (Claude's weekly
+cap for Fable, a codex bucket for one model) counts for that model beside the shared ones, and an agy
+bucket marked disabled counts for none.

@@ -59,7 +59,6 @@ export const busyReason = (load: Load, busyAt: number): string => {
   const percent = (value: number): string => Math.round(value) + '%'
   if ((load.fiveHour ?? 0) >= busyAt) return '5h ' + percent(load.fiveHour ?? 0) + ' used'
   if ((load.weekly ?? 0) >= busyAt) return '7d ' + percent(load.weekly ?? 0) + ' used'
-  // Rounded apart, so a week used only just faster than it passed still reads as ahead.
   return '7d ' + Math.ceil(load.weekly ?? 0) + '% used, ' + Math.floor(load.weekElapsed ?? 0) + '% of the week passed'
 }
 
@@ -104,7 +103,6 @@ export const arrange = (chain: readonly Candidate[], loads: ReadonlyArray<Load |
   for (const share of new Set(chain.map(shareOf))) {
     const slots = order.filter(index => shareOf(chain[index] as Candidate) === share && loads[index] !== undefined && loads[index] !== 'out')
     const ranked = [...slots].sort((a, b) => standing(a) - standing(b))
-    // Candidates on one CLI with the same standing trade places by room.
     for (const key of new Set(ranked.map(group))) {
       const at = ranked.flatMap((index, place) => group(index) === key ? [place] : [])
       const roomiest = at.map(place => ranked[place] as number).sort((a, b) => used(a) - used(b))
@@ -150,7 +148,6 @@ export type CliModels = { codex?: CliModel[], agy?: CliModel[] }
 const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max']
 // codex ships its default model at low effort; each size steps up from there.
 const SIZE_EFFORT: Record<Size, string> = { light: 'low', standard: 'medium', heavy: 'high' }
-// The Claude model agy serves for each size, by name prefix: Claude's family through its own quota.
 const AGY_CLAUDE_BY_SIZE: Record<Size, string> = { light: 'claude-sonnet', standard: 'claude-sonnet', heavy: 'claude-opus' }
 const CLAUDE_BY_SIZE: Record<Size, Candidate> = {
   light: { vendor: 'claude', model: 'sonnet', effort: 'high' },

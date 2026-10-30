@@ -5,7 +5,8 @@
 // `cwd`; `env`; `stdin` (a file, else nothing); `stdout`, `stderr`; `exit`;
 // `outputs`, other files the CLI writes; `home`, the arguments of agy-seat-home.mjs, whose printed path becomes HOME
 // (and USERPROFILE on Windows); `dropWindowsApps`, which takes the folders under
-// WindowsApps off PATH; or `sleep`, seconds to wait before writing 0. The
+// WindowsApps off PATH; `claudeLogin`, which drops the variables that would outrank
+// the login of the spec's CLAUDE_CONFIG_DIR; or `sleep`, seconds to wait before writing 0. The
 // launcher writes its own pid and the CLI's to `pid`, so the mod can tell a seat
 // that died from one still running, and stop it. A seat run again (a fallback or a
 // rerun) keeps each earlier attempt's stdout, stderr and outputs as <name>.<n><ext>.
@@ -14,13 +15,13 @@ import { execFileSync, spawn } from 'node:child_process'
 import { appendFileSync, existsSync, openSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { delimiter, dirname, join, parse } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { withoutClaudeAuth } from './claude-auth.mjs'
 import { command } from './command.mjs'
 
 const self = fileURLToPath(import.meta.url)
 const [first, second] = process.argv.slice(2)
 
 if (first !== '--child') {
-  // Before returning, so the mod never reads an earlier attempt's exit code or output as this one's.
   const spec = JSON.parse(readFileSync(first, 'utf8'))
   for (const file of [spec.stdout, spec.stderr, ...(spec.outputs ?? [])].filter(Boolean)) {
     if (!existsSync(file)) continue
@@ -44,7 +45,7 @@ if (spec.sleep !== undefined) {
   setTimeout(() => finish(0), spec.sleep * 1000)
 } else {
   try {
-    const env = { ...process.env, ...spec.env }
+    const env = spec.claudeLogin ? withoutClaudeAuth({ ...process.env, ...spec.env }) : { ...process.env, ...spec.env }
     if (spec.home) {
       const home = execFileSync(process.execPath, [join(dirname(self), 'agy-seat-home.mjs'), ...spec.home], { encoding: 'utf8', windowsHide: true }).trim()
       env.HOME = home

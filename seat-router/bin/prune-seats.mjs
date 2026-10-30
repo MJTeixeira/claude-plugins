@@ -41,7 +41,6 @@ function remove(path) {
   } else unlinkSync(path)
 }
 
-// When the seat ended, or undefined while it may still run.
 function endedAt(dir, seat) {
   if (!seat) return lstatSync(dir).mtimeMs
   if (seat.reported || seat.status === 'reported') return seat.endedAt ?? lstatSync(join(dir, 'seat.json')).mtimeMs
@@ -51,6 +50,7 @@ function endedAt(dir, seat) {
 }
 
 let entries = []
+// A ROOT that does not exist yet holds no seats to prune.
 try { entries = readdirSync(root, { withFileTypes: true }) } catch {}
 for (const entry of entries) {
   if (!entry.isDirectory() || !entry.name.startsWith('seat.')) continue

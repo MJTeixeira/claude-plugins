@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // Builds the HOME an agy seat runs under and prints its path.
-// It mirrors ~/.gemini through links, except antigravity-cli/settings.json,
-// which is the seat's own: the operator's settings with the deny list added. Every seat runs outside agy's sandbox: its
+// It mirrors ~/.gemini through links, except antigravity-cli/settings.json and
+// config/config.json, which are the seat's own: the operator's with AI credits off and,
+// in settings, the deny list added. Every seat runs outside agy's sandbox: its
 // config/hooks.json adds owner-guard.mjs to the operator's hooks, and its deny list
 // keeps the irreversible commands out besides. A reviewer starts none of the
 // operator's MCP servers (its config/mcp_config.json lists none); an owner keeps
@@ -36,7 +37,6 @@ const isLink = path => {
 const unlink = path => {
   try { unlinkSync(path) } catch { rmdirSync(path) }
 }
-// A home built before config/ was the seat's own links the operator's folder there.
 if (isLink(join(seat, '.gemini', 'config'))) unlink(join(seat, '.gemini', 'config'))
 mkdirSync(join(seat, '.gemini', 'antigravity-cli'), { recursive: true })
 mkdirSync(join(seat, '.gemini', 'config'), { recursive: true })
@@ -66,7 +66,7 @@ const linkAll = (from, to, skip) => {
 linkAll(join(real, '.gemini'), join(seat, '.gemini'), ['antigravity-cli', 'config'])
 linkAll(join(real, '.gemini', 'antigravity-cli'), join(seat, '.gemini', 'antigravity-cli'), ['settings.json'])
 const config = join(seat, '.gemini', 'config')
-const own = tier === 'owner' ? ['hooks.json'] : ['hooks.json', 'mcp_config.json']
+const own = tier === 'owner' ? ['hooks.json', 'config.json'] : ['hooks.json', 'config.json', 'mcp_config.json']
 for (const name of own) if (isLink(join(config, name))) unlink(join(config, name))
 linkAll(join(real, '.gemini', 'config'), config, own)
 if (process.platform === 'darwin') {
@@ -83,8 +83,14 @@ const quoted = path => /\s/.test(path) ? `"${path}"` : path
 const command = `node ${quoted(guard)}${seatDir ? ` --own ${quoted(seatDir)}` : ''}`
 hooks['seat-router-owner-guard'] = { PreToolUse: [{ matcher: 'run_command', hooks: [{ command }] }] }
 writeFileSync(join(config, 'hooks.json'), JSON.stringify(hooks, null, 2) + '\n')
+// A seat never spends AI credits past the plan's quota, which the quota check would not count as out:
+// useG1Credits in settings.json and userSettings.useAiCredits in config.json both stay off
+// (google-antigravity/antigravity-cli#1080).
+const operatorConfig = join(real, '.gemini', 'config', 'config.json')
+const agyConfig = existsSync(operatorConfig) ? JSON.parse(readFileSync(operatorConfig, 'utf8')) : {}
+agyConfig.userSettings = { ...agyConfig.userSettings, useAiCredits: false }
+writeFileSync(join(config, 'config.json'), `${JSON.stringify(agyConfig, null, 2)}\n`)
 if (tier !== 'owner') writeFileSync(join(config, 'mcp_config.json'), JSON.stringify({ mcpServers: {} }) + '\n')
-// git identity and gh config, read where the operator keeps them
 link(join(real, '.gitconfig'), join(seat, '.gitconfig'))
 mkdirSync(join(seat, '.config'), { recursive: true })
 link(join(real, '.config', 'gh'), join(seat, '.config', 'gh'))
@@ -94,6 +100,7 @@ link(join(real, '.config', 'gh'), join(seat, '.config', 'gh'))
 const operatorSettings = join(real, '.gemini', 'antigravity-cli', 'settings.json')
 const settings = existsSync(operatorSettings) ? JSON.parse(readFileSync(operatorSettings, 'utf8')) : {}
 const deny = ['git reset --hard', 'gh pr merge --admin', 'gh repo delete', 'rm -rf'].map(name => `command(${name})`)
+settings.useG1Credits = false
 settings.permissions = { ...settings.permissions, deny: [...new Set([...(settings.permissions?.deny ?? []), ...deny])] }
 writeFileSync(join(seat, '.gemini', 'antigravity-cli', 'settings.json'), JSON.stringify(settings) + '\n')
 console.log(seat)
