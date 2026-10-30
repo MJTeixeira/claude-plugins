@@ -25,10 +25,10 @@ const vendorsState = atom({ plugin: 'seat-router', key: 'vendors' } as const, nu
 const claudeSeatsState = atom({ plugin: 'seat-router', key: 'claudeSeats' } as const, [], { shape: 'claude-seat-display-2' })
 const seatPaneTickState = atom({ plugin: 'seat-router', key: 'seatPaneTick' } as const, 0)
 const seatPanelState = atom({ plugin: 'seat-router', key: 'seatPanel' } as const, { isDoneCollapsed: false })
+const delegateShownState = atom({ plugin: 'seat-router', key: 'delegateShown' } as const, null)
 
 const PANE = 'seats'
 
-// The seat rules, naming only the CLIs this machine has and the candidates they serve.
 const seatRules = (vendors: readonly ExternalVendor[], sizes: Record<Size, Candidate[]>, mixFanouts: boolean, accounts: readonly string[]): string => {
   const usable = (size: Size) => sizes[size].filter(candidate => candidate.vendor === 'claude' || vendors.includes(candidate.vendor as ExternalVendor))
   const others = [...new Set(SIZES.flatMap(size => usable(size).map(familyOf)))].filter((family): family is Exclude<Family, 'claude' | 'other'> => family !== 'claude' && family !== 'other')
@@ -58,18 +58,28 @@ const seatRules = (vendors: readonly ExternalVendor[], sizes: Record<Size, Candi
         + others.map(family => '`seat: ' + family + ' <size> reviewer`').join(', ') + '), all in one message.'
       : '')
 }
-// When code work goes to owner seats: always (`on`), never (`off`), or while Claude's quota is busy (`auto`).
 const delegateRules = (setting: Delegate, reason: string | undefined): string => {
   if (reason !== undefined) {
     return '\nDelegate mode is on (' + reason + '): code work goes to owner seats. A feature, refactor, bug fix or performance task, '
       + 'a PR owner with its fix rounds, and their helpers go out as `seat: <size> owner` with `isolation: "worktree"`, the size '
       + 'the task\'s effort maps to (standard when none is named); the mod spreads them across model families by quota. This '
-      + 'session keeps the planning, briefs, verdicts, the merges it owns and every reply to the person. Say when delegate mode '
-      + 'turns on and why.'
+      + 'session keeps the planning, briefs, verdicts, the merges it owns and every reply to the person.'
   }
   return setting === 'auto'
     ? '\nDelegate mode turns on by itself while Claude\'s quota is busy; until then code work stays on Claude unless the person asks to delegate it.'
     : ''
+}
+
+async function showDelegate($: EngineInterface, reason: string | undefined): Promise<void> {
+  const now = reason ?? ''
+  // update retries on a concurrent write, so of prompts composed at once only one sees the change.
+  let shown: string | null = now
+  await update($, delegateShownState, current => {
+    shown = current
+    return now
+  })
+  if (shown === now || (shown === null && now === '')) return
+  $.ui.log(now ? 'seat-router: delegate mode is on (' + now + '): code work goes to owner seats.' : 'seat-router: delegate mode is off: code work stays on Claude.')
 }
 
 const QUEUE_SCHEMA = {
@@ -99,6 +109,7 @@ let elapsedTick: Timer | undefined
 let picking: Promise<unknown> = Promise.resolve()
 const oneAtATime = <T,>(work: () => Promise<T>): Promise<T> => {
   const turn = picking.then(work)
+  // A pick that throws fails its own Agent call (turn rejects there), not the picks queued behind it.
   picking = turn.catch(() => undefined)
   return turn
 }
@@ -109,8 +120,6 @@ const oneAtATime = <T,>(work: () => Promise<T>): Promise<T> => {
 const CLAUDE_PICK_MS = 60_000
 // The engine skips a tool.call hook after 10s; a pick this late launches nothing.
 const LATE_MS = 9_000
-// Owner seats handed to Claude: their Agent calls until spawned, then the subagents,
-// whose shell commands pass the same owner guard as codex and agy owners.
 const ownerCalls = new Set<string>()
 const claudeOwners = new Set<string>()
 type ClaudePick = { at: number, toolUseId?: string, agentId?: string }
@@ -165,8 +174,6 @@ const claudeCards = (agents: readonly AgentInfo[], seats: readonly ClaudeSeatDis
   return [...agents.map(agent => claudeCard(agent, known.get(agent.id))), ...dropped]
 }
 
-// The subagents running now and those that finished while any of them ran:
-// the batch the band's Tasks bar counts. Null while none runs.
 const batch = (cards: readonly Card[]): QueueDisplay | null => {
   const running = cards.filter(card => card.status === 'running')
   if (running.length === 0) return null
@@ -195,7 +202,6 @@ async function hasRunningSeat($: EngineInterface): Promise<boolean> {
   return (await $.agent.list()).some(agent => isRunning(agent.status))
 }
 
-// Elapsed times redraw once a second, only while the pane is open and something runs.
 async function tickElapsed($: EngineInterface): Promise<void> {
   if (await isPaneOpen($) && await hasRunningSeat($)) {
     await update($, seatPaneTickState, tick => tick + 1)
@@ -232,8 +238,6 @@ const sizeQuestion = (size: Size, auto: readonly Candidate[]): string =>
   + ', and follows your CLIs when their models change. Picking a model puts it first, the others after it.'
 const AUTO = 'Auto (recommended)'
 
-// Asks, size by size, which model goes first, offering the auto candidates the CLIs
-// report, then the delegate mode, and saves every answer at once.
 async function setup($: EngineInterface): Promise<string> {
   const finding = foundAccounts($)
   const models = await cliModels($)
@@ -294,9 +298,6 @@ async function setup($: EngineInterface): Promise<string> {
 
 const NO_ACCOUNTS = 'None'
 
-// Offers the other Claude accounts already set and the logged-in config folders
-// found in the home folder (searched while the other questions are asked); asks nothing when there are neither. Returns the
-// accounts to save, or undefined to keep the setting.
 async function askAccounts($: EngineInterface, found: readonly FoundAccount[], lines: string[]): Promise<Record<string, string> | undefined> {
   const offered = { ...Object.fromEntries(found.filter(account => account.plan !== undefined).map(account => [account.name, account.dir])), ...parseAccounts(accountSetting()) }
   const loggedOut = found.filter(account => account.plan === undefined && !(account.name in offered))
@@ -338,7 +339,9 @@ export const register: Register = (on, options) => {
     const vendors = await installedVendors($)
     if (vendors.length === 0) return composed
     const sizes = Object.fromEntries(await Promise.all(SIZES.map(async size => [size, await sizeCandidates($, size)] as const))) as Record<Size, Candidate[]>
-    const text = seatRules(vendors, sizes, mixFanouts, accountNames()) + delegateRules(delegateSetting(), await delegateReason($))
+    const reason = await delegateReason($)
+    await showDelegate($, reason)
+    const text = seatRules(vendors, sizes, mixFanouts, accountNames()) + delegateRules(delegateSetting(), reason)
     return { sections: [...composed.sections, { id: 'seat-router:loaded', text, scope: 'session' }] }
   })
 
@@ -365,6 +368,8 @@ export const register: Register = (on, options) => {
       inputSchema: STOP_SCHEMA,
       isDeferred: false,
     })
+    // Neither holds up the session: a failed prune waits for the next start, and a failed probe writes no
+    // answer, so reviewers run the unelevated sandbox.
     void pruneSeats($).catch(() => undefined)
     void probeCodexSandbox($).catch(() => undefined)
     $.clock.every(5_000, () => singleFlightPoll($))
@@ -429,7 +434,6 @@ export const register: Register = (on, options) => {
         ...(claude.effort ? { effort: claude.effort as typeof e.effort } : {}),
       })
       if (pick.toolUseId !== undefined && pick.agentId === undefined) claudePicks = claudePicks.filter(other => other !== pick)
-      // The trail goes to the session that placed the seat, as an external seat's report carries it.
       if (!initial.trail.length || 'deny' in launched && launched.deny !== undefined || launched.isError) return launched
       return { ...launched, context: [...launched.context ?? [], 'Fallback: ' + [...initial.trail, 'claude ' + claude.model].join(' → ')] }
     }
@@ -476,7 +480,6 @@ export const register: Register = (on, options) => {
       void startElapsedTick($)
     }
     const result = yield* next(e)
-    // Each step's usage is counted as it lands, so a running subagent shows its tokens.
     const usage = result.usage
     if (e.agentId !== undefined && usage) {
       await recordClaudeSeat($, e.agentId, await $.clock.now(), current => ({ tokens: (current?.tokens ?? 0) + usageTokens(usage) }))
@@ -505,12 +508,9 @@ export const register: Register = (on, options) => {
     const [quotas, queue, seats, vendors, claudeSeats, agents] = await Promise.all([
       read($, quotasState), read($, queueState), read($, seatsState), read($, vendorsState), read($, claudeSeatsState), $.agent.list(),
     ])
-    // Every vendor until the CLIs were asked for, then Claude and the installed ones.
     const shown: readonly SeatVendor[] = vendors ? ['claude', ...vendors] : VENDORS
-    // The pane's cards: codex and agy seats, and Claude subagents.
     const cards = [...seats.map(externalCard), ...claudeCards(agents, claudeSeats)]
     const count = cards.filter(card => card.status === 'running').length
-    // An autopilot queue reports its own tasks; otherwise the tasks are the batch running now.
     const progress = queue ?? batch(cards)
     const hasRow = progress !== null
     const ui = $.ui.resolve(e)

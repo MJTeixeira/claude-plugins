@@ -1,7 +1,4 @@
 // Adapted from savvy-progress by johnnyvizz; see ../NOTICE.md.
-// A grid of terminal cells drawn into a `Raster`: text, coloured backgrounds and
-// half-block pixels (two per cell, one above the other), encoded as the element wants;
-// then the desktop's art (art.ts) drawn in it for the terminal.
 import type { QueueDisplay, SeatQuotaDisplay, SeatVendor } from '../types/index'
 import {
   ACCENT, AMBER, GREEN, INK, PALETTE, RED, STEP, UNKNOWN,
@@ -101,7 +98,6 @@ export const pixel = (c: Canvas, x: number, y: number, color: number): void => {
   c.pixels[y * c.columns + x] = color
 }
 
-// A rounded box-drawing frame.
 export const frame = (c: Canvas, x: number, y: number, width: number, height: number, color: number): void => {
   const right = x + width - 1
   const bottom = y + height - 1
@@ -130,7 +126,6 @@ export const thinBar = (c: Canvas, x: number, y: number, width: number, ratio: n
   }
 }
 
-// A dashed bar for a value no one knows.
 export const dashedBar = (c: Canvas, x: number, y: number, width: number, color: number): void => {
   for (let offset = 0; offset < width; offset += 1) put(c, x + offset, y, '╌', color)
 }
@@ -187,7 +182,6 @@ export const encode = (c: Canvas): string => {
 
 export type Cell = { char: string, fg: number, bg: number }
 
-// Reads `cells` back: what a test asserts on.
 export const decode = (cells: string, columns: number): Cell[][] => {
   const lookup = new Map([...BASE64].map((char, index) => [char, index]))
   const clean = cells.replace(/=+$/, '')
@@ -207,13 +201,10 @@ export const decode = (cells: string, columns: number): Cell[][] => {
 
 export const rowText = (row: Cell[]): string => row.map(cell => cell.char).join('')
 
-// ---- The desktop's art, in cells ----
-
 export type Drawing = { cells: string, columns: number, rows: number }
 
 const finish = (c: Canvas): Drawing => ({ cells: encode(c), columns: c.columns, rows: c.rows })
 
-// Reads on a light and a dark theme alike.
 const SECONDARY = rgb('#8a8984')
 const WHITE = 0xffffff
 const dim = (color: number): number => mix(color, SECONDARY, 0.45)
@@ -222,7 +213,6 @@ type Quotas = Partial<Record<SeatVendor, SeatQuotaDisplay>>
 
 const percent = (used: number): string => Math.round(used) + '%'
 
-// A window inline: its label, a thin bar and the percent after it, in `width` cells.
 const meter = (c: Canvas, x: number, y: number, width: number, label: string, used: number | undefined, out: boolean, color: number): void => {
   write(c, x, y, label, SECONDARY)
   const barX = x + label.length + 1
@@ -317,8 +307,6 @@ export const runningRaster = (count: number, columns: number): Drawing => {
 export const CARD_ROWS = 6
 const LOGO_COLUMNS = 12
 
-// The vendor's figure at half its desktop size: a pixel per 2×2 block, ink where any of it is ink,
-// else the vendor colour where any of it is; a sparser rule turns the sparkle into a plus.
 const drawFigure = (c: Canvas, vendor: SeatVendor, x: number, y: number, color: number, ink: number): void => {
   const rows = figureRows(vendor)
   for (let ty = 0; ty < 8; ty += 1) {
@@ -337,7 +325,6 @@ export const cardRaster = (card: Card, now: number, columns: number): Drawing =>
   const color = isDone ? dim(vendor) : vendor
   frame(c, 0, 0, columns, CARD_ROWS, color)
   const hasFigure = columns >= 34
-  // Pixel rows 2..9 are cell rows 1..4, the card's inside.
   if (hasFigure) drawFigure(c, card.vendor, 2, 2, color, isDone ? dim(rgb(INK)) : rgb(INK))
   const left = hasFigure ? 2 + LOGO_COLUMNS + 2 : 2
   const right = columns - 2

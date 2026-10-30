@@ -461,7 +461,6 @@ const real = (dir, path) => {
 
 const folded = (dir, path) => path.sep === '\\' ? dir.replace(/^\\\\\?\\/, '').toLowerCase() : dir
 
-// Whether `dir` is `seat`, a real folder already folded, or inside it.
 const within = (dir, seat, path) => {
   if (dir === null) return false
   const inner = real(dir, path)
@@ -514,7 +513,6 @@ const placeRules = (own, path, cdpath) => {
   }
 }
 
-// Whether a discarding git command, run from `places`, keeps its work tree inside the seat's folder.
 const inside = (folders, rules) => folders.length > 0 && folders.every(dir => within(dir, rules.seat, rules.path))
 
 // Why a plain line is refused, or undefined when each discarding git command on it runs inside the seat's folder, followed

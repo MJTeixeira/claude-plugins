@@ -15,7 +15,6 @@ const quotasState = atom({ plugin: 'seat-router', key: 'quotas' } as const, {}, 
   shape: 'quota-windows-1',
 })
 const EXTERNAL_VENDORS = ['codex', 'agy'] as const
-// null until the CLIs were asked for.
 const vendorsState = atom({ plugin: 'seat-router', key: 'vendors' } as const, null as ExternalVendor[] | null, {
   shape: 'installed-vendors-1',
 })
@@ -26,16 +25,13 @@ const modelsState = atom({ plugin: 'seat-router', key: 'models' } as const, null
 // 10s, and seats of one message pick one at a time, so a pick reads a recent
 // output (the band refreshes it every two minutes) or joins a read under way.
 const QUOTA_FRESH_MS = 150_000
-const usageState = atom({ plugin: 'seat-router', key: 'usage' } as const, {} as Partial<Record<UsageSource, { at: number, stdout: string }>>, {
-  shape: 'usage-reads-1',
+const usageState = atom({ plugin: 'seat-router', key: 'usage' } as const, {} as Partial<Record<UsageSource, { at: number, stdout?: string }>>, {
+  shape: 'usage-reads-2',
 })
-// A CLI, or another Claude account by its name.
-type UsageSource = ExternalVendor | `claude:${string}`
+type UsageSource = SeatVendor | `claude:${string}`
 const usageReading = new Map<UsageSource, Promise<string | undefined>>()
 // The shell tools Claude Code runs commands through.
 export const SHELL_TOOLS = ['Bash', 'PowerShell']
-// The guard reads command lines, so an interpreter (python, node, a script) can reach what
-// it refused; an owner seat is told that a refusal is final.
 const OWNER_GUARD_NOTE = 'An owner guard refuses force pushes, git reset --hard, git worktree remove and move (seat-router removes '
   + 'this seat\'s worktree when it ends), git branch -D, clean -f, checkout, restore and forced switch aimed at another folder (-C, --work-tree) or run outside this seat\'s folder (after a cd, say), forced recursive deletes, gh pr merge --admin and gh repo delete. A refusal is final: do not reach the same result another way (another shell, python, node or a '
   + 'script). Say in your report what was refused and why you needed it.\n'
@@ -47,10 +43,8 @@ const OWNER_GUARD_NOTE = 'An owner guard refuses force pushes, git reset --hard,
 const AGY_TASKS_NOTE = 'agy keeps the run open while a background task you started is still running, and wakes you when it ends. '
   + 'Before your final answer, wait for or stop (manage_task kill) every background task and schedule timer you started, so the final answer is the last thing you do. '
   + 'Any subagent you start must report back to you before your final answer.\n'
-// agy renews its sign-in only in the token's last 10 seconds, so a long request sent just
-// before then fails with UNAUTHENTICATED, and a -p run ends there. A new process signs in
-// afresh, so the seat resumes its conversation there, AGY_AUTH_RESUMES times at most; the
-// old process's subagents and background tasks ended with it.
+// agy can end a long -p run with UNAUTHENTICATED mid-turn (google-antigravity/antigravity-cli#1091);
+// a new process signs in afresh, so the seat resumes its conversation there.
 const AGY_AUTH_RESUMES = 3
 const AGY_UNAUTHENTICATED = /UNAUTHENTICATED \(code 401\)/
 const AGY_RESUME = 'Your previous session ended unexpectedly: its sign-in expired, not because of anything you did. '
@@ -145,7 +139,7 @@ export async function foundAccounts($: EngineInterface): Promise<FoundAccount[]>
   const accounts = await Promise.all(named.map(async ({ name, folder }): Promise<FoundAccount | undefined> => {
     const path = home + '/' + folder
     if (!await $.fs.exists(path + '/.claude.json')) return undefined
-    const read = await $.process.run(['node', join($.plugin.root, 'bin', 'claude-usage.mjs')], { timeoutMs: 60_000, env: { CLAUDE_CONFIG_DIR: path } })
+    const read = await $.process.run(['node', join($.plugin.root, 'bin', 'claude-usage.mjs'), '--account'], { timeoutMs: 60_000, env: { CLAUDE_CONFIG_DIR: path } })
       .catch(() => undefined)
     if (read?.exitCode !== 0) return { name, dir: '~/' + folder }
     const plan = asObject(readJson(read.stdout))?.plan
@@ -166,7 +160,7 @@ export async function delegateReason($: EngineInterface): Promise<string | undef
   if (seatConfig.delegate === 'off') return undefined
   const usage = await claudeUsage($).catch(() => undefined)
   if (usage === undefined) return undefined
-  return isBusy(loadOf(claudeQuota(usage), await $.clock.now()), seatConfig.busyAt) ? 'Claude\'s quota is busy' : undefined
+  return isBusy(loadOf(quotaOf('claude', usage, BAND_MODEL.claude), await $.clock.now()), seatConfig.busyAt) ? 'Claude\'s quota is busy' : undefined
 }
 
 export const delegateSetting = (): Delegate => seatConfig.delegate
@@ -216,9 +210,14 @@ type Quota = {
   resetAt?: number
   fiveHour?: { used: number, resetAt?: number }
   weekly?: { used: number, resetAt?: number }
-  // The windows of the model asked about, where they differ from the band's.
-  load?: { fiveHour?: number, weekly?: number, weekResetAt?: number }
 }
+
+/**
+ * One quota window a usage read reports: `models` names fragments of the model names it applies to (codex's, whole
+ * model names); absent, it applies to every model. A limit reached with no window to measure it has no `used`.
+ */
+type UsageWindow = { name: string, models?: string[], minutes?: number, used?: number, resetAt?: number, reached?: string }
+type Usage = { allowed?: boolean, windows: UsageWindow[] }
 
 type Initial = {
   chain: Candidate[]
@@ -236,7 +235,6 @@ type Seat = {
   vendor: SeatVendor
   model: string
   effort: string
-  // The other Claude account a `claude` seat runs on, as a CLI.
   account?: string
   tier: SeatTier
   chainPosition: number
@@ -252,14 +250,10 @@ type Seat = {
   isolation?: 'worktree'
   worktreePath?: string
   worktreeBranch?: string
-  // The commit a worktree started at, which tells an owner that changed nothing.
   baseSha?: string
-  // The family a sized line named (gpt, gemini, claude, or a CLI), and whether a
-  // candidate in it failed: the seat then never leaves it.
   prefer?: string
   preferFailed?: boolean
   reruns?: number
-  // The agy conversation the next launch resumes, and how many times its sign-in ran out.
   resumeConversation?: string
   authResumes?: number
   fallbackTrail: string[]
@@ -268,7 +262,6 @@ type Seat = {
   waitedAt?: number
   waitedMs?: number
   waitUntil?: number
-  // When a poll first saw the seat's latest calls repeat one cycle.
   loopSince?: number
 }
 
@@ -328,109 +321,112 @@ function exceeded(used: number | undefined): boolean {
   return used !== undefined && used > 95
 }
 
-function usedDetail(window: string, used: number | undefined): string | undefined {
-  return used === undefined ? undefined : window + ' ' + Math.round(used) + '% used'
-}
-
-function usageWindow(value: Record<string, unknown> | undefined, used = numberAt(value?.utilization)): { used: number, resetAt?: number } | undefined {
-  if (used === undefined) return undefined
-  const resetAt = resetTime(value?.resets_at ?? value?.reset_time)
-  return { used: Math.max(0, Math.min(100, used)), ...(resetAt === undefined ? {} : { resetAt }) }
-}
-
 function minimumReset(resets: Array<number | undefined>): number | undefined {
   const present = resets.filter((value): value is number => value !== undefined)
   return present.length === 0 ? undefined : Math.min(...present)
 }
 
-function codexQuota(payload: unknown): Quota {
-  const data = asObject(payload)
-  const five = asObject(data?.five_hour)
-  const week = asObject(data?.seven_day)
-  const fiveHour = usageWindow(five)
-  const weekly = usageWindow(week)
-  const fiveUsed = fiveHour?.used
-  const weekUsed = weekly?.used
-  const allowed = data?.allowed
-  const reached = data?.reached
-  const details = [
-    allowed === false ? 'not allowed' : undefined,
-    reached !== null && reached !== undefined ? 'limit ' + String(reached) : undefined,
-    exceeded(fiveUsed) ? usedDetail('5h', fiveUsed) : undefined,
-    exceeded(weekUsed) ? usedDetail('7d', weekUsed) : undefined,
-  ].filter((value): value is string => value !== undefined)
-  return {
-    vendor: 'codex', known: true, out: details.length > 0,
-    detail: details.join(', '), resetAt: minimumReset([resetTime(five?.resets_at), resetTime(week?.resets_at)]),
-    ...(fiveHour === undefined ? {} : { fiveHour }),
-    ...(weekly === undefined ? {} : { weekly }),
-  }
-}
+const defined = <T,>(value: T | undefined): value is T => value !== undefined
 
-function claudeQuota(payload: unknown): Quota {
+function usageOf(payload: unknown): Usage | undefined {
   const data = asObject(payload)
-  const five = asObject(data?.five_hour)
-  const week = asObject(data?.seven_day)
-  const fiveHour = usageWindow(five)
-  const weekly = usageWindow(week)
-  const fiveUsed = fiveHour?.used
-  const weekUsed = weekly?.used
-  const details = [
-    exceeded(fiveUsed) ? usedDetail('5h', fiveUsed) : undefined,
-    exceeded(weekUsed) ? usedDetail('7d', weekUsed) : undefined,
-  ].filter((value): value is string => value !== undefined)
-  return {
-    vendor: 'claude', known: true, out: details.length > 0,
-    detail: details.join(', '), resetAt: minimumReset([resetTime(five?.resets_at), resetTime(week?.resets_at)]),
-    ...(fiveHour === undefined ? {} : { fiveHour }),
-    ...(weekly === undefined ? {} : { weekly }),
-  }
-}
-
-function agyBucketQuota(payload: unknown, model: string): Quota {
-  const command = asObject(asObject(payload)?.command)
-  const data = asObject(command?.data)
-  const groups = Array.isArray(data?.groups) ? data.groups : undefined
-  if (!groups) return { vendor: 'agy', known: false, out: false }
-  const buckets: Record<string, unknown>[] = []
-  for (const group of groups) {
-    const items = asObject(group)?.buckets
-    if (!Array.isArray(items)) continue
-    for (const bucket of items) {
-      const object = asObject(bucket)
-      if (object) buckets.push(object)
+  if (!Array.isArray(data?.windows)) return undefined
+  const windows = data.windows.map((value): UsageWindow | undefined => {
+    const window = asObject(value)
+    const name = textAt(window?.name)
+    const [used, reached] = [numberAt(window?.used), textAt(window?.reached)]
+    if (name === undefined || (used === undefined && reached === undefined)) return undefined
+    const models = Array.isArray(window?.models) ? window.models.filter((model): model is string => typeof model === 'string') : undefined
+    const [minutes, resetAt] = [numberAt(window?.minutes), numberAt(window?.resetAt)]
+    return {
+      name, ...(used === undefined ? {} : { used }), ...(models === undefined ? {} : { models }), ...(minutes === undefined ? {} : { minutes }),
+      ...(resetAt === undefined ? {} : { resetAt }), ...(reached === undefined ? {} : { reached }),
     }
+  }).filter(defined)
+  return { ...(typeof data.allowed === 'boolean' ? { allowed: data.allowed } : {}), windows }
+}
+
+// agy documents no /usage JSON; its buckets carry the status line's quota fields
+// (https://antigravity.google/docs/cli/statusline/), and each group's description names
+// its models: Gemini's buckets serve Gemini, 3p's Claude and GPT-OSS, Argon's Argon alone.
+const AGY_BUCKETS = [
+  { prefix: 'gemini-argon-', name: 'argon', models: ['argon'] },
+  { prefix: 'gemini-', name: '', models: ['gemini'] },
+  { prefix: '3p-', name: '3p', models: ['claude', 'gpt'] },
+]
+const AGY_MINUTES: Record<string, number> = { '5h': 300, weekly: 10080 }
+
+function agyUsage(payload: unknown): Usage | undefined {
+  const groups = asObject(asObject(asObject(payload)?.command)?.data)?.groups
+  if (!Array.isArray(groups)) return undefined
+  const buckets = groups.flatMap(group => {
+    const items = asObject(group)?.buckets
+    return Array.isArray(items) ? items.map(asObject).filter(defined) : []
+  })
+  const windows = buckets.map((bucket): UsageWindow | undefined => {
+    const id = textAt(bucket.id) ?? ''
+    const kind = AGY_BUCKETS.find(entry => id.startsWith(entry.prefix))
+    const remaining = numberAt(bucket.remaining_fraction)
+    if (bucket.disabled === true || kind === undefined || remaining === undefined) return undefined
+    const span = textAt(bucket.window) ?? id.slice(id.lastIndexOf('-') + 1)
+    const minutes = AGY_MINUTES[span]
+    const resetAt = resetTime(bucket.reset_time)
+    return {
+      name: [kind.name, span].filter(Boolean).join(' '), models: kind.models, used: (1 - remaining) * 100,
+      ...(minutes === undefined ? {} : { minutes }), ...(resetAt === undefined ? {} : { resetAt }),
+    }
+  }).filter(defined)
+  return { windows }
+}
+
+// Claude Code's own windows, for when the /usage read fails: they name no model.
+function sessionUsage(rateLimits: ReadonlyArray<{ kind: string, percentUsed: number, resetsAt?: string }>): Usage | undefined {
+  const windows = rateLimits.map((limit): UsageWindow => {
+    const minutes = limit.kind === 'five_hour' ? 300 : limit.kind === 'seven_day' ? 10080 : undefined
+    const resetAt = resetTime(limit.resetsAt)
+    return {
+      name: minutes === 300 ? '5h' : minutes === 10080 ? '7d' : limit.kind.replaceAll('_', ' '), used: limit.percentUsed,
+      ...(minutes === undefined ? {} : { minutes }), ...(resetAt === undefined ? {} : { resetAt }),
+    }
+  })
+  return windows.length ? { windows } : undefined
+}
+
+// Of the windows scoped to a model, the one whose fragment ends latest in the model's name applies: agy's Argon
+// (gemini-4-argon-high) draws on its own bucket where agy lists one, and on Gemini's elsewhere. A codex bucket
+// names one model whole (normalModelSlug): gpt-5.3-codex's is not gpt-5.3-codex-spark's.
+function windowsFor(usage: Usage, model: string, whole: boolean): UsageWindow[] {
+  const name = model.toLowerCase()
+  const reach = (window: UsageWindow): number => Math.max(-1, ...(window.models ?? []).map(fragment => {
+    const at = whole ? (name === fragment.toLowerCase() ? 0 : -1) : name.indexOf(fragment.toLowerCase())
+    return at < 0 ? -1 : at + fragment.length
+  }))
+  const deepest = Math.max(-1, ...usage.windows.map(reach))
+  return usage.windows.filter(window => window.models === undefined || (deepest >= 0 && reach(window) === deepest))
+}
+
+function quotaOf(vendor: SeatVendor, usage: Usage, model: string): Quota {
+  const windows = windowsFor(usage, model, vendor === 'codex')
+  if (windows.length === 0) return usage.allowed === false ? { vendor, known: true, out: true, detail: 'not allowed' } : { vendor, known: false, out: false }
+  const details = [
+    usage.allowed === false ? 'not allowed' : undefined,
+    ...new Set(windows.map(window => window.reached === undefined ? undefined : 'limit ' + window.reached).filter(defined)),
+    ...windows.filter(window => exceeded(window.used)).map(window => window.name + ' ' + Math.round(window.used ?? 0) + '% used'),
+  ].filter(defined)
+  const most = (fits: (minutes: number) => boolean): Quota['weekly'] => {
+    const top = windows.flatMap(window => window.minutes !== undefined && fits(window.minutes) && window.used !== undefined
+      ? [{ used: window.used, resetAt: window.resetAt }] : []).sort((a, b) => b.used - a.used)[0]
+    return top && { used: Math.max(0, Math.min(100, top.used)), ...(top.resetAt === undefined ? {} : { resetAt: top.resetAt }) }
   }
-  const isGemini = model.startsWith('gemini')
-  // Argon draws only on its own weekly bucket where agy lists one, and on Gemini's windows elsewhere.
-  const ownBucket = model.includes('argon') && buckets.some(bucket => bucket.id === 'gemini-argon-wtu-weekly')
-  const windows = ownBucket ? [{ id: 'gemini-argon-wtu-weekly', name: 'argon weekly', weekly: true }]
-    : isGemini ? [{ id: 'gemini-5h', name: '5h', weekly: false }, { id: 'gemini-weekly', name: 'weekly', weekly: true }]
-      : [{ id: '3p-5h', name: '3p 5h', weekly: false }, { id: '3p-weekly', name: '3p weekly', weekly: true }]
-  const selected = windows.map(window => buckets.find(bucket => bucket.id === window.id))
-  if (selected.some(bucket => !bucket)) return { vendor: 'agy', known: false, out: false }
-  const exhausted = windows.map((window, index) => {
-    const bucket = selected[index]
-    const remaining = numberAt(bucket?.remaining_fraction)
-    const used = remaining === undefined ? undefined : (1 - remaining) * 100
-    return { ...window, used, resetAt: resetTime(bucket?.reset_time) }
-  })
-  const band = ['gemini-5h', 'gemini-weekly'].map(id => {
-    const bucket = buckets.find(item => item.id === id)
-    const remaining = numberAt(bucket?.remaining_fraction)
-    return remaining === undefined ? undefined : usageWindow(bucket, (1 - remaining) * 100)
-  })
-  const [five, week] = [exhausted.find(window => !window.weekly), exhausted.find(window => window.weekly)]
-  const load = { fiveHour: five?.used, weekly: week?.used, weekResetAt: week?.resetAt }
-  const details = exhausted.map(window => exceeded(window.used) ? usedDetail(window.name, window.used) : undefined)
-    .filter((value): value is string => value !== undefined)
+  // codex can meter a window shorter than five hours (its docs show 15 minutes): it fills the short slot.
+  const [fiveHour, weekly] = [most(minutes => minutes < 10080), most(minutes => minutes === 10080)]
   return {
-    vendor: 'agy', known: true, out: details.length > 0, detail: details.join(', '),
-    resetAt: minimumReset(exhausted.map(window => window.resetAt)), load,
-    ...(band[0] === undefined ? {} : { fiveHour: band[0] }),
-    ...(band[1] === undefined ? {} : { weekly: band[1] }),
+    vendor, known: true, out: details.length > 0, detail: details.join(', '), resetAt: minimumReset(windows.map(window => window.resetAt)),
+    ...(fiveHour === undefined ? {} : { fiveHour }), ...(weekly === undefined ? {} : { weekly }),
   }
 }
+
+const BAND_MODEL: Record<SeatVendor, string> = { claude: '', codex: '', agy: 'gemini' }
 
 async function putQuota($: EngineInterface, quota: Quota): Promise<void> {
   const checkedAt = await $.clock.now()
@@ -442,11 +438,17 @@ async function putQuota($: EngineInterface, quota: Quota): Promise<void> {
   await update($, quotasState, current => ({ ...current, [quota.vendor]: value }))
 }
 
-// Claude's windows as the session's last response reported them, in claude-usage's shape.
-async function claudeUsage($: EngineInterface): Promise<Record<string, unknown> | undefined> {
-  const { rateLimits } = await $.session.usage()
-  const windows = Object.fromEntries(rateLimits.map(limit => [limit.kind, { utilization: limit.percentUsed, resets_at: limit.resetsAt }]))
-  return windows.five_hour || windows.seven_day ? windows : undefined
+async function claudeUsage($: EngineInterface): Promise<Usage | undefined> {
+  return sessionUsage((await $.session.usage()).rateLimits)
+}
+
+// A Claude usage read starts a `claude -p` (about 2.5 s); a pick waits on it this long, inside the engine's
+// tool.call budget (LATE_MS), and goes on without it after.
+const CLAUDE_READ_WAIT_MS = 4_000
+
+async function claudeRead($: EngineInterface, source: 'claude' | `claude:${string}`, deadline: number | undefined): Promise<Usage | undefined> {
+  const output = await usageOutput($, source, QUOTA_FRESH_MS, deadline)
+  return output === undefined ? undefined : usageOf(readJson(output))
 }
 
 // The external CLIs this machine has: one that cannot start or fails `--version` is absent.
@@ -465,27 +467,34 @@ export async function installedVendors($: EngineInterface): Promise<ExternalVend
   return vendors
 }
 
-// A CLI's or an account's usage output no older than `maxAgeMs`; undefined when the read failed.
-async function usageOutput($: EngineInterface, source: UsageSource, maxAgeMs: number): Promise<string | undefined> {
+async function usageOutput($: EngineInterface, source: UsageSource, maxAgeMs: number, deadline?: number): Promise<string | undefined> {
   const kept = (await read($, usageState))[source]
   if (kept && (await $.clock.now()) - kept.at < maxAgeMs) return kept.stdout
-  const running = usageReading.get(source)
-  if (running) return running
+  const reading = usageReading.get(source) ?? startUsageRead($, source)
+  return deadline === undefined ? reading : within($, reading, deadline)
+}
+
+function startUsageRead($: EngineInterface, source: UsageSource): Promise<string | undefined> {
+  const keep = async (stdout: string | undefined): Promise<string | undefined> => {
+    const at = await $.clock.now()
+    await update($, usageState, current => stdout === undefined && current[source]?.stdout !== undefined && at - (current[source]?.at ?? 0) < QUOTA_FRESH_MS
+      ? current : { ...current, [source]: { at, ...(stdout === undefined ? {} : { stdout }) } })
+    return stdout
+  }
   const reading = (async () => {
     try {
       const result = source === 'codex'
         ? await $.process.run(['node', join($.plugin.root, 'bin', 'codex-usage.mjs')], { timeoutMs: 60_000 })
         : source === 'agy'
           ? await io($, ['exec', 'agy', '-p', '/usage', '--output-format', 'json'], { timeoutMs: 60_000 })
-          : await $.process.run(['node', join($.plugin.root, 'bin', 'claude-usage.mjs')], {
-            timeoutMs: 60_000, env: { CLAUDE_CONFIG_DIR: await accountDir($, source.slice('claude:'.length)) },
-          })
-      if (result.exitCode !== 0) return undefined
-      const at = await $.clock.now()
-      await update($, usageState, current => ({ ...current, [source]: { at, stdout: result.stdout } }))
-      return result.stdout
+          : source === 'claude'
+            ? await $.process.run(['node', join($.plugin.root, 'bin', 'claude-usage.mjs')], { timeoutMs: 60_000 })
+            : await $.process.run(['node', join($.plugin.root, 'bin', 'claude-usage.mjs'), '--account'], {
+              timeoutMs: 60_000, env: { CLAUDE_CONFIG_DIR: await accountDir($, source.slice('claude:'.length)) },
+            })
+      return await keep(result.exitCode === 0 ? result.stdout : undefined)
     } catch {
-      return undefined
+      return await keep(undefined)
     } finally {
       usageReading.delete(source)
     }
@@ -494,51 +503,61 @@ async function usageOutput($: EngineInterface, source: UsageSource, maxAgeMs: nu
   return reading
 }
 
-// An account's config folder, `~` taken as the home folder.
+async function within<T>($: EngineInterface, work: Promise<T>, deadline: number): Promise<T | undefined> {
+  const left = Math.max(1, deadline - await $.clock.now())
+  let timer: ReturnType<EngineInterface['clock']['after']> | undefined
+  const late = new Promise<undefined>(resolve => { timer = $.clock.after(left, () => resolve(undefined)) })
+  try {
+    return await Promise.race([work, late])
+  } finally {
+    timer?.cancel()
+  }
+}
+
 async function accountDir($: EngineInterface, account: string): Promise<string> {
   const dir = slashed(seatConfig.accounts[account] ?? '')
   return dir === '~' || dir.startsWith('~/') ? slashed(await homeDir($) ?? '') + dir.slice(1) : dir
 }
 
-// Another account's quota stays off the band, which shows the session's own Claude.
-async function accountQuota($: EngineInterface, account: string, maxAgeMs = QUOTA_FRESH_MS): Promise<Quota> {
+async function accountQuota($: EngineInterface, account: string, model: string, deadline?: number): Promise<Quota> {
   const dir = await accountDir($, account)
   try {
     if ((await $.fs.stat(dir)).kind !== 'dir') throw new Error('not a folder')
   } catch {
     return { vendor: 'claude', known: true, out: true, detail: 'no folder ' + (dir || '(unset)') }
   }
-  const output = await usageOutput($, `claude:${account}`, maxAgeMs)
-  const data = output === undefined ? undefined : readJson(output)
-  return data === undefined ? { vendor: 'claude', known: false, out: false } : claudeQuota(data)
+  const usage = await claudeRead($, `claude:${account}`, deadline)
+  return usage === undefined ? { vendor: 'claude', known: false, out: false } : quotaOf('claude', usage, model)
 }
 
-function candidateQuota($: EngineInterface, candidate: Candidate): Promise<Quota> {
-  return candidate.account === undefined ? quota($, candidate.vendor, candidate.model) : accountQuota($, candidate.account)
+async function candidateQuota($: EngineInterface, candidate: Candidate, deadline?: number): Promise<Quota> {
+  if (candidate.account !== undefined) return accountQuota($, candidate.account, candidate.model, deadline)
+  if (candidate.vendor !== 'claude') return quota($, candidate.vendor, candidate.model)
+  const session = await quota($, 'claude', candidate.model)
+  const usage = await claudeRead($, 'claude', deadline)
+  return usage === undefined ? session : quotaOf('claude', usage, candidate.model)
 }
 
 async function quota($: EngineInterface, vendor: SeatVendor, model: string, maxAgeMs = QUOTA_FRESH_MS): Promise<Quota> {
-  if (vendor === 'claude') {
-    const usage = await claudeUsage($).catch(() => undefined)
-    const parsed = usage === undefined ? { vendor, known: false, out: false } as Quota : claudeQuota(usage)
-    await putQuota($, parsed)
-    return parsed
+  if (vendor !== 'claude' && !(await installedVendors($)).includes(vendor)) return { vendor, known: true, out: true, detail: 'not installed' }
+  // A session whose usage cannot be read shows Claude's quota as unknown.
+  const usage = vendor === 'claude' ? await claudeUsage($).catch(() => undefined) : await usageOutput($, vendor, maxAgeMs).then(output => {
+    const data = output === undefined ? undefined : readJson(output)
+    return vendor === 'codex' ? usageOf(data) : agyUsage(data)
+  })
+  if (usage === undefined) {
+    const unknown: Quota = { vendor, known: false, out: false }
+    await putQuota($, unknown)
+    return unknown
   }
-  if (!(await installedVendors($)).includes(vendor)) return { vendor, known: true, out: true, detail: 'not installed' }
-  const output = await usageOutput($, vendor, maxAgeMs)
-  const data = output === undefined ? undefined : readJson(output)
-  const parsed = data === undefined ? { vendor, known: false, out: false } as Quota
-    : vendor === 'codex' ? codexQuota(data) : agyBucketQuota(data, model)
-  // The band shows agy's Gemini windows, so a reading of Argon or agy's Claude leaves it as it is.
-  if (vendor === 'codex' || (model.startsWith('gemini') && !model.includes('argon'))) await putQuota($, parsed)
-  return parsed
+  await putQuota($, quotaOf(vendor, usage, BAND_MODEL[vendor]))
+  return quotaOf(vendor, usage, model)
 }
 
 export async function refreshQuotas($: EngineInterface): Promise<void> {
   await Promise.all([
-    quota($, 'claude', 'opus'),
+    quota($, 'claude', 'opus', 0),
     quota($, 'codex', 'gpt', 0),
-    // The band draws agy's Gemini windows, whichever Gemini model is named.
     quota($, 'agy', 'gemini', 0),
   ])
 }
@@ -550,24 +569,20 @@ function agyEffort(effort: string): string {
 }
 
 function loadOf(quota: Quota, now: number): Load {
-  const load = quota.load ?? { fiveHour: quota.fiveHour?.used, weekly: quota.weekly?.used, weekResetAt: quota.weekly?.resetAt }
-  const weekElapsed = load.weekResetAt === undefined ? undefined
-    : Math.max(0, Math.min(100, (1 - (load.weekResetAt - now) / WEEK_MS) * 100))
-  return { fiveHour: load.fiveHour, weekly: load.weekly, weekElapsed }
+  const weekResetAt = quota.weekly?.resetAt
+  const weekElapsed = weekResetAt === undefined ? undefined : Math.max(0, Math.min(100, (1 - (weekResetAt - now) / WEEK_MS) * 100))
+  return { fiveHour: quota.fiveHour?.used, weekly: quota.weekly?.used, weekElapsed }
 }
 
 const sameCandidate = (a: Candidate, b: Candidate): boolean => a.vendor === b.vendor && a.model === b.model
 
-// A candidate as fallback trails name it: its CLI or account, then its model.
 const choiceName = (candidate: Candidate): string => (candidate.account ?? candidate.vendor) + ' ' + candidate.model
 
-// The candidates a seat line may run on, in the order tried, CLIs this machine lacks left out.
 async function chainFor($: EngineInterface, marker: Marker): Promise<Candidate[]> {
   const installed: SeatVendor[] = ['claude', ...await installedVendors($)]
   const usable = (list: Candidate[]): Candidate[] => list.filter(candidate => installed.includes(candidate.vendor))
   if ('vendor' in marker) {
     const named = { vendor: marker.vendor, model: marker.model, effort: marker.effort }
-    // Its fallbacks are its size's models at the effort the line named; a model listed with no effort keeps none.
     const fallbacks = usable(await sizeCandidates($, sizeOf(marker.effort))).map(candidate => candidate.effort ? { ...candidate, effort: marker.effort } : candidate)
     return [named, ...fallbacks.filter(candidate => !sameCandidate(candidate, named))]
   }
@@ -652,7 +667,6 @@ function ownerGuard($: EngineInterface, seatDir: string): string[] {
   return ['--dangerously-bypass-hook-trust', '-c', 'hooks.PreToolUse=[{matcher="Bash",hooks=[{type="command",command=' + JSON.stringify(guardCommand($, seatDir)) + '}]}]']
 }
 
-// `--own` names the seat's folder, outside which the guard refuses git commands that discard work.
 function guardCommand($: EngineInterface, seatDir: string): string {
   return 'node "' + slashed($.plugin.root) + '/bin/owner-guard.mjs" --own "' + seatDir + '"'
 }
@@ -854,12 +868,8 @@ export function toolCalls(vendor: Transcript, text: string): Call[] {
 
 export type Loop = { cycle: string[], repeats: number }
 
-// seat-vFRfUC ran one cycle of three failing greps 8 times in a row (24 calls) and would have
-// run it until stopped. An honest seat re-runs a check a few times, or gets a new result.
 const LOOP_CALLS = 24
 const LOOP_REPEATS = 3
-// A seat waiting on CI or a background task gets the same "pending" until it ends; on four
-// of the fleet's repos more than one CI run in 20 takes over 13 minutes.
 const LOOP_MS = 30 * 60_000
 
 /** The cycle of calls the last LOOP_CALLS calls repeat, and how many times in a row; none when they do not. */
@@ -928,6 +938,7 @@ async function readActivity($: EngineInterface, seat: Seat): Promise<Activity | 
   if (seat.status !== 'running' || kind === undefined) return undefined
   const transcript = join(seat.dir, kind + '.jsonl')
   let steps = 0
+  // A transcript not written yet, or a grep that fails, leaves the seat at 0 steps until the next poll.
   try {
     steps = Number.parseInt((await io($, ['grep', '-cE', STEP_PATTERN[kind], transcript])).stdout, 10) || 0
   } catch {}
@@ -1005,7 +1016,7 @@ async function launchAccount($: EngineInterface, seat: Seat & { account: string 
         ? ['--tools=' + [...(windows ? [] : ['Bash']), ...REVIEWER_TOOLS].join(','), '--strict-mcp-config', '--permission-mode', 'acceptEdits']
         : ['--permission-mode', 'bypassPermissions']),
     ],
-    cwd: seat.workDir, stdin: join(seat.dir, 'brief.md'),
+    cwd: seat.workDir, stdin: join(seat.dir, 'brief.md'), claudeLogin: true,
     stdout: join(seat.dir, 'claude.jsonl'), stderr: join(seat.dir, 'claude.err'), exit: join(seat.dir, 'exit'), pid: join(seat.dir, 'pid'),
   }
   // The session's own mods, this one among them, would also come in through the environment.
@@ -1031,7 +1042,8 @@ export async function probeCodexSandbox($: EngineInterface): Promise<void> {
 // a Claude account owner does, and owner-guard.mjs is the fence: a codex owner runs
 // outside codex's sandbox (`danger-full-access`), since an auto-reviewed escalation waits
 // on every commit and push. A codex reviewer stays in the sandbox, writing only its folder,
-// with the network on so a brief can have it fetch an issue or a page. agy offers no reviewer to a headless run, and its sandbox refuses the
+// with the network on so a brief can have it fetch an issue or a page. `agy --mode auto -p`
+// prints "--mode auto is not available for this account", and agy's sandbox refuses the
 // tools a seat needs (on Windows node cannot even stat %APPDATA%, so no npm-installed CLI
 // starts), so every agy seat runs outside it behind the guard.
 async function launch($: EngineInterface, seat: Seat): Promise<void> {
@@ -1057,10 +1069,11 @@ async function launch($: EngineInterface, seat: Seat): Promise<void> {
       ...(isOwner ? ['-s', 'danger-full-access'] : ['-s', 'workspace-write', '-c', 'sandbox_workspace_write.network_access=true']),
       '--skip-git-repo-check', '-C', seat.workDir,
       // A reviewer is held to its folder: the user's config would start their MCP servers
-      // (computer use among them), and codex's apps, plugins and web search act from the
+      // (computer use among them), a user rule that allows a command runs it outside the sandbox
+      // (--ignore-rules), and codex's apps, plugins and web search act from the
       // cloud. An owner keeps all of them, as a development session does.
       ...(seat.tier === 'reviewer' ? [
-        '--ignore-user-config', '--disable', 'apps', '--disable', 'plugins', '--disable', 'remote_plugin',
+        '--ignore-user-config', '--ignore-rules', '--disable', 'apps', '--disable', 'plugins', '--disable', 'remote_plugin',
         '-c', 'web_search="disabled"',
         // Without a Windows sandbox mode codex refuses every command; the user's config
         // would have named one.
@@ -1084,7 +1097,8 @@ async function launch($: EngineInterface, seat: Seat): Promise<void> {
     argv: [
       'agy', '--output-format', 'stream-json', '--model', seat.model, '--effort', agyEffort(seat.effort),
       ...(seat.resumeConversation ? ['--conversation', seat.resumeConversation] : []),
-      '--dangerously-skip-permissions', '-p', seat.resumeConversation ? AGY_RESUME : { file: join(seat.dir, 'brief.md') },
+      // The headless docs give -p a five-minute default where the reference and --help give none.
+      '--dangerously-skip-permissions', '--print-timeout', '0', '-p', seat.resumeConversation ? AGY_RESUME : { file: join(seat.dir, 'brief.md') },
     ],
     cwd: seat.workDir, env: { ...env.env, ...AGY_NO_UPDATER },
     home: [...(isOwner ? ['owner'] : []), '--home', join(seat.dir, 'home'), '--own', seat.dir],
@@ -1106,6 +1120,7 @@ type LaunchSpec = {
   pid?: string
   home?: string[]
   dropWindowsApps?: boolean
+  claudeLogin?: boolean
   sleep?: number
 }
 
@@ -1140,7 +1155,6 @@ async function scheduleWait($: EngineInterface, seat: Seat, until: number): Prom
   await start($, seat, { sleep: seconds, exit: join(seat.dir, 'exit'), pid: join(seat.dir, 'pid') })
 }
 
-// A worktree's git folders: the repository's common one and the worktree's own.
 async function gitDirs($: EngineInterface, workDir: string): Promise<string[]> {
   const found = await $.process.run(['git', 'rev-parse', '--path-format=absolute', '--git-common-dir', '--git-dir'], { cwd: workDir })
   if (found.exitCode !== 0) return []
@@ -1211,7 +1225,6 @@ function reportText(seat: Seat, text: string, worktree?: string): string {
 // agy reports a seat whose guard hook crashed as a success: every shell command failed
 // with the hook's error, which shows only in the tool steps.
 const GUARD_CRASH = /^JSON hook "jsonhook__seat-router-owner-guard_[^"]*" failed:/
-// The lines of an agy stream that can carry GUARD_CRASH, found without reading the stream whole.
 const GUARD_CRASH_LINE = 'jsonhook__seat-router-owner-guard_[^ ]* failed:'
 const AGY_TEXT_LINE = '"text_delta":'
 
@@ -1244,19 +1257,31 @@ function agyResult(jsonl: string): { text: string, valid: boolean, error: string
   const names = Array.isArray(denied) ? denied.map(action => textAt(asObject(action)?.action) ?? '?') : []
   const valid = result?.status === 'SUCCESS'
   const response = textAt(result?.response) ?? ''
-  // A run that failed keeps every step's text: the work done before the error is what the parent recovers from.
   return { text: valid ? answer ?? response : response || all, valid, error: textAt(result?.error) ?? '', denied: names, guardCrashed }
 }
 
 // A run is out of quota only when the CLI's own error says so: the agent's text and its
 // commands' output can quote these words, as a seat reading this file does.
-const QUOTA_ERROR = { codex: 'usageLimitExceeded|Usage limit reached|hit your usage limit', agy: 'RESOURCE_EXHAUSTED|quota reached|exhausted your quota|out of quota' }
+// codex exec's errors carry only a message (codex-rs/exec/src/exec_events.rs), so the message decides.
+// A failed agy -p run ends with `AGY_ERROR: {"status", "error_code", …}` on stderr and exit 3
+// (agy changelog 1.2.6); a quota stop reads RESOURCE_EXHAUSTED, 429. Running out of AI credits
+// gives only a message (agy changelog 1.2.15).
+const CODEX_QUOTA = /Usage limit reached|hit your usage limit/i
+const AGY_CREDITS = /AI credits balance is too low/i
+const IS_QUOTA: Record<ExternalVendor, (errors: string) => boolean> = {
+  codex: errors => CODEX_QUOTA.test(errors),
+  agy: errors => {
+    const line = errors.split('\n').filter(entry => entry.startsWith('AGY_ERROR: ')).at(-1)
+    const error = line === undefined ? undefined : asObject(readJson(line.slice('AGY_ERROR: '.length)))
+    return error?.status === 'RESOURCE_EXHAUSTED' || error?.error_code === 429 || AGY_CREDITS.test(errors)
+  },
+}
 // codex writes its own errors as top-level events; an item's text is the agent's, and
 // codex.err's tool errors quote the agent's commands.
 const CODEX_ERROR_LINE = '^\\{"type":"(error|turn\\.failed)"'
 
 export function failedSeat(vendor: ExternalVendor, exitCode: number | undefined, text: string, transcript: string, errors: string): Check {
-  const quota = new RegExp(QUOTA_ERROR[vendor], 'i').test(errors)
+  const quota = IS_QUOTA[vendor](errors)
   const blank = !text.trim()
   const completed = vendor !== 'codex' || transcript.split('\n').some(line => line.includes('"turn.completed"'))
   const failed = exitCode !== 0 || blank || !completed
@@ -1278,7 +1303,6 @@ export function failedAgy(exitCode: number | undefined, jsonl: string, stderr: s
   const error = result.valid ? '' : result.error.replace(/\s+/g, ' ').trim()
   const reason = base.detail || (result.guardCrashed ? 'owner guard could not run' : !result.valid && !error ? 'agy result failed' : '')
   const detail = base.quota ? base.detail : [reason, error ? 'agy\'s error: ' + error : '', refused].filter(Boolean).join(', ')
-  // The answer may be complete with only a late call failing, so the parent gets both to judge.
   const text = !result.valid && result.text.trim()
     ? 'agy\'s error: ' + (error || '(none given)') + '\nThe text the seat produced before agy\'s error:\n\n' + result.text
     : base.text
@@ -1288,6 +1312,12 @@ export function failedAgy(exitCode: number | undefined, jsonl: string, stderr: s
 // A Claude run passes when its last result event is a success with text; events such as
 // a task summary may follow it. It is out of quota when its stream says the rate limit
 // rejected it or the API answered 429.
+/** Whether a Claude stream's rate_limit_event lines say the rate limit rejected the run (SDKRateLimitEvent). */
+export function rateLimitRejected(lines: string): boolean {
+  return lines.split('\n').map(line => asObject(readJson(line))).some(event =>
+    event?.type === 'rate_limit_event' && asObject(event.rate_limit_info)?.status === 'rejected')
+}
+
 export function failedClaude(exitCode: number | undefined, tailText: string, rejected: boolean): Check {
   const event = tailText.split('\n').map(line => asObject(readJson(line.trim()))).filter(found => found?.type === 'result').at(-1)
   const isResult = event !== undefined
@@ -1307,7 +1337,7 @@ async function checkSeat($: EngineInterface, seat: Seat): Promise<Check> {
   const exitCode = Number((await readText($, join(seat.dir, 'exit'))).trim())
   if (seat.account !== undefined) {
     const transcript = join(seat.dir, 'claude.jsonl')
-    const rejected = await matches($, '"type":"rate_limit_event","rate_limit_info":\\{"status":"rejected"', [transcript])
+    const rejected = rateLimitRejected(await grepLines($, '"rate_limit_event"', transcript))
     const checked = failedClaude(Number.isNaN(exitCode) ? undefined : exitCode, await tail($, transcript, 20), rejected)
     if (!checked.failed || checked.detail.startsWith('usage')) return checked
     // A run that never started a turn (a refused sandbox, a bad flag) says why only on stderr.
@@ -1323,7 +1353,7 @@ async function checkSeat($: EngineInterface, seat: Seat): Promise<Check> {
       completed ? '"turn.completed"' : '', await grepLines($, CODEX_ERROR_LINE, transcript))
   }
   const transcript = join(seat.dir, 'agy.jsonl')
-  // agy.err ends each error with its message (error:) and its status (AGY_ERROR: RESOURCE_EXHAUSTED, UNAUTHENTICATED).
+  // agy.err ends each error with its message (`error: …`) and then its `AGY_ERROR: {"status", "error_code", …}` line.
   const lastError = (await grepLines($, '^(AGY_ERROR|error):', join(seat.dir, 'agy.err'))).trim().split('\n').slice(-2).join('\n')
   const steps = await grepLines($, GUARD_CRASH_LINE + '|' + AGY_TEXT_LINE, transcript)
   return failedAgy(Number.isNaN(exitCode) ? undefined : exitCode, steps + await tail($, transcript), lastError)
@@ -1343,9 +1373,6 @@ async function seatsFor($: EngineInterface, sessionId: string): Promise<Seat[]> 
   return seats
 }
 
-// A finished seat's worktree is removed, so the branch it holds is free to check out
-// elsewhere; one with uncommitted changes or untracked files stays. A reviewer commits
-// nothing, so its seat/* branch goes too. Returns the report's line on it.
 async function releaseWorktree($: EngineInterface, seat: Seat): Promise<string | undefined> {
   const tree = seat.worktreePath
   if (tree === undefined) return undefined
@@ -1369,7 +1396,6 @@ async function releaseWorktree($: EngineInterface, seat: Seat): Promise<string |
   return 'Branch: ' + branch + ' (its worktree was removed)'
 }
 
-// An owner that left its worktree as it started (no commit, nothing uncommitted) may run again.
 async function isUnchanged($: EngineInterface, seat: Seat): Promise<boolean> {
   const tree = seat.worktreePath
   if (tree === undefined || seat.baseSha === undefined) return false
@@ -1397,7 +1423,6 @@ async function report($: EngineInterface, seat: Seat, text: string, submit = tru
 
 const UNFINISHED = 'didn\'t finish before the previous session ended'
 
-// What pollSession does with a seat of this session in each status, said to a resumed session.
 const RESUMED: Record<SeatStatus, (seat: Seat) => string> = {
   reported: seat => 'seat-router delivered its report earlier in this conversation (' + seat.dir + '/report.md). '
     + 'That report gives its outcome and says whether anything is left to do.',
@@ -1506,6 +1531,7 @@ async function liveTokens($: EngineInterface, seat: Seat): Promise<number | unde
     const id = threadId(await head($, join(seat.dir, 'codex.jsonl')))
     if (id) {
       seat.rolloutSearched = true
+      // A failed search leaves rolloutPath unset, and the tokens come from codex.jsonl instead.
       try {
         const found = await io($, ['find', await codexSessions($), '-name', '*' + id + '.jsonl'])
         if (found.exitCode === 0 && found.stdout.trim()) seat.rolloutPath = found.stdout.trim().split('\n')[0]
@@ -1525,7 +1551,6 @@ export async function pollSession($: EngineInterface, sessionId: string): Promis
     const exit = await readText($, join(seat.dir, 'exit'))
     if (!exit.trim()) {
       const gone = await launcherGone($, seat)
-      // A seat with no pid file cannot be stopped, so it is never judged stuck.
       if (!gone && seat.status === 'running' && await launcherPid($, seat) !== undefined) {
         const loop = await stuckLoop($, seat)
         const now = await $.clock.now()
@@ -1535,7 +1560,6 @@ export async function pollSession($: EngineInterface, sessionId: string): Promis
           else seat.loopSince = since
           await writeSeat($, seat)
         }
-        // A seat that finished just before the kill has written its exit code: the next poll reports it.
         if (loop && since !== undefined && now - since >= LOOP_MS && await endLauncher($, seat) === undefined
           && !(await readText($, join(seat.dir, 'exit'))).trim()) {
           delete seat.loopSince
@@ -1545,7 +1569,6 @@ export async function pollSession($: EngineInterface, sessionId: string): Promis
         }
       }
       if (gone && !(await readText($, join(seat.dir, 'exit'))).trim()) {
-        // A reviewer, or an owner that changed nothing, runs once more where it was.
         if ((seat.reruns ?? 0) < 1 && (seat.tier === 'reviewer' || await isUnchanged($, seat))) {
           seat.reruns = (seat.reruns ?? 0) + 1
           seat.fallbackTrail.push(choiceName(seat) + ' ended without an exit code, rerun')
@@ -1585,8 +1608,6 @@ export async function pollSession($: EngineInterface, sessionId: string): Promis
 
 async function failOver($: EngineInterface, seat: Seat, checked: Check): Promise<void> {
   seat.fallbackTrail.push(checked.quota ? seat.vendor + ' out (' + checked.detail + ')' : seat.vendor + ' failed (' + checked.detail + ')')
-  // An owner that committed or left changes before it failed is not rerun elsewhere,
-  // which would repeat its work; one that changed nothing, or ran out of quota, moves on.
   if (seat.tier === 'owner' && !checked.quota && !await isUnchanged($, seat)) {
     await report($, seat, 'The owner seat failed and was not rerun, because it may already have changed its branch. '
       + 'Its output:\n\n' + (checked.text || '(none)'))
@@ -1602,7 +1623,6 @@ async function stuckLoop($: EngineInterface, seat: Seat): Promise<Loop | undefin
   return kind === undefined ? undefined : findLoop(toolCalls(kind, await tail($, join(seat.dir, kind + '.jsonl'), 400)))
 }
 
-// The launcher's pid, from the pid file run-seat writes; seats launched before it wrote one have none.
 async function launcherPid($: EngineInterface, seat: Seat): Promise<number | undefined> {
   return numberAt(asObject(readJson(await readText($, join(seat.dir, 'pid'))))?.launcher)
 }
@@ -1612,7 +1632,6 @@ async function launcherGone($: EngineInterface, seat: Seat): Promise<boolean> {
   return pid !== undefined && (await io($, ['alive', String(pid)])).exitCode === 1
 }
 
-// Kills the seat's launcher and everything it started; returns why it could not.
 async function endLauncher($: EngineInterface, seat: Seat): Promise<string | undefined> {
   const pid = await launcherPid($, seat)
   if (pid === undefined || await launcherGone($, seat)) return undefined
@@ -1699,26 +1718,21 @@ export async function chooseInitial($: EngineInterface, marker: Marker, running:
   const listed = await chainFor($, marker)
   const now = await $.clock.now()
   const rotating = isRotating(marker)
-  // A named model or account runs unless it is out.
   const pinned = 'vendor' in marker || marker.account !== undefined
   const namesCli = !('vendor' in marker) && (marker.prefer === 'codex' || marker.prefer === 'agy')
   const shareOf = (candidate: Candidate): string => familyOf(candidate) + (namesCli ? ' ' + candidate.vendor : '')
   const read: Quota[] = []
   const listedLoads: Array<Load | 'out'> = []
-  // Quotas are read only until the choice is settled, so a slow CLI's usage command never holds up one that
-  // was found first: a pinned candidate that is not out, else one not busy whose family (or CLI) was read in full.
-  // A rotating line weighs every family, so it reads them all.
   const settles = (load: Load | 'out', index: number): boolean => load !== 'out' && !isBusy(load, seatConfig.busyAt)
     && (!pinned || index > 0) && listed.every((other, at) => at < read.length || shareOf(other) !== shareOf(listed[index] as Candidate))
+  const claudeDeadline = now + CLAUDE_READ_WAIT_MS
   for (const choice of listed) {
-    const available = await candidateQuota($, choice)
+    const available = await candidateQuota($, choice, claudeDeadline)
     read.push(available)
     listedLoads.push(available.out ? 'out' : loadOf(available, now))
     if (rotating) continue
     if ((pinned && listedLoads[0] !== 'out') || listedLoads.some(settles)) break
   }
-  // Within each family, the candidates that can take the seat go first (see arrange); a pinned first candidate stays
-  // first, a line naming a CLI keeps that CLI's candidates on their places, and the ones not read follow in list order.
   const known = read.length
   const arranged = [
     ...(pinned
@@ -1729,12 +1743,10 @@ export async function chooseInitial($: EngineInterface, marker: Marker, running:
   const chain = arranged.map(index => listed[index] as Candidate)
   const readings = arranged.slice(0, known).map(index => read[index] as Quota)
   const loads = arranged.slice(0, known).map(index => listedLoads[index] as Load | 'out')
-  // Each candidate found out, by its place in the chain: the trail names only those ahead of the one that runs.
   const outs = readings.flatMap((available, index): Array<[number, string]> => available.out
     ? [[index, choiceName(chain[index] as Candidate) + ' out (' + (available.detail || 'quota unavailable') + ')']] : [])
   const trail = (before: number): string[] => outs.filter(([index]) => index < before).map(([, text]) => text)
   const resetAt = minimumReset(readings.filter(available => available.out).map(available => available.resetAt))
-  // Why each candidate ahead of the chosen one, and not out, was passed over.
   const passed = (chosen: number): string[] => chain.slice(0, chosen).flatMap((candidate, index) => {
     const load = loads[index]
     if (load === undefined || load === 'out') return []
@@ -1755,7 +1767,6 @@ export async function chooseInitial($: EngineInterface, marker: Marker, running:
       readings: order.map(index => readings[index]).filter((value): value is Quota => value !== undefined),
     }
   }
-  // A line naming a CLI or family stays in it, busy or not, while any of it is not out.
   const prefer = 'prefer' in marker ? marker.prefer : undefined
   const inFamily = prefer === undefined ? [] : loads.map((load, index) => chain[index] !== undefined && isPreferred(chain[index], prefer) ? load : 'out' as const)
   const position = pinned ? loads.findIndex(load => load !== 'out')
@@ -1763,7 +1774,6 @@ export async function chooseInitial($: EngineInterface, marker: Marker, running:
   if (position === -1) return { chain, trail: trail(chain.length), resetAt, allOut: true, readings }
   const chosen = chain[position]
   if (!chosen || pinned) return { chain, trail: trail(position), allOut: false, position, readings }
-  // A sized seat starts on the chosen candidate; the ones it passed over stay behind as its fallback.
   return {
     chain: [chosen, ...chain.filter((_, index) => index !== position)],
     trail: [...trail(position), ...passed(position)],

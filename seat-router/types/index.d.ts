@@ -63,11 +63,12 @@ declare module 'claude-code' {
       claudeSeats: Shaped<ClaudeSeatDisplay[]>
       seatPaneTick: number
       seatPanel: { isDoneCollapsed: boolean }
+      delegateShown: string | null
       vendors: Shaped<Exclude<SeatVendor, 'claude'>[] | null>
       // The models each installed CLI reports; null until asked.
       models: Shaped<Partial<Record<Exclude<SeatVendor, 'claude'>, { model: string, efforts: string[], isDefault?: boolean }[]>> | null>
-      // Each CLI's (or `claude:<account>`'s) last usage output and when it was read.
-      usage: Shaped<Partial<Record<Exclude<SeatVendor, 'claude'> | `claude:${string}`, { at: number, stdout: string }>>>
+      // Each CLI's (or `claude:<account>`'s) last usage output and when it was read; no output when the read failed.
+      usage: Shaped<Partial<Record<SeatVendor | `claude:${string}`, { at: number, stdout?: string }>>>
     }
   }
 
