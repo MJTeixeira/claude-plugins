@@ -320,7 +320,6 @@ export const quotaNote = (quota: SeatQuotaDisplay | undefined): string | undefin
 export const windowTone = (window: SeatQuotaWindow, color: string): string =>
   window.state === 'out' ? RED : window.state === 'busy' ? AMBER : color
 
-const QUOTA_NAME_W = 46
 const QUOTA_TRACK_W = 41
 const QUOTA_GAP = 22
 const LABEL_SIZE = 9.5
@@ -329,9 +328,12 @@ const meterWidth = (window: SeatQuotaWindow): number => Math.ceil(textWidth(wind
 
 const noteWidth = (note: string): number => Math.ceil(textWidth(note, 11)) + 4
 
-const blockWidth = (quota: SeatQuotaDisplay | undefined): number => {
+// The name is drawn bold, which runs about a tenth wider than textWidth's regular estimate.
+const nameWidth = (vendor: SeatVendor): number => Math.ceil(textWidth(vendor, 11) * 1.1) + 8
+
+const blockWidth = (vendor: SeatVendor, quota: SeatQuotaDisplay | undefined): number => {
   const note = quotaNote(quota)
-  return QUOTA_NAME_W + (note !== undefined ? noteWidth(note) : (quota?.windows ?? []).reduce((sum, window) => sum + meterWidth(window), 0))
+  return nameWidth(vendor) + (note !== undefined ? noteWidth(note) : (quota?.windows ?? []).reduce((sum, window) => sum + meterWidth(window), 0))
 }
 
 const meter = (x: number, window: SeatQuotaWindow, color: string): string => {
@@ -344,22 +346,23 @@ const meter = (x: number, window: SeatQuotaWindow, color: string): string => {
 }
 
 export const quotaWidth = (quotas: Quotas, shown: readonly SeatVendor[] = VENDORS): number =>
-  shown.reduce((sum, vendor) => sum + blockWidth(quotas[vendor]), 0) + (shown.length - 1) * QUOTA_GAP
+  shown.reduce((sum, vendor) => sum + blockWidth(vendor, quotas[vendor]), 0) + (shown.length - 1) * QUOTA_GAP
 
 export const quotaSvg = (quotas: Quotas, shown: readonly SeatVendor[] = VENDORS): string => {
   let x = 0
   return svg(quotaWidth(quotas, shown), QUOTA_H, shown.map(vendor => {
     const quota = quotas[vendor]
     const at = x
-    x += blockWidth(quota) + QUOTA_GAP
+    const start = at + nameWidth(vendor)
+    x += blockWidth(vendor, quota) + QUOTA_GAP
     const note = quotaNote(quota)
     const name = text(at, 13, 11, vendor, `fill="${PALETTE[vendor]}" font-weight="700"`)
     if (note === '?') {
-      return name + `<path d="M${at + QUOTA_NAME_W} 9h${QUOTA_TRACK_W}" stroke="${UNKNOWN}" stroke-width="2" stroke-dasharray="3 3"/>`
-        + text(at + QUOTA_NAME_W + QUOTA_TRACK_W + 5, 13, 11, '?', `fill="${UNKNOWN}"`)
+      return name + `<path d="M${start} 9h${QUOTA_TRACK_W}" stroke="${UNKNOWN}" stroke-width="2" stroke-dasharray="3 3"/>`
+        + text(start + QUOTA_TRACK_W + 5, 13, 11, '?', `fill="${UNKNOWN}"`)
     }
-    if (note !== undefined) return name + text(at + QUOTA_NAME_W, 13, 11, note, `fill="${RED}" font-weight="600"`)
-    let meterX = at + QUOTA_NAME_W
+    if (note !== undefined) return name + text(start, 13, 11, note, `fill="${RED}" font-weight="600"`)
+    let meterX = start
     return name + (quota?.windows ?? []).map(window => {
       const drawn = meter(meterX, window, PALETTE[vendor])
       meterX += meterWidth(window)

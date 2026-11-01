@@ -213,6 +213,7 @@ type Quotas = Partial<Record<SeatVendor, SeatQuotaDisplay>>
 
 const percent = (used: number): string => Math.round(used) + '%'
 
+// Stacked one vendor per row, the names share a column, so the windows line up.
 const QUOTA_NAME = 7
 const QUOTA_GAP = 3
 const BAR_MAX = 8
@@ -220,27 +221,27 @@ const BAR_MIN = 3
 
 const windowCells = (window: SeatQuotaWindow, bar: number): number => window.id.length + 1 + bar + 1 + 4
 
-const quotaCells = (quota: SeatQuotaDisplay | undefined, bar: number): number => {
+const quotaCells = (name: number, quota: SeatQuotaDisplay | undefined, bar: number): number => {
   const note = quotaNote(quota)
-  if (note === '?') return QUOTA_NAME + bar + 2
-  if (note !== undefined) return QUOTA_NAME + note.length
-  return QUOTA_NAME + (quota?.windows ?? []).reduce((sum, window) => sum + windowCells(window, bar), 0) - 1
+  if (note === '?') return name + bar + 2
+  if (note !== undefined) return name + note.length
+  return name + (quota?.windows ?? []).reduce((sum, window) => sum + windowCells(window, bar), 0) - 1
 }
 
-const drawQuota = (c: Canvas, x: number, y: number, vendor: SeatVendor, quota: SeatQuotaDisplay | undefined, bar: number): void => {
+const drawQuota = (c: Canvas, x: number, y: number, name: number, vendor: SeatVendor, quota: SeatQuotaDisplay | undefined, bar: number): void => {
   const color = rgb(PALETTE[vendor])
   write(c, x, y, vendor, color)
   const note = quotaNote(quota)
   if (note === '?') {
-    dashedBar(c, x + QUOTA_NAME, y, bar, rgb(UNKNOWN))
-    write(c, x + QUOTA_NAME + bar + 1, y, '?', rgb(UNKNOWN))
+    dashedBar(c, x + name, y, bar, rgb(UNKNOWN))
+    write(c, x + name + bar + 1, y, '?', rgb(UNKNOWN))
     return
   }
   if (note !== undefined) {
-    write(c, x + QUOTA_NAME, y, note, rgb(RED))
+    write(c, x + name, y, note, rgb(RED))
     return
   }
-  let at = x + QUOTA_NAME
+  let at = x + name
   for (const window of quota?.windows ?? []) {
     const tone = windowTone(window, PALETTE[vendor])
     const toneRgb = tone === PALETTE[vendor] ? color : rgb(tone)
@@ -253,8 +254,9 @@ const drawQuota = (c: Canvas, x: number, y: number, vendor: SeatVendor, quota: S
 }
 
 export const quotaRaster = (quotas: Quotas, shown: readonly SeatVendor[], columns: number): Drawing => {
-  const lineWidth = (bar: number) => shown.reduce((sum, vendor) => sum + quotaCells(quotas[vendor], bar), 0) + (shown.length - 1) * QUOTA_GAP
-  const widest = (bar: number) => Math.max(...shown.map(vendor => quotaCells(quotas[vendor], bar)))
+  const inLine = (vendor: SeatVendor) => vendor.length + 1
+  const lineWidth = (bar: number) => shown.reduce((sum, vendor) => sum + quotaCells(inLine(vendor), quotas[vendor], bar), 0) + (shown.length - 1) * QUOTA_GAP
+  const widest = (bar: number) => Math.max(...shown.map(vendor => quotaCells(QUOTA_NAME, quotas[vendor], bar)))
   let bar = BAR_MAX
   while (bar > BAR_MIN && lineWidth(bar) > columns) bar -= 1
   const isWide = lineWidth(bar) <= columns
@@ -265,8 +267,9 @@ export const quotaRaster = (quotas: Quotas, shown: readonly SeatVendor[], column
   const c = canvas(Math.max(1, Math.min(columns, isWide ? lineWidth(bar) : widest(bar))), isWide ? 1 : shown.length)
   let x = 0
   shown.forEach((vendor, index) => {
-    drawQuota(c, isWide ? x : 0, isWide ? 0 : index, vendor, quotas[vendor], bar)
-    x += quotaCells(quotas[vendor], bar) + QUOTA_GAP
+    const name = isWide ? inLine(vendor) : QUOTA_NAME
+    drawQuota(c, isWide ? x : 0, isWide ? 0 : index, name, vendor, quotas[vendor], bar)
+    x += quotaCells(name, quotas[vendor], bar) + QUOTA_GAP
   })
   return finish(c)
 }
