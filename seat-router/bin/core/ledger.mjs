@@ -34,7 +34,7 @@ export const REDISCOVER_MS = 24 * 60 * 60 * 1000
  * @typedef {{ schema: 1, writer: string, at: number, readings: Reading[], exhaustions: Exhaustion[], failures?: Failure[],
  *             reads?: Record<string, number> }} WriterFile
  *   `reads` is the refresher's: when it last read each vendor account, by the key its want names.
- * @typedef {{ id: string, usedPct: number, state: State }} WindowView
+ * @typedef {{ id: string, usedPct: number, state: State, minutes?: number }} WindowView
  * @typedef {{ state: State, why: string, rule?: 'exhaustion'|'out'|'busyAt'|'pace'|'stale'|'reset'|'none', until?: number,
  *             at?: number, source?: string, windows: WindowView[] }} ScopeView
  *   `rule` names what made the state; `until` when an out or busy state ends, where a reset says so.
@@ -110,7 +110,7 @@ const viewOf = (kept, exhaustion, now, busyAt) => {
     const found = windowState(window, reading?.at ?? 0, now, busyAt)
     return found ? [{ window, ...found }] : []
   })
-  const shown = windows.map(({ window, state }) => ({ id: window.id, usedPct: window.usedPct, state }))
+  const shown = windows.map(({ window, state }) => ({ id: window.id, usedPct: window.usedPct, state, ...(window.minutes === undefined ? {} : { minutes: window.minutes }) }))
   const source = kept === undefined ? {} : { at: reading?.at, source: kept.source }
   if (exhaustion) {
     const reason = exhaustion.detail || 'out of quota'

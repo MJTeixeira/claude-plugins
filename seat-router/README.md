@@ -380,6 +380,8 @@ around it.
 ## Follow and stop a seat
 
 The band above the prompt shows each vendor's quota state, and the time an out vendor is back.
+Each window is named by its length, such as `5h` or `7d`. For agy the band shows the Gemini
+bucket only, so it keeps to one line; `/seats` prints the Argon and third-party buckets too.
 While seats run, it shows a `×N` button that opens the seats pane. When the session reports an
 autopilot queue through the mod's `queue` tool, the band also shows the queue's progress.
 

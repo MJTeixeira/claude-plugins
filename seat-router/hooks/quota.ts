@@ -10,9 +10,9 @@ import { familyOf } from './chain'
 import type { Candidate } from './chain'
 import { homeDir, join, seatHome, slashed } from './layout'
 import type { CandidateSet, Delegate, ExternalVendor, Initial, Marker, Match, QuotaState } from './router'
-import { FACTS } from '../bin/vendors/index.mjs'
+import { FACTS, durationName } from '../bin/vendors/index.mjs'
 
-type WindowView = { id: string, usedPct: number, state: QuotaState }
+type WindowView = { id: string, usedPct: number, state: QuotaState, minutes?: number }
 type ScopeView = { state: QuotaState, why: string, rule?: string, until?: number, at?: number, source?: string, windows: WindowView[] }
 type Ledger = Map<string, ScopeView>
 type Standing = { state: QuotaState, why: string, rule?: string, until?: number, scope?: string }
@@ -164,7 +164,9 @@ export async function refreshBand($: EngineInterface, vendors: readonly External
   const quotas = Object.fromEntries(shown.map(vendor => {
     const scopes = vendor === 'claude' ? ADAPTERS.claude.bandScopes(key) : ADAPTERS[vendor].bandScopes()
     const standing = stateOf(ledger, scopes) as Standing
-    const windows = (ledger.get(scopes[0] ?? '')?.windows ?? []).map(window => ({ id: window.id, used: window.usedPct, state: window.state }))
+    // A window is named by its length, as codex and Claude name theirs; agy names its buckets (gemini-weekly) instead.
+    const windows = [...ledger.get(scopes[0] ?? '')?.windows ?? []].sort((a, b) => (a.minutes ?? Infinity) - (b.minutes ?? Infinity))
+      .map(window => ({ id: window.minutes === undefined ? window.id : durationName(window.minutes), used: window.usedPct, state: window.state }))
     const back = standing.state === 'out' && standing.until !== undefined ? { back: clockTime(standing.until, now) } : {}
     const display: SeatQuotaDisplay = { vendor, state: standing.state, ...back, windows }
     return [vendor, display]

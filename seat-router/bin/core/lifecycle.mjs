@@ -192,8 +192,10 @@ export const step = (tree, now, budgets) => {
   const eligible = index => states[index]?.kind === 'free'
   const n = tree.next
   if (!last && eligible(seat.first)) return { kind: 'launch', n, index: seat.first }
+  // The ledger was read before `now`, so a state whose until has passed by now no longer holds, as availability judges it.
+  const stateNow = view => view?.until !== undefined && view.until <= now ? 'unknown' : view?.state ?? 'unknown'
   const order = rank(seat.candidates.map((_, index) => ({
-    state: tree.quota?.[index]?.state ?? 'unknown', family: tree.families?.[index] ?? '', firstRank: seat.firstRanks?.[index] ?? 0,
+    state: stateNow(tree.quota?.[index]), family: tree.families?.[index] ?? '', firstRank: seat.firstRanks?.[index] ?? 0,
   })), { tier: seat.tier, pinned: seat.pinned === true, live: tree.running ?? {} })
   const next = order.find(eligible)
   if (next !== undefined) return unlessHeld({ kind: 'launch', n, index: next })
