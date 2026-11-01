@@ -84,14 +84,18 @@ const seatRules = (vendors: readonly ExternalVendor[], usable: Usable, mixFanout
     + 'its report follows. The mod falls back along the candidates '
     + 'the line allows and waits out a quota reset for up to six hours from the seat\'s start; a seat none of them could take in that time reports that it failed, '
     + 'with its fallback trail and the last candidate\'s output, and nothing else runs for it. A seat none of whose candidates can run on this machine is refused. '
-    + 'A seat line the mod refuses comes back with the grammar to write instead.'
+    + 'A seat line the mod refuses comes back with the grammar to write instead. '
+    + 'A seat has none of this session\'s MCP tools and no browser, so work that needs them stays on Claude.'
     + (accounts.length > 0
       ? '\nOther Claude accounts on this machine: ' + accounts.join(', ') + '. `seat: <account> <' + SIZES.join('|') + '> <' + TIERS.join('|') + '>` '
         + 'runs that size\'s Claude model on that account and never leaves it; write it only when the person asks for it.'
       : '')
     + (mixFanouts && others.length > 0
-      ? '\nEvery review or verification fan-out mixes model families: beside the Claude agents, add one seat per other family ('
-        + others.map(family => '`seat: ' + family + ' <size> reviewer`').join(', ') + '), all in one message.'
+      ? '\nWhen this session runs several agents on the same task (a review, a verification, a bakeoff, competing designs or attempts), '
+        + 'it mixes model families: beside the Claude agents, add one seat per other family ('
+        + others.map(family => '`seat: ' + family + ' <size> reviewer`').join(', ') + '), all in one message. '
+        + 'It is a default: it yields when the person or a skill in use says otherwise, since a skill may set its own panel, '
+        + 'and it never puts a seat on work a seat cannot do.'
       : '')
 }
 const delegateRules = (setting: Delegate, reason: string | undefined, jobs: readonly string[]): string => {

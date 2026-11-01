@@ -1,6 +1,6 @@
 {
   "name": "seat-router",
-  "version": "1.11.0",
+  "version": "1.12.0",
   "description": "Routes marked Agent calls through durable external seats",
   "author": {
     "name": "Marcos Teixeira",
@@ -35,8 +35,8 @@
     },
     "mixFanouts": {
       "type": "boolean",
-      "title": "Mix model families in reviews (leave on)",
-      "description": "Asks the session to add a seat per other model family beside the Claude agents in every review or verification fan-out.",
+      "title": "Mix model families when several agents share a task (leave on)",
+      "description": "Asks the session to add a seat per other model family beside the Claude agents whenever it runs several agents on the same task, unless you or a skill in use says otherwise.",
       "default": true
     },
     "delegate": {
