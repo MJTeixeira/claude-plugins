@@ -13,7 +13,9 @@
 // command runs, run there and inside the seat's folder, when that is no default branch,
 // as a rebase flow needs. The CLIs'
 // own prefix rules miss `git -C . reset --hard`, `rm -fr` and any line their
-// shell parser gives up on, such as `git reset --hard HEAD~1`.
+// shell parser gives up on, such as `git reset --hard HEAD~1`. A git push may delete
+// on the remote only the seat's own `seat/<id>` or a branch the worktree checked out,
+// and may not skip the repository's push hooks.
 // codex and Claude send `tool_input.command` and `cwd` (codex reports a call's own
 // workdir there only from openai/codex#57198) and are refused with a
 // `hookSpecificOutput` deny, not exit 2: on Windows codex runs the hook through
@@ -103,6 +105,19 @@ function strip(words) {
 
 const shortFlags = word => /^-[A-Za-z]+$/.test(word) ? word.slice(1) : ''
 
+// git and GNU tools take any unambiguous prefix of a long option (--force-w, --rec) and fail on an ambiguous one, so
+// reading every prefix of three characters or more as the option refuses nothing else that runs.
+const longOption = (arg, ...options) => {
+  const name = arg.split('=')[0]
+  return name.length > 2 && options.some(option => option.startsWith(name))
+}
+
+const shellScript = args => {
+  const at = args.findIndex(arg => /^-[a-z]*c$/i.test(arg) || /^\/c$/i.test(arg) || /^-c(o(m(m(a(n(d)?)?)?)?)?)?$/i.test(arg))
+  const script = args.slice(at + 1)
+  return at === -1 ? undefined : (script[0] === '--' ? script.slice(1) : script).join(' ')
+}
+
 const branchOf = ref => ref.replace(/^refs\/heads\//, '')
 
 // A push whose only force is a lease pinned to a commit, onto `branch` alone.
@@ -116,7 +131,7 @@ function isLeasedPush(args, branch) {
     if (lease) {
       if (branchOf(lease[1]) !== branch) return false
       leased = true
-    } else if (arg === '--force' || arg.startsWith('--force-with-lease') || shortFlags(arg).includes('f')) return false
+    } else if (longOption(arg, '--force', '--force-with-lease') || shortFlags(arg).includes('f')) return false
     else if (PUSH_VALUE_OPTIONS.includes(arg)) index += 1
     else if (!arg.startsWith('-')) plain.push(arg)
   }
@@ -145,9 +160,9 @@ const samePath = (a, b, path) => path.sep === '\\' ? a.toLowerCase() === b.toLow
 // `checkout` may discard work with no flag: `checkout <path>` reads like `checkout <branch>`,
 // so `checkout -b` is caught too. `switch` takes no paths.
 function mayDiscardWork(sub, rest) {
-  const forced = rest.includes('--force') || rest.some(arg => shortFlags(arg).includes('f'))
+  const forced = rest.some(arg => longOption(arg, '--force') || shortFlags(arg).includes('f'))
   return (sub === 'clean' && forced) || sub === 'checkout' || sub === 'restore'
-    || (sub === 'switch' && (forced || rest.includes('--discard-changes')))
+    || (sub === 'switch' && (forced || rest.some(arg => longOption(arg, '--discard-changes'))))
 }
 
 function refusal(words, branch, cwd, path) {
@@ -156,8 +171,8 @@ function refusal(words, branch, cwd, path) {
   if (!first) return undefined
   const name = programName(first)
   if (SHELLS.includes(name)) {
-    const script = args.findIndex(arg => /^-[a-z]*c$/i.test(arg) || /^\/c$/i.test(arg) || /^-c(o(m(m(a(n(d)?)?)?)?)?)?$/i.test(arg))
-    return script === -1 ? undefined : check(args.slice(script + 1).join(' '), branch, cwd, path)
+    const script = shellScript(args)
+    return script === undefined ? undefined : check(script, branch, cwd, path)
   }
   if (name === 'git') {
     let index = 0
@@ -166,7 +181,7 @@ function refusal(words, branch, cwd, path) {
     }
     const sub = args[index]
     const rest = args.slice(index + 1)
-    if (sub === 'reset' && rest.includes('--hard')) return 'Use a reversible Git operation instead of git reset --hard.'
+    if (sub === 'reset' && rest.some(arg => longOption(arg, '--hard'))) return 'Use a reversible Git operation instead of git reset --hard.'
     if (sub === 'worktree' && (rest[0] === 'remove' || rest[0] === 'move')) {
       return 'Leave every worktree where it is and, when a branch you need is checked out in another, work from a new branch or a detached HEAD.'
     }
@@ -174,11 +189,11 @@ function refusal(words, branch, cwd, path) {
       return `Run git ${sub} only in the folder the command runs in: -C, --work-tree or GIT_WORK_TREE point this one at another folder.`
     }
     const short = rest.map(shortFlags).join('')
-    const deletes = short.includes('d') || rest.includes('--delete')
-    if (sub === 'branch' && (short.includes('D') || (deletes && (short.includes('f') || rest.includes('--force'))))) {
+    const deletes = short.includes('d') || rest.some(arg => longOption(arg, '--delete'))
+    if (sub === 'branch' && (short.includes('D') || (deletes && (short.includes('f') || rest.some(arg => longOption(arg, '--force')))))) {
       return 'Delete a branch only with git branch -d, which keeps unmerged commits: another agent may own the branch.'
     }
-    if (sub === 'push' && !isLeasedPush(rest, branch) && rest.some(arg => arg === '--force' || arg.startsWith('--force-with-lease') || arg === '--force-if-includes'
+    if (sub === 'push' && !isLeasedPush(rest, branch) && rest.some(arg => longOption(arg, '--force', '--force-with-lease', '--force-if-includes')
       || shortFlags(arg).includes('f') || (arg.startsWith('+') && arg.length > 1))) {
       return 'Use a non-force push, or --force-with-lease=<branch>:<sha> onto the branch checked out here.'
     }
@@ -198,9 +213,8 @@ function refusal(words, branch, cwd, path) {
     // PowerShell's -Force, or a prefix of it, is one parameter, not short flags with an r among them. Either
     // switch counts with any value after a colon (-Recurse:$true), $false included.
     const forceParameter = arg => /^-fo(r(c(e)?)?)?(:.*)?$/i.test(arg)
-    // GNU rm takes any prefix of a long option (--rec, --for). cmd's removers read a switch at every slash, glued to a
-    // path, a quote or another switch (x/s/q, /q"x", /s/q/ah); del's /f forces too. To rm, /tmp/s is a path.
-    const longOption = (arg, option) => arg.length > 2 && option.startsWith(arg)
+    // cmd's removers read a switch at every slash, glued to a path, a quote or another switch (x/s/q, /q"x", /s/q/ah);
+    // del's /f forces too. To rm, /tmp/s is a path.
     const switches = cmdRemover ? [first, ...args].flatMap(arg => [...arg.matchAll(/\/([a-z])/gi)].map(match => match[1].toLowerCase())) : []
     const recursive = switches.includes('s') || flags.some(arg => longOption(arg, '--recursive') || /^-r(e(c(u(r(s(e)?)?)?)?)?)?(:.*)?$/i.test(arg) || (!forceParameter(arg) && /[rR]/.test(shortFlags(arg))))
     const force = switches.includes('q') || switches.includes('f') || flags.some(arg => longOption(arg, '--force') || forceParameter(arg) || shortFlags(arg).includes('f'))
@@ -224,6 +238,117 @@ export function check(line, branch, cwd = process.cwd(), path = nodePath) {
   }
   return undefined
 }
+
+const HOOKS_PATH = /^core\.hookspath(=|$)/i
+
+// A refspec with an empty source (`:x`, `+:x`) deletes. The first plain word is the remote even beside --repo, as git reads it.
+function deletedBranches(args) {
+  const plain = []
+  let deletes = false
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index]
+    if (PUSH_VALUE_OPTIONS.includes(arg)) index += 1
+    else if (longOption(arg, '--delete') || shortFlags(arg).includes('d')) deletes = true
+    else if (!arg.startsWith('-')) plain.push(arg)
+  }
+  return plain.slice(1).map(ref => deletes ? ref : /^\+?:/.test(ref) ? ref.slice(ref.indexOf(':') + 1) : '').filter(Boolean).map(branchOf)
+}
+
+const HOOKS_REASON = 'Push with the repository\'s own push hooks: no --no-verify, and no core.hooksPath set by -c, git config or GIT_CONFIG_*.'
+
+const ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/
+
+// The words of a command that set environment variables: its leading assignments, those env takes before the program it
+// runs, the arguments of export or cmd's set, or a PowerShell $env: statement. An argument of any other program is text.
+const assignments = words => {
+  const head = words.findIndex(word => !ASSIGNMENT.test(word))
+  if (head === -1) return words
+  if (/^\$env:/i.test(words[head])) return words.slice(head)
+  const program = programName(words[head])
+  const rest = words.slice(head + 1)
+  const runs = rest.findIndex(word => !word.startsWith('-') && !ASSIGNMENT.test(word))
+  if (program === 'env') return [...words.slice(0, head), ...(runs === -1 ? rest : rest.slice(0, runs))]
+  return ['export', 'set'].includes(program) ? [...words.slice(0, head), ...rest] : words.slice(0, head)
+}
+
+const setsHooksEnv = words => assignments(words).some((word, index, set) => {
+  const at = word.indexOf('=')
+  const [name, value] = at > 0 ? [word.slice(0, at), word.slice(at + 1)] : [word, set[index + 1] === '=' ? set[index + 2] : undefined]
+  return /^(\$env:)?GIT_CONFIG_(PARAMETERS|KEY_\d+)$/i.test(name) && /core\.hookspath/i.test(value ?? '')
+})
+
+const CONFIG_READS = ['--get', '--get-all', '--get-regexp', '--get-urlmatch', '--list', '--unset', '--unset-all', '--remove-section', '--rename-section', '--edit']
+const CONFIG_VALUE_OPTIONS = ['-f', '--file', '--blob', '--type', '--default', '--comment', '--value']
+
+// git config writes a key when a value follows it and no read or unset action is named, in any scope and as `git config
+// set`. After `--` the value may start with `-`.
+const setsHooksConfig = args => {
+  const plain = []
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index]
+    if (arg === '--') {
+      plain.push(...args.slice(index + 1))
+      break
+    }
+    if (arg === '-l' || arg === '-e' || longOption(arg, ...CONFIG_READS)) return false
+    if (CONFIG_VALUE_OPTIONS.includes(arg)) index += 1
+    else if (!arg.startsWith('-')) plain.push(arg)
+  }
+  const [key, value] = plain[0] === 'set' ? plain.slice(1) : plain
+  return /^core\.hookspath$/i.test(key ?? '') && value !== undefined
+}
+
+function pushRefusal(words, deletable) {
+  if (setsHooksEnv(words)) return HOOKS_REASON
+  const [first, ...args] = strip(words)
+  if (!first) return undefined
+  const name = programName(first)
+  if (SHELLS.includes(name)) {
+    const script = shellScript(args)
+    return script === undefined ? undefined : pushCheck(script, deletable)
+  }
+  if (name !== 'git') return undefined
+  let index = 0
+  let hooks = false
+  let configDeletes = false
+  while (index < args.length && args[index].startsWith('-')) {
+    const option = args[index]
+    const value = option === '-c' || option === '--config-env' ? args[index + 1]
+      : option.startsWith('--config-env=') ? option.slice('--config-env='.length) : undefined
+    hooks ||= value !== undefined && HOOKS_PATH.test(value)
+    configDeletes ||= option === '-c' && /^remote\..+\.push=\+?:/i.test(value ?? '')
+    index += GIT_VALUE_OPTIONS.includes(option) ? 2 : 1
+  }
+  const [sub, ...rest] = args.slice(index)
+  if (sub === 'config') return setsHooksConfig(rest) ? HOOKS_REASON : undefined
+  if (sub !== 'push') return undefined
+  if (hooks || rest.some(arg => longOption(arg, '--no-verify'))) return HOOKS_REASON
+  if (rest.some(arg => longOption(arg, '--mirror', '--prune'))) return 'Push named branches, without --mirror or --prune: both delete remote branches.'
+  if (configDeletes) return 'Delete a remote branch only by naming it on the push line, not through a remote.<name>.push setting.'
+  const foreign = deletedBranches(rest).find(branch => !deletable.includes(branch))
+  return foreign === undefined ? undefined
+    : `Delete a remote branch only when it is this seat's own or one this worktree checked out; ${foreign} is neither.`
+}
+
+const pushCheck = (line, deletable) => {
+  for (const windows of [false, true]) {
+    for (const words of commands(line, windows)) {
+      const reason = pushRefusal(words, deletable)
+      if (reason) return reason
+    }
+  }
+  return undefined
+}
+
+// A worktree seat's branch is seat/seat-<suffix>, its folder <home>/seats/seat-<suffix> (seat.<suffix> for a seat-router 1.x seat); the hook knows only the folder.
+const seatBranches = (own, path) => {
+  const suffix = own === undefined ? undefined : /^seat[.-]([^.]+)$/.exec(path.basename(own))?.[1]
+  return suffix === undefined ? [] : [`seat/seat-${suffix}`]
+}
+
+/** The branches the worktree's HEAD reflog (`<gitdir>/logs/HEAD`) checked out, a default branch never among them. */
+export const checkedOut = reflog => [...reflog.matchAll(/\tcheckout: moving from \S+ to (\S+)$/gm)]
+  .map(match => match[1]).filter(branch => !DEFAULT_BRANCHES.includes(branch))
 
 const CD_WORDS = ['cd', 'chdir', 'pushd', 'popd', 'sl', 'set-location', 'push-location', 'pop-location']
 const PUSH_WORDS = ['pushd', 'push-location']
@@ -606,10 +731,12 @@ const stray = (line, start, rules, bash) => {
  * unless it is plain cd-like and git commands that keep each such git command inside that folder. With no folder known,
  * check() alone: a Claude subagent owner's hook input carries the parent session's folder, not the seat's. With `cdpath`
  * set (the hook's CDPATH), a cd to a bare relative name may land anywhere it lists, so the line is refused. `bash` says
- * the line runs in Claude Code's Bash tool, a POSIX shell on every host.
+ * the line runs in Claude Code's Bash tool, a POSIX shell on every host. `checkedOutBranches`: the branches the worktree
+ * checked out, which a push may delete besides `seat/<id>`.
  */
-export const guard = (line, branch, cwd = process.cwd(), path = nodePath, own = undefined, cdpath = undefined, bash = false) =>
-  check(line, branch, cwd, path) ?? (own === undefined ? undefined : stray(line, [path.resolve(cwd)], placeRules(own, path, cdpath), bash))
+export const guard = (line, branch, cwd = process.cwd(), path = nodePath, own = undefined, cdpath = undefined, bash = false, checkedOutBranches = []) =>
+  check(line, branch, cwd, path) ?? pushCheck(line, [...seatBranches(own, path), ...checkedOutBranches])
+    ?? (own === undefined ? undefined : stray(line, [path.resolve(cwd)], placeRules(own, path, cdpath), bash))
 
 // The hook runs whatever link its path came through (macOS's /var, a linked plugin folder, a Windows junction), where
 // argv[1] and the module's own path differ; a path that cannot be resolved runs it too, since a silent guard allows all.
@@ -632,7 +759,15 @@ if (invoked()) {
   const branch = () => spawnSync('git', ['-C', cwd, 'branch', '--show-current'], { encoding: 'utf8', windowsHide: true }).stdout?.trim()
   // codex names its shell tool Bash too, though on Windows it runs PowerShell; only Claude's hook passes --claude.
   const bash = process.argv.includes('--claude') && input.tool_name === 'Bash'
-  const reason = typeof line === 'string' ? guard(line, /\bpush\b/.test(line) ? branch() : undefined, cwd, nodePath, own, process.env.CDPATH, bash) : undefined
+  const checkedOutHere = () => {
+    const gitDir = spawnSync('git', ['-C', cwd, 'rev-parse', '--absolute-git-dir'], { encoding: 'utf8', windowsHide: true }).stdout?.trim()
+    const reflog = gitDir ? nodePath.join(gitDir, 'logs', 'HEAD') : undefined
+    return reflog && existsSync(reflog) ? checkedOut(readFileSync(reflog, 'utf8')) : []
+  }
+  const pushes = typeof line === 'string' && /\bpush\b/.test(line)
+  const reason = typeof line === 'string'
+    ? guard(line, pushes ? branch() : undefined, cwd, nodePath, own, process.env.CDPATH, bash, pushes ? checkedOutHere() : [])
+    : undefined
   if (reason && agy !== undefined) process.stdout.write(JSON.stringify({ decision: 'deny', reason: 'seat-router owner guard: ' + reason }) + '\n')
   else if (reason) {
     // codex shows the reason followed by ". Command: <line>".

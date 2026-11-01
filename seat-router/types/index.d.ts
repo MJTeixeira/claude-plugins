@@ -20,30 +20,22 @@ export type SeatDisplay = {
   lastTokens?: number
 }
 
-export type ClaudeSeatDisplay = {
-  id: string
-  description?: string
-  model?: string
-  effort?: string
-  startedAt: number
-  endedAt?: number
-  tokens?: number
-  steps: number
-}
+export type SeatQuotaState = 'free' | 'unknown' | 'busy' | 'out'
 
+/** One window of a vendor's reading; `used` is a percentage. */
 export type SeatQuotaWindow = {
+  id: string
   used: number
-  resetAt?: number
+  state: SeatQuotaState
 }
 
+/** How a vendor's quota stands in the merged ledger over its band scopes; for Claude, the state delegate mode reads. */
 export type SeatQuotaDisplay = {
   vendor: SeatVendor
-  checkedAt: number
-  known: boolean
-  out: boolean
-  detail?: string
-  fiveHour?: SeatQuotaWindow
-  weekly?: SeatQuotaWindow
+  state: SeatQuotaState
+  /** When an out vendor is back: a time of day, with its date when more than a day away. */
+  back?: string
+  windows: SeatQuotaWindow[]
 }
 
 export type QueueDisplay = {
@@ -60,20 +52,16 @@ declare module 'claude-code' {
       seats: Shaped<SeatDisplay[]>
       quotas: Shaped<Partial<Record<SeatVendor, SeatQuotaDisplay>>>
       queue: QueueDisplay | null
-      claudeSeats: Shaped<ClaudeSeatDisplay[]>
       seatPaneTick: number
       seatPanel: { isDoneCollapsed: boolean }
       delegateShown: string | null
       vendors: Shaped<Exclude<SeatVendor, 'claude'>[] | null>
       // The models each installed CLI reports; null until asked.
       models: Shaped<Partial<Record<Exclude<SeatVendor, 'claude'>, { model: string, efforts: string[], isDefault?: boolean }[]>> | null>
-      // Each CLI's (or `claude:<account>`'s) last usage output and when it was read; no output when the read failed.
-      usage: Shaped<Partial<Record<SeatVendor | `claude:${string}`, { at: number, stdout?: string }>>>
     }
   }
 
   interface McpToolInputs {
     'mcp__seat-router__queue': QueueDisplay
-    'mcp__seat-router__stop': { id: string }
   }
 }

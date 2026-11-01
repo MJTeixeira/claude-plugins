@@ -5,8 +5,7 @@
 // model (`normalModelSlug`) gives its windows `models`. A limit reached with no window
 // to measure it is a window without `used`. Exits 1 naming what failed.
 import { request } from './codex-app.mjs'
-
-const durationName = minutes => minutes % 1440 === 0 ? `${minutes / 1440}d` : minutes % 60 === 0 ? `${minutes / 60}h` : `${minutes}m`
+import { durationName } from './vendors/index.mjs'
 
 const result = await request('codex-usage', 'account/rateLimits/read')
 const shared = result.rateLimits ?? result.rateLimitsByLimitId?.codex
