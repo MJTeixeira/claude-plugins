@@ -1,7 +1,7 @@
 // Adapted from savvy-progress by johnnyvizz; see ../NOTICE.md.
 import { atom, read, update } from 'claude-code'
-import type { AgentInfo, EngineInterface, Register, Timer } from 'claude-code'
-import type { ClaudeSeatDisplay, QueueDisplay, SeatDisplay, SeatVendor } from '../types/index'
+import type { EngineInterface, Register, Timer } from 'claude-code'
+import type { QueueDisplay, SeatDisplay, SeatVendor } from '../types/index'
 import {
   CARD_H, HEADER_H, LINE_H, QUOTA_H, ROW_H, SECTION_H, VENDORS,
   cardSvg, fmtTime, fmtTokens, gridSvg, gridTiles, headerSvg, plural, quotaAlt, quotaSvg, quotaWidth,
@@ -10,58 +10,94 @@ import {
 import type { Card } from './art'
 import { cardRaster, headerRaster, queueRaster, quotaRaster, runningRaster } from './raster'
 import type { Drawing } from './raster'
-import { autoCandidates, familyOf, formatCandidate, parseAccounts, parseCandidates, SIZES } from './chain'
-import type { Candidate, Family, Size } from './chain'
+import { accountCandidate, autoCandidates, FAMILIES, familyOf, formatCandidate, parseAccounts, parseCandidates, SIZES } from './chain'
+import type { Candidate, Size } from './chain'
 import {
-  accountNames, accountSetting, chooseInitial, cliModels, correctUnfinishedNotice, delegateOf, delegateReason, delegateSetting, formatAccounts, foundAccounts, installedVendors, isRotating, ownerGuardReason, parseMarker, runningFamilies,
-  saveOptions, seatConfigFrom, setAccounts, setDelegate, setSeatConfig, setSize, SHELL_TOOLS, sizeCandidates, probeCodexSandbox, pruneSeats, singleFlightPoll, singleFlightQuotaRefresh, startExternal, stopSeat,
+  accountDirs, accountNames, accountSetting, branchProtection, busyAtSetting, cliModels, correctUnfinishedNotice, delegateOf, delegateSetting, formatAccounts, foundAccounts, installedVendors, jobNames, jobsOf, parseSeatLine, seatCandidates, seatJobs, seatLineForms, TIERS,
+  saveOptions, seatConfigFrom, setAccounts, setDelegate, setJobs, setSeatConfig, setSize, sizeCandidates, probeSandboxes, pruneSeats, singleFlightPoll, startSeat,
 } from './router'
-import type { Delegate, ExternalVendor, FoundAccount } from './router'
+import type { Delegate, ExternalVendor, FoundAccount, Jobs, Policies } from './router'
+import { answered, noteClear, sighted, stopTask, turnEnded, unanswered, undeliveredLines } from './delivery'
+import { decide, delegateReason, noteComposed, quotaLines, refreshBand, refreshQuotas, writeSessionQuota } from './quota'
+import { isSeatId } from '../bin/core/layout.mjs'
+import { FACTS } from '../bin/vendors/index.mjs'
+import { candidateSet, capableWords, CODE_JOB, jobWords, ruleText, SHIPPED_JOBS } from '../bin/core/policy.mjs'
 
 const seatsState = atom({ plugin: 'seat-router', key: 'seats' } as const, [], { shape: 'seat-display-3' })
-const quotasState = atom({ plugin: 'seat-router', key: 'quotas' } as const, {}, { shape: 'quota-windows-1' })
+const quotasState = atom({ plugin: 'seat-router', key: 'quotas' } as const, {}, { shape: 'quota-states-1' })
 const queueState = atom({ plugin: 'seat-router', key: 'queue' } as const, null)
 const vendorsState = atom({ plugin: 'seat-router', key: 'vendors' } as const, null, { shape: 'installed-vendors-1' })
-const claudeSeatsState = atom({ plugin: 'seat-router', key: 'claudeSeats' } as const, [], { shape: 'claude-seat-display-2' })
 const seatPaneTickState = atom({ plugin: 'seat-router', key: 'seatPaneTick' } as const, 0)
 const seatPanelState = atom({ plugin: 'seat-router', key: 'seatPanel' } as const, { isDoneCollapsed: false })
 const delegateShownState = atom({ plugin: 'seat-router', key: 'delegateShown' } as const, null)
 
 const PANE = 'seats'
 
-const seatRules = (vendors: readonly ExternalVendor[], sizes: Record<Size, Candidate[]>, mixFanouts: boolean, accounts: readonly string[]): string => {
-  const usable = (size: Size) => sizes[size].filter(candidate => candidate.vendor === 'claude' || vendors.includes(candidate.vendor as ExternalVendor))
-  const others = [...new Set(SIZES.flatMap(size => usable(size).map(familyOf)))].filter((family): family is Exclude<Family, 'claude' | 'other'> => family !== 'claude' && family !== 'other')
+type Usable = Record<Size, Candidate[]>
+
+const usableOf = (vendors: readonly ExternalVendor[], sizes: Usable): Usable => Object.fromEntries(SIZES.map(size =>
+  [size, sizes[size].filter(candidate => candidate.vendor === 'claude' || vendors.includes(candidate.vendor as ExternalVendor))])) as Usable
+
+const taughtJobs = (usable: Usable, policies: Policies): string[] => jobWords(policies)
+  .filter(job => SIZES.every(size => candidateSet({ size, job }, usable[size], policies, FACTS).kind === 'ok'))
+
+const jobSentence = (jobs: readonly string[], all: readonly Candidate[], policies: Policies): string => {
+  if (jobs.length === 0) return ''
+  const shown = jobs.map(job => {
+    const policy = policies[job] as Policies[string]
+    const parts = [
+      ...(policy.description === undefined ? [] : [policy.description]),
+      ...(policy.needs.length === 0 ? [] : ['on ' + capableWords(all, policy.needs, FACTS).join(' or ') + ' only']),
+      ...ruleText(policy),
+    ]
+    return '`' + job + '`' + (parts.length === 0 ? '' : ' (' + parts.join('; ') + ')')
+  })
+  const handed = jobs.filter(job => job !== CODE_JOB).map(job => '`' + job + '`')
+  return ' A job, the optional last word, sends the seat only to models that can do that work and follows its rules: '
+    + shown.join(', ') + '. A line without one runs on any of its size\'s models.'
+    + (handed.length === 0 ? '' : ' Send work that fits ' + [handed.slice(0, -1).join(', '), handed.at(-1)].filter(Boolean).join(' or ')
+      + ' to a seat whose line ends in that job instead of doing it yourself, whether or not delegate mode is on.'
+      + ' When the mod refuses such a seat, tell the person it was refused and why, and do not do that job\'s work yourself.')
+}
+
+const seatRules = (vendors: readonly ExternalVendor[], usable: Usable, mixFanouts: boolean, accounts: readonly string[], jobs: readonly string[], policies: Policies): string => {
+  const all = SIZES.flatMap(size => usable[size])
+  const families = FAMILIES.filter(family => all.some(candidate => familyOf(candidate) === family))
+  const others = families.filter(family => family !== 'claude')
+  const { sized, explicit } = seatLineForms([...vendors, ...families], vendors, jobs)
   return 'The seat-router mod is loaded: an Agent call whose prompt starts with a seat line runs on another CLI ('
-    + vendors.join(', ') + '), and its report arrives later as a message from the seat-router plugin. A seat line is either '
-    + '`seat: [<cli or family>] <light|standard|heavy> <reviewer|owner>`, where the mod picks the model of that size by '
-    + 'quota, keeping to the named CLI (' + vendors.join('|') + ') or model family (claude|gpt|gemini) unless all of it is out, or '
-    + '`seat: <' + vendors.join('|') + '> <model> <effort> <reviewer|owner>`, which runs that model, and only while it is out moves to the models of its effort\'s size, at that effort. A task that names an '
+    + vendors.join(', ') + ') or as a separate Claude process, and its report arrives later as a message from the seat-router plugin. A seat line is either '
+    + '`' + sized + '`, where the mod picks the model of that size by '
+    + 'quota and never leaves the named CLI (' + vendors.join('|') + ') or model family (' + families.join('|') + '), or '
+    + '`' + explicit + '`, which runs that model, and only while it is out moves to the other models of its family in its effort\'s size, at that effort. A task that names an '
     + 'effort maps to a size: low or medium is light, high is standard, xhigh or max is heavy. Sizes, in the order tried: '
-    + SIZES.map(size => size + ' = ' + usable(size).map(formatCandidate).join(', ')).join('; ') + '.\n'
+    + SIZES.map(size => size + ' = ' + usable[size].map(formatCandidate).join(', ')).join('; ') + '.'
+    + jobSentence(jobs, all, policies) + '\n'
     + 'A seat is a fresh context: it sees only its brief and its folder, so the brief carries '
     + 'the task, the grounding it cannot read from its folder, and its output format. Tier `owner` is for a seat that '
     + 'commits, pushes, opens or merges a PR, or needs tools outside its folder (Docker, a database); it may '
     + 'leave its CLI\'s sandbox, and its report names the branch it leaves, its worktree removed. Every other seat is '
-    + '`reviewer`: it reports and does not commit, and its commands reach the network unless it runs on another Claude '
-    + 'account. Pass `isolation: "worktree"` whenever the seat reads or changes this repository, a review included: '
+    + '`reviewer`: it reports and does not commit, and its commands reach the network unless it runs on Claude. '
+    + 'Pass `isolation: "worktree"` whenever the seat reads or changes this repository, a review included: '
     + 'without it the seat starts in an empty folder and sees only the absolute paths its brief names. A seat '
-    + 'cannot be continued: give follow-up work to a fresh seat with the whole scope. The mod falls back along the size\'s '
-    + 'candidates; when a report says no CLI could take the seat, start the Agent it asks for yourself, in that turn.'
+    + 'cannot be continued: give follow-up work to a fresh seat with the whole scope. Stop one with TaskStop and its seat id; '
+    + 'its report follows. The mod falls back along the candidates '
+    + 'the line allows and waits out a quota reset for up to six hours from the seat\'s start; a seat none of them could take in that time reports that it failed, '
+    + 'with its fallback trail and the last candidate\'s output, and nothing else runs for it. A seat none of whose candidates can run on this machine is refused. '
+    + 'A seat line the mod refuses comes back with the grammar to write instead.'
     + (accounts.length > 0
-      ? '\nOther Claude accounts on this machine: ' + accounts.join(', ') + '. `seat: <account> <light|standard|heavy> <reviewer|owner>` '
-        + 'runs that size\'s Claude model on that account, only when the person asks for it; it moves to the size\'s other candidates '
-        + 'only when the account is out of quota.'
+      ? '\nOther Claude accounts on this machine: ' + accounts.join(', ') + '. `seat: <account> <' + SIZES.join('|') + '> <' + TIERS.join('|') + '>` '
+        + 'runs that size\'s Claude model on that account and never leaves it; write it only when the person asks for it.'
       : '')
     + (mixFanouts && others.length > 0
       ? '\nEvery review or verification fan-out mixes model families: beside the Claude agents, add one seat per other family ('
         + others.map(family => '`seat: ' + family + ' <size> reviewer`').join(', ') + '), all in one message.'
       : '')
 }
-const delegateRules = (setting: Delegate, reason: string | undefined): string => {
+const delegateRules = (setting: Delegate, reason: string | undefined, jobs: readonly string[]): string => {
   if (reason !== undefined) {
     return '\nDelegate mode is on (' + reason + '): code work goes to owner seats. A feature, refactor, bug fix or performance task, '
-      + 'a PR owner with its fix rounds, and their helpers go out as `seat: <size> owner` with `isolation: "worktree"`, the size '
+      + 'a PR owner with its fix rounds, and their helpers go out as `seat: <size> owner' + (jobs.includes(CODE_JOB) ? ' ' + CODE_JOB : '') + '` with `isolation: "worktree"`, the size '
       + 'the task\'s effort maps to (standard when none is named); the mod spreads them across model families by quota. This '
       + 'session keeps the planning, briefs, verdicts, the merges it owns and every reply to the person.'
   }
@@ -95,13 +131,6 @@ const QUEUE_SCHEMA = {
   additionalProperties: false,
 } as const
 
-const STOP_SCHEMA = {
-  type: 'object',
-  properties: { id: { type: 'string', pattern: '^seat-\\w+$' } },
-  required: ['id'],
-  additionalProperties: false,
-} as const
-
 let elapsedTick: Timer | undefined
 
 // Seat lines of one message arrive together, before any quota moves: each picks
@@ -113,21 +142,45 @@ const oneAtATime = <T,>(work: () => Promise<T>): Promise<T> => {
   picking = turn.catch(() => undefined)
   return turn
 }
-// Claude seats handed to the session and not yet listed by $.agent.list, counted
-// as running on top of it. One is dropped once listed, when its Agent call returns
-// without spawning, or after this long, as a subagent that ended before any later
-// pick saw it listed.
-const CLAUDE_PICK_MS = 60_000
-// The engine skips a tool.call hook after 10s; a pick this late launches nothing.
+// The engine gives a tool.call hook 10s, then its .catch refuses the call; a pick this late launches nothing.
 const LATE_MS = 9_000
-const ownerCalls = new Set<string>()
-const claudeOwners = new Set<string>()
-type ClaudePick = { at: number, toolUseId?: string, agentId?: string }
-let claudePicks: ClaudePick[] = []
+
+const flights = new Map<string, Promise<void>>()
+// A failed timer's work is dropped; its next tick runs it again.
+const singleFlight = (key: string, work: () => Promise<void>): Promise<void> => {
+  const running = flights.get(key)
+  if (running) return running
+  const started = work().catch(() => undefined).finally(() => { flights.delete(key) })
+  flights.set(key, started)
+  return started
+}
+
+const BAND_EVERY_MS = 10_000
+const REFRESH_EVERY_MS = 120_000
+
+function band($: EngineInterface): Promise<void> {
+  return singleFlight('band', async () => refreshBand($, await installedVendors($), busyAtSetting()))
+}
+
+async function inUse($: EngineInterface): Promise<Candidate[]> {
+  const vendors = await installedVendors($)
+  const sized = (await Promise.all(SIZES.map(size => sizeCandidates($, size)))).flat()
+    .filter(candidate => candidate.vendor === 'claude' || vendors.includes(candidate.vendor as ExternalVendor))
+  return [...sized, ...accountNames().flatMap(name => SIZES.map(size => accountCandidate(size, name)))]
+}
+
+function refresh($: EngineInterface): Promise<void> {
+  return singleFlight('refresh', async () => {
+    await refreshQuotas($, await inUse($), await accountDirs($))
+    await band($)
+  })
+}
+
+const isSeat = async ($: EngineInterface): Promise<boolean> => (await $.env.get('SEAT_ROUTER_SEAT')) !== undefined
 
 const isRunning = (status: string): boolean => status === 'running' || status === 'waiting'
 
-const externalCard = (seat: SeatDisplay): Card => ({
+const seatCard = (seat: SeatDisplay): Card => ({
   id: seat.id,
   vendor: seat.vendor,
   description: seat.description,
@@ -141,37 +194,15 @@ const externalCard = (seat: SeatDisplay): Card => ({
   lastAction: seat.lastAction,
 })
 
-const claudeCard = (agent: AgentInfo, seat: ClaudeSeatDisplay | undefined): Card => ({
-  id: agent.id,
-  vendor: 'claude',
-  description: agent.description || agent.type || 'Claude subagent',
-  model: seat?.model ?? agent.type ?? 'claude',
-  effort: seat?.effort ?? '',
-  status: isRunning(agent.status) ? 'running' : 'done',
-  startedAt: seat?.startedAt,
-  endedAt: seat?.endedAt,
-  tokens: seat?.tokens,
-  steps: seat?.steps ?? 0,
-})
-
-// The engine drops a finished subagent from agent.list a while after it ends; the
-// seat's own record keeps its card in the pane.
-const claudeCards = (agents: readonly AgentInfo[], seats: readonly ClaudeSeatDisplay[]): Card[] => {
-  const known = new Map(seats.map(seat => [seat.id, seat]))
-  const listed = new Set(agents.map(agent => agent.id))
-  const dropped = seats.filter(seat => !listed.has(seat.id) && seat.endedAt !== undefined).map((seat): Card => ({
-    id: seat.id,
-    vendor: 'claude',
-    description: seat.description || 'Claude subagent',
-    model: seat.model ?? 'claude',
-    effort: seat.effort ?? '',
-    status: 'done',
-    startedAt: seat.startedAt,
-    endedAt: seat.endedAt,
-    tokens: seat.tokens,
-    steps: seat.steps,
-  }))
-  return [...agents.map(agent => claudeCard(agent, known.get(agent.id))), ...dropped]
+const doneDrawings = new Map<string, unknown>()
+const drawnOnce = <T,>(kind: string, size: number, card: Card, draw: () => T): T => {
+  if (card.status !== 'done' || card.endedAt === undefined) return draw()
+  const key = kind + ' ' + size + ' ' + JSON.stringify(card)
+  if (doneDrawings.has(key)) return doneDrawings.get(key) as T
+  if (doneDrawings.size >= 200) doneDrawings.clear()
+  const drawn = draw()
+  doneDrawings.set(key, drawn)
+  return drawn
 }
 
 const batch = (cards: readonly Card[]): QueueDisplay | null => {
@@ -182,24 +213,12 @@ const batch = (cards: readonly Card[]): QueueDisplay | null => {
   return { done, running: running.length, pending: 0, label: 'Subagents' }
 }
 
-const usageTokens = (usage: { input_tokens: number, output_tokens: number, cache_read_input_tokens: number, cache_creation_input_tokens: number }): number =>
-  usage.input_tokens + usage.output_tokens + usage.cache_read_input_tokens + usage.cache_creation_input_tokens
-
-function recordClaudeSeat($: EngineInterface, id: string, startedAt: number, change: (current: ClaudeSeatDisplay | undefined) => Partial<ClaudeSeatDisplay>): Promise<ClaudeSeatDisplay[]> {
-  return update($, claudeSeatsState, seats => {
-    const current = seats.find(seat => seat.id === id)
-    const next = { id, startedAt, steps: 0, ...current, ...change(current) }
-    return [...seats.filter(seat => seat.id !== id), next]
-  })
-}
-
 async function isPaneOpen($: EngineInterface): Promise<boolean> {
   return (await $.ui.panes()).some(pane => pane.id === PANE)
 }
 
 async function hasRunningSeat($: EngineInterface): Promise<boolean> {
-  if ((await read($, seatsState)).some(seat => isRunning(seat.status))) return true
-  return (await $.agent.list()).some(agent => isRunning(agent.status))
+  return (await read($, seatsState)).some(seat => isRunning(seat.status))
 }
 
 async function tickElapsed($: EngineInterface): Promise<void> {
@@ -275,9 +294,11 @@ async function setup($: EngineInterface): Promise<string> {
     }
   }
   const accounts = asked ? await askAccounts($, await finding, lines) : undefined
+  const jobs = asked ? await askJobs($, accounts ?? parseAccounts(accountSetting(), jobNames()), lines) : undefined
   const values: Record<string, string> = Object.fromEntries(Object.entries(sizes).map(([size, setting]) => [size + 'Seats', setting]))
   if (delegate) values.delegate = delegate
   if (accounts) values.claudeAccounts = formatAccounts(accounts)
+  if (jobs) values.jobs = jobs.setting
   if (Object.keys(values).length === 0) return 'Seat settings:\n' + lines.join('\n')
   const refused = await saveOptions($, values)
   if (refused) return 'Seat settings not saved: ' + refused + '.\n' + lines.join('\n')
@@ -293,13 +314,42 @@ async function setup($: EngineInterface): Promise<string> {
     setAccounts(accounts)
     lines.push('accounts: ' + (formatAccounts(accounts) || 'none') + '.')
   }
+  if (jobs) {
+    setJobs(jobs)
+    lines.push('jobs: ' + (jobs.setting || 'none') + '.')
+  }
   return 'Seat settings:\n' + lines.join('\n') + '\nChange them again with /seats setup.'
+}
+
+const KEEP_JOBS = 'Keep as is'
+const NO_JOBS = 'None'
+
+async function askJobs($: EngineInterface, accounts: Record<string, string>, lines: string[]): Promise<Jobs | undefined> {
+  const current = seatJobs().setting
+  const question = 'Jobs: a seat line\'s optional last word sends the seat only to models that can do that work. Shipped: '
+    + jobWords(SHIPPED_JOBS).map(job => job + ' (' + SHIPPED_JOBS[job]?.description + ')').join(', ') + '. Your jobs now: ' + (current || 'none') + '. '
+    + 'Under Other, type `<job> [(<what it is for>)]: <rule>, ...` entries separated by `;`, a rule being only, not or first '
+    + 'and a CLI, family, account or model pattern, as in `art (layouts, styling, images, diagrams): only codex, only agy, not claude, first codex`.'
+  let answer: string
+  try {
+    answer = await $.ui.ask(question, { header: 'Jobs', options: [KEEP_JOBS, NO_JOBS] })
+  } catch {
+    lines.push('jobs: not asked, kept as they were.')
+    return undefined
+  }
+  if (answer.trim() === '' || answer === KEEP_JOBS) return undefined
+  const jobs = jobsOf(answer === NO_JOBS ? '' : answer.trim(), accounts)
+  if (jobs.problems.length > 0) {
+    lines.push('jobs: kept as they were; "' + answer + '" has problems: ' + jobs.problems.join(' '))
+    return undefined
+  }
+  return jobs
 }
 
 const NO_ACCOUNTS = 'None'
 
 async function askAccounts($: EngineInterface, found: readonly FoundAccount[], lines: string[]): Promise<Record<string, string> | undefined> {
-  const offered = { ...Object.fromEntries(found.filter(account => account.plan !== undefined).map(account => [account.name, account.dir])), ...parseAccounts(accountSetting()) }
+  const offered = { ...Object.fromEntries(found.filter(account => account.plan !== undefined).map(account => [account.name, account.dir])), ...parseAccounts(accountSetting(), jobNames()) }
   const loggedOut = found.filter(account => account.plan === undefined && !(account.name in offered))
   if (Object.keys(offered).length === 0) return undefined
   const plans = found.filter(account => account.plan !== undefined).map(account => account.dir + ' (' + account.plan + ')')
@@ -315,7 +365,7 @@ async function askAccounts($: EngineInterface, found: readonly FoundAccount[], l
     return undefined
   }
   const picked = answer.split(',').map(entry => entry.trim()).filter(entry => entry !== '' && entry !== NO_ACCOUNTS).join(', ')
-  const accounts = parseAccounts(picked)
+  const accounts = parseAccounts(picked, jobNames())
   if (picked !== '' && Object.keys(accounts).length === 0) {
     lines.push('accounts: kept as they were; "' + answer + '" is not `<name> <config folder>`.')
     return undefined
@@ -336,23 +386,38 @@ export const register: Register = (on, options) => {
 
   on('prompt.compose', async ($, e, next) => {
     const composed = await next(e)
+    if (await isSeat($)) return composed
+    // A failed note only holds the refresher back until the next prompt.
+    void noteComposed($).catch(() => undefined)
     const vendors = await installedVendors($)
     if (vendors.length === 0) return composed
-    const sizes = Object.fromEntries(await Promise.all(SIZES.map(async size => [size, await sizeCandidates($, size)] as const))) as Record<Size, Candidate[]>
-    const reason = await delegateReason($)
+    const sizes = Object.fromEntries(await Promise.all(SIZES.map(async size => [size, await sizeCandidates($, size)] as const))) as Usable
+    // A ledger that cannot be read leaves code work on Claude, as an unknown quota does.
+    const reason = await delegateReason($, delegateSetting(), busyAtSetting()).catch(() => undefined)
     await showDelegate($, reason)
-    const text = seatRules(vendors, sizes, mixFanouts, accountNames()) + delegateRules(delegateSetting(), reason)
+    const usable = usableOf(vendors, sizes)
+    const { policies } = seatJobs()
+    const jobs = taughtJobs(usable, policies)
+    const text = seatRules(vendors, usable, mixFanouts, accountNames(), jobs, policies) + delegateRules(delegateSetting(), reason, jobs)
     return { sections: [...composed.sections, { id: 'seat-router:loaded', text, scope: 'session' }] }
   })
 
+  // The engine refuses only a plugin's own appended note, never a task notice, so a failed rewrite keeps the notice as it came.
   on('session.append', async ($, e, next) => {
-    if (e.origin.kind !== 'task-notification') return next(e)
-    const content = await Promise.all(e.message.content.map(async block =>
-      block.type === 'text' && typeof block.text === 'string' ? { ...block, text: await correctUnfinishedNotice($, block.text) } : block))
-    return next({ ...e, message: { ...e.message, content } })
-  })
+    if (await isSeat($)) return next(e)
+    if (e.origin.kind === 'task-notification') {
+      const content = await Promise.all(e.message.content.map(async block =>
+        block.type === 'text' && typeof block.text === 'string' ? { ...block, text: await correctUnfinishedNotice($, block.text) } : block))
+      return next({ ...e, message: { ...e.message, content } })
+    }
+    const stored = await next(e)
+    await answered($, e)
+    await sighted($, e)
+    return stored
+  }).catch(($, e, next) => next(e))
 
   on('session.start', async ($, e, next) => {
+    if (await isSeat($)) return next(e)
     await $.command.register({ name: 'seats', description: 'Show or hide the seats of this session; `/seats setup` picks the models each size tries first and delegate mode' })
     await $.tool.register({
       name: 'queue',
@@ -361,30 +426,37 @@ export const register: Register = (on, options) => {
       inputSchema: QUEUE_SCHEMA,
       isDeferred: false,
     })
-    await $.tool.register({
-      name: 'stop',
-      description: 'Stop a codex or agy seat of this session that is still running or waiting: ends its CLI and everything it started, '
-        + 'and reports the seat stopped. `id` is the seat id (seat-XXXXXX) its Agent call returned. TaskStop cannot stop seats.',
-      inputSchema: STOP_SCHEMA,
-      isDeferred: false,
-    })
     // Neither holds up the session: a failed prune waits for the next start, and a failed probe writes no
     // answer, so reviewers run the unelevated sandbox.
     void pruneSeats($).catch(() => undefined)
-    void probeCodexSandbox($).catch(() => undefined)
+    void probeSandboxes($).catch(() => undefined)
     $.clock.every(5_000, () => singleFlightPoll($))
     void singleFlightPoll($)
-    $.clock.every(120_000, () => singleFlightQuotaRefresh($))
-    void singleFlightQuotaRefresh($)
+    // A failed usage read leaves the account unknown until the refresher reads it.
+    void $.session.usage().then(usage => writeSessionQuota($, usage.rateLimits)).catch(() => undefined).then(() => band($))
+    $.clock.every(BAND_EVERY_MS, () => band($))
+    $.clock.every(REFRESH_EVERY_MS, () => refresh($))
+    void refresh($)
     return next(e)
   })
 
-  on('command.run', { command: 'seats' }, async ($, e) => {
-    if (e.args.trim() === 'setup') return { text: await setup($) }
-    return { text: await togglePane($) ? 'Seats pane opened.' : 'Seats pane closed.' }
-  })
+  on('session.measure', async ($, e, next) => {
+    if (!e.changed.includes('rateLimits') || await isSeat($)) return next(e)
+    await writeSessionQuota($, e.rateLimits)
+    await band($)
+    return next(e)
+  }).catch(($, e, next) => next(e))
 
-  on('tool.call', { tool: 'mcp__seat-router__queue' }, async ($, e) => {
+  on('command.run', { command: 'seats' }, async ($, e, next) => {
+    if (await isSeat($)) return next(e)
+    if (e.args.trim() === 'setup') return { text: await setup($) }
+    if (!await togglePane($)) return { text: 'Seats pane closed.' }
+    const problems = seatJobs().problems.map(problem => 'Jobs setting: ' + problem)
+    return { text: ['Seats pane opened.', await branchProtection($), ...problems, ...await quotaLines($, busyAtSetting()), ...await undeliveredLines($)].join('\n') }
+  }).catch(($, e, next) => next.called ? next(e) : { text: 'seat-router could not run /seats.' })
+
+  on('tool.call', { tool: 'mcp__seat-router__queue' }, async ($, e, next) => {
+    if (await isSeat($)) return next(e)
     const { done, running, pending } = e
     if (![done, running, pending].every(value => Number.isInteger(value) && value >= 0)) {
       return { deny: 'done, running, and pending must be non-negative integers.' }
@@ -397,47 +469,50 @@ export const register: Register = (on, options) => {
     await update($, queueState, () => queue)
     const text = queue === null ? 'Autopilot queue cleared.' : 'Autopilot queue: ' + done + ' done, ' + running + ' running, ' + pending + ' pending.'
     return { result: text }
+  }).catch(() => ({ deny: 'seat-router could not update the queue.' }))
+
+  on('tool.call', { tool: 'TaskStop' }, async ($, e, next) => {
+    if (await isSeat($)) return next(e)
+    const stopped = await stopTask($, e.task_id ?? e.shell_id)
+    return stopped ? { result: stopped } : next(e)
+  }).catch(($, e, next) => {
+    const id = e.task_id ?? e.shell_id ?? ''
+    if (next.called || !isSeatId(id)) return next(e)
+    return { deny: 'seat-router could not stop ' + id + '; see /seats.' }
   })
 
-  on('tool.call', { tool: 'mcp__seat-router__stop' }, async ($, e) => ({ result: await stopSeat($, e.id) }))
+  on('turn.complete', async ($, e, next) => {
+    const ended = await next(e)
+    if (!await isSeat($)) await turnEnded($, e)
+    return ended
+  }).catch(($, e, next) => next(e))
+
+  on('session.end', async ($, e, next) => {
+    if (e.reason === 'clear' && !await isSeat($)) noteClear(e.sessionId)
+    return next(e)
+  }).catch(($, e, next) => next(e))
 
   on('tool.call', { tool: 'Agent' }, async ($, e, next) => {
-    const marker = parseMarker(e.prompt)
-    if (!marker) return next(e)
-    const began = await $.clock.now()
-    const picked = await oneAtATime(async () => {
-      const now = await $.clock.now()
-      const rotating = isRotating(marker)
-      const agents = rotating ? await $.agent.list() : []
-      const listed = new Set(agents.map(agent => agent.id))
-      claudePicks = claudePicks.filter(pick => now - pick.at < CLAUDE_PICK_MS && (pick.agentId === undefined || !listed.has(pick.agentId)))
-      // A pick's agent can be listed before agent.spawn attaches its id, counting it twice
-      // for a moment: AgentInfo carries no tool_use_id to reconcile the two.
-      const claude = agents.filter(agent => isRunning(agent.status)).length + claudePicks.length
-      const initial = await chooseInitial($, marker, rotating ? await runningFamilies($, claude) : {})
-      // Past the engine's tool.call budget the Agent already ran as a plain subagent: a seat would run the task twice.
-      if ((await $.clock.now()) - began >= LATE_MS) return { kind: 'late' as const }
-      const chosen = initial.allOut ? undefined : initial.chain[initial.position ?? 0]
-      if (chosen?.vendor === 'claude' && chosen.account === undefined) {
-        const pick: ClaudePick = { at: now, ...(e.tool_use_id ? { toolUseId: e.tool_use_id } : {}) }
-        claudePicks.push(pick)
-        return { kind: 'claude' as const, claude: chosen, initial, pick }
-      }
-      return { kind: 'external' as const, seat: await startExternal($, e, marker, initial) }
-    })
-    if (picked.kind === 'late') return next(e)
-    if (picked.kind === 'claude') {
-      const { claude, initial, pick } = picked
-      if (marker.tier === 'owner' && e.tool_use_id) ownerCalls.add(e.tool_use_id)
-      const launched = await next({
-        ...e, prompt: marker.brief, model: claude.model as typeof e.model,
-        ...(claude.effort ? { effort: claude.effort as typeof e.effort } : {}),
+    if (await isSeat($)) return next(e)
+    const parsed = parseSeatLine(e.prompt)
+    if (parsed.kind === 'none') return next(e)
+    if (parsed.kind === 'refused') return { deny: parsed.reason }
+    const marker = parsed.marker
+    const deadline = await $.clock.now() + LATE_MS
+    const seat = await oneAtATime(async () => {
+      const set = await seatCandidates($, marker)
+      if (set.kind === 'empty') return 'seat-router refused this seat: ' + set.reason
+      const initial = await decide($, marker, set, {
+        busyAt: busyAtSetting(), accounts: await accountDirs($), installed: ['claude', ...await installedVendors($)],
       })
-      if (pick.toolUseId !== undefined && pick.agentId === undefined) claudePicks = claudePicks.filter(other => other !== pick)
-      if (!initial.trail.length || 'deny' in launched && launched.deny !== undefined || launched.isError) return launched
-      return { ...launched, context: [...launched.context ?? [], 'Fallback: ' + [...initial.trail, 'claude ' + claude.model].join(' → ')] }
+      return typeof initial === 'string' ? initial : startSeat($, e, marker, initial, deadline)
+    })
+    if (typeof seat === 'string') return { deny: seat }
+    // An answer given after the dispatch was aborted reaches no conversation.
+    if (next.signal.aborted) {
+      await unanswered($, e.tool_use_id, seat.id)
+      return { deny: 'seat-router did not start this seat: the call was cancelled.' }
     }
-    const seat = picked.seat
     void startElapsedTick($)
     return {
       result: {
@@ -445,71 +520,21 @@ export const register: Register = (on, options) => {
         outputFile: seat.dir + '/report.md', canReadOutputFile: true, canContinueAgent: false,
       },
     }
-  })
-
-  on('agent.spawn', async ($, e, next) => {
-    const spawned = await next(e)
-    if (ownerCalls.delete(e.tool_use_id) && spawned.agentId) claudeOwners.add(spawned.agentId)
-    const pick = e.tool_use_id ? claudePicks.find(other => other.toolUseId === e.tool_use_id) : undefined
-    if (pick && spawned.agentId) pick.agentId = spawned.agentId
-    if (spawned.agentId) await recordClaudeSeat($, spawned.agentId, await $.clock.now(), () => ({ description: e.description }))
-    return spawned
-  })
-
-  on('tool.check', async ($, e, next) => {
-    const command = (e.input as { command?: unknown } | null)?.command
-    if (e.agentId !== undefined && claudeOwners.has(e.agentId) && SHELL_TOOLS.includes(e.tool) && typeof command === 'string') {
-      const reason = await ownerGuardReason($, command)
-      if (reason) return { decision: 'deny', reason }
-    }
-    return next(e)
-  })
-
-  on('turn.start', async ($, e, next) => {
-    if (e.agentId !== undefined) {
-      await recordClaudeSeat($, e.agentId, await $.clock.now(), () => ({}))
-      void startElapsedTick($)
-    }
-    return next(e)
-  })
-
-  on('turn.step', async function* ($, e, next) {
-    if (e.agentId !== undefined) {
-      const effort = typeof e.effort === 'string' ? { effort: e.effort } : {}
-      await recordClaudeSeat($, e.agentId, await $.clock.now(), current => ({ model: e.model, ...effort, steps: (current?.steps ?? 0) + 1 }))
-      void startElapsedTick($)
-    }
-    const result = yield* next(e)
-    const usage = result.usage
-    if (e.agentId !== undefined && usage) {
-      await recordClaudeSeat($, e.agentId, await $.clock.now(), current => ({ tokens: (current?.tokens ?? 0) + usageTokens(usage) }))
-    }
-    return result
-  })
-
-  on('turn.complete', async ($, e, next) => {
-    const completed = await next(e)
-    if (e.agentId === undefined) return completed
-    const now = await $.clock.now()
-    const tokens = e.usage === undefined ? undefined : usageTokens(e.usage)
-    await recordClaudeSeat($, e.agentId, now - e.durationMs, current => ({
-      endedAt: now,
-      ...(e.usage?.model === undefined ? {} : { model: e.usage.model }),
-      ...(tokens === undefined || current?.tokens !== undefined ? {} : { tokens }),
-    }))
-    return completed
+  }).catch(async ($, e, next) => {
+    if (next.called) return next(e)
+    await unanswered($, e.tool_use_id)
+    const why = next.error.message?.replace(/^\w*Error: /, '') ?? next.error.kind
+    return { deny: 'seat-router could not start this seat (' + why + '), so nothing runs for this call.' }
   })
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
-    if (e.props.hasSurvey) return next(e)
+    if (e.props.hasSurvey || await isSeat($)) return next(e)
     // Other mods' bands go beneath ours; the engine's placeholder ({ type: 'engine' }) is never nested.
     const drawn = await Promise.resolve(next(e)).catch(() => null)
     const below = drawn && typeof drawn === 'object' && (drawn as { type?: string }).type !== 'engine' ? drawn : null
-    const [quotas, queue, seats, vendors, claudeSeats, agents] = await Promise.all([
-      read($, quotasState), read($, queueState), read($, seatsState), read($, vendorsState), read($, claudeSeatsState), $.agent.list(),
-    ])
+    const [quotas, queue, seats, vendors] = await Promise.all([read($, quotasState), read($, queueState), read($, seatsState), read($, vendorsState)])
     const shown: readonly SeatVendor[] = vendors ? ['claude', ...vendors] : VENDORS
-    const cards = [...seats.map(externalCard), ...claudeCards(agents, claudeSeats)]
+    const cards = seats.map(seatCard)
     const count = cards.filter(card => card.status === 'running').length
     const progress = queue ?? batch(cards)
     const hasRow = progress !== null
@@ -533,7 +558,7 @@ export const register: Register = (on, options) => {
             </Box>
           )}
           {nowLine}
-          <ui.Svg source={quotaSvg(quotas, shown)} alt={quotaAlt(quotas, shown)} width={quotaWidth(shown)} height={QUOTA_H} />
+          <ui.Svg source={quotaSvg(quotas, shown)} alt={quotaAlt(quotas, shown)} width={quotaWidth(quotas, shown)} height={QUOTA_H} />
           {below}
         </Box>
       )
@@ -559,12 +584,11 @@ export const register: Register = (on, options) => {
     )
   })
 
-  on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
+  on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e, next) => {
+    if (await isSeat($)) return next(e)
     await read($, seatPaneTickState)
-    const [seats, claudeSeats, agents, panel, now] = await Promise.all([
-      read($, seatsState), read($, claudeSeatsState), $.agent.list(), read($, seatPanelState), $.clock.now(),
-    ])
-    const cards = [...seats.map(externalCard), ...claudeCards(agents, claudeSeats)]
+    const [seats, panel, now] = await Promise.all([read($, seatsState), read($, seatPanelState), $.clock.now()])
+    const cards = seats.map(seatCard)
       .sort((a, b) => (b.startedAt ?? -1) - (a.startedAt ?? -1))
     const running = cards.filter(card => card.status === 'running')
     const done = cards.filter(card => card.status === 'done')
@@ -589,7 +613,7 @@ export const register: Register = (on, options) => {
       const card = (item: Card) => (
         <ui.Svg
           key={item.id}
-          source={cardSvg(width, item, now)}
+          source={drawnOnce('svg', width, item, () => cardSvg(width, item, now))}
           alt={item.description + ': ' + item.vendor + ' ' + item.model + ', ' + stepLine(item)}
           width={width}
           height={CARD_H}
@@ -623,7 +647,7 @@ export const register: Register = (on, options) => {
     const raster = (key: string, drawing: Drawing) => (
       <ui.Raster key={key} cells={drawing.cells} columns={drawing.columns} rows={drawing.rows} />
     )
-    const card = (item: Card) => raster(item.id, cardRaster(item, now, columns))
+    const card = (item: Card) => raster(item.id, drawnOnce('raster', columns, item, () => cardRaster(item, now, columns)))
     return (
       <Box flexDirection="column">
         {raster('header', headerRaster(summary, columns))}

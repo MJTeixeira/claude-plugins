@@ -1,8 +1,8 @@
 // Adapted from savvy-progress by johnnyvizz; see ../NOTICE.md.
-import type { QueueDisplay, SeatQuotaDisplay, SeatVendor } from '../types/index'
+import type { QueueDisplay, SeatQuotaDisplay, SeatQuotaWindow, SeatVendor } from '../types/index'
 import {
-  ACCENT, AMBER, GREEN, INK, PALETTE, RED, STEP, UNKNOWN,
-  elapsed, figureRows, fmtTime, fmtTokens, plural, progress, stepLine, windowUsed,
+  ACCENT, GREEN, INK, PALETTE, RED, STEP, UNKNOWN,
+  elapsed, figureRows, fmtTime, fmtTokens, plural, progress, quotaNote, stepLine, windowTone,
 } from './art'
 import type { Card, Totals } from './art'
 
@@ -213,40 +213,60 @@ type Quotas = Partial<Record<SeatVendor, SeatQuotaDisplay>>
 
 const percent = (used: number): string => Math.round(used) + '%'
 
-const meter = (c: Canvas, x: number, y: number, width: number, label: string, used: number | undefined, out: boolean, color: number): void => {
-  write(c, x, y, label, SECONDARY)
-  const barX = x + label.length + 1
-  const barWidth = Math.max(1, width - label.length - 1 - 5)
-  if (used === undefined) {
-    dashedBar(c, barX, y, barWidth, rgb(UNKNOWN))
-    write(c, barX + barWidth + 1, y, '?', rgb(UNKNOWN))
-    return
-  }
-  const tone = out || used >= 95 ? rgb(RED) : used >= 80 ? rgb(AMBER) : color
-  thinBar(c, barX, y, barWidth, Math.min(100, used) / 100, tone, SECONDARY)
-  write(c, barX + barWidth + 1, y, percent(used), tone === color ? SECONDARY : tone)
-}
-
 const QUOTA_NAME = 7
 const QUOTA_GAP = 3
+const BAR_MAX = 8
+const BAR_MIN = 3
 
-// The quota band: a block per shown vendor on one line, its meters 15 cells at most and
-// shrunk to fit down to 11; a vendor a line at full size when even that does not fit.
+const windowCells = (window: SeatQuotaWindow, bar: number): number => window.id.length + 1 + bar + 1 + 4
+
+const quotaCells = (quota: SeatQuotaDisplay | undefined, bar: number): number => {
+  const note = quotaNote(quota)
+  if (note === '?') return QUOTA_NAME + bar + 2
+  if (note !== undefined) return QUOTA_NAME + note.length
+  return QUOTA_NAME + (quota?.windows ?? []).reduce((sum, window) => sum + windowCells(window, bar), 0) - 1
+}
+
+const drawQuota = (c: Canvas, x: number, y: number, vendor: SeatVendor, quota: SeatQuotaDisplay | undefined, bar: number): void => {
+  const color = rgb(PALETTE[vendor])
+  write(c, x, y, vendor, color)
+  const note = quotaNote(quota)
+  if (note === '?') {
+    dashedBar(c, x + QUOTA_NAME, y, bar, rgb(UNKNOWN))
+    write(c, x + QUOTA_NAME + bar + 1, y, '?', rgb(UNKNOWN))
+    return
+  }
+  if (note !== undefined) {
+    write(c, x + QUOTA_NAME, y, note, rgb(RED))
+    return
+  }
+  let at = x + QUOTA_NAME
+  for (const window of quota?.windows ?? []) {
+    const tone = windowTone(window, PALETTE[vendor])
+    const toneRgb = tone === PALETTE[vendor] ? color : rgb(tone)
+    write(c, at, y, window.id, SECONDARY)
+    const barX = at + window.id.length + 1
+    thinBar(c, barX, y, bar, Math.min(100, window.used) / 100, toneRgb, SECONDARY)
+    write(c, barX + bar + 1, y, percent(window.used), toneRgb === color ? SECONDARY : toneRgb)
+    at += windowCells(window, bar)
+  }
+}
+
 export const quotaRaster = (quotas: Quotas, shown: readonly SeatVendor[], columns: number): Drawing => {
-  const fitted = Math.floor((columns - (shown.length - 1) * QUOTA_GAP - shown.length * (QUOTA_NAME + 1)) / (shown.length * 2))
-  const isWide = fitted >= 11
-  const meterWidth = Math.min(15, isWide ? fitted : Math.max(6, Math.floor((columns - QUOTA_NAME - 1) / 2)))
-  const block = QUOTA_NAME + meterWidth * 2 + 1
-  const lineWidth = isWide ? shown.length * block + (shown.length - 1) * QUOTA_GAP : block
-  const c = canvas(Math.min(columns, lineWidth), isWide ? 1 : shown.length)
+  const lineWidth = (bar: number) => shown.reduce((sum, vendor) => sum + quotaCells(quotas[vendor], bar), 0) + (shown.length - 1) * QUOTA_GAP
+  const widest = (bar: number) => Math.max(...shown.map(vendor => quotaCells(quotas[vendor], bar)))
+  let bar = BAR_MAX
+  while (bar > BAR_MIN && lineWidth(bar) > columns) bar -= 1
+  const isWide = lineWidth(bar) <= columns
+  if (!isWide) {
+    bar = BAR_MAX
+    while (bar > BAR_MIN && widest(bar) > columns) bar -= 1
+  }
+  const c = canvas(Math.max(1, Math.min(columns, isWide ? lineWidth(bar) : widest(bar))), isWide ? 1 : shown.length)
+  let x = 0
   shown.forEach((vendor, index) => {
-    const x = isWide ? index * (block + QUOTA_GAP) : 0
-    const y = isWide ? 0 : index
-    const quota = quotas[vendor]
-    const color = rgb(PALETTE[vendor])
-    write(c, x, y, vendor, color)
-    meter(c, x + QUOTA_NAME, y, meterWidth, '5H', windowUsed(quota, quota?.fiveHour), quota?.out === true, color)
-    meter(c, x + QUOTA_NAME + meterWidth + 1, y, meterWidth, 'WK', windowUsed(quota, quota?.weekly), quota?.out === true, color)
+    drawQuota(c, isWide ? x : 0, isWide ? 0 : index, vendor, quotas[vendor], bar)
+    x += quotaCells(quotas[vendor], bar) + QUOTA_GAP
   })
   return finish(c)
 }

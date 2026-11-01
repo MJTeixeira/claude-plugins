@@ -1,40 +1,50 @@
 #!/usr/bin/env node
 // The few POSIX tools the mod probes seat files with, written once for every
-// platform and taking the flags the mod passes: `pwd`, `mktemp -d TEMPLATE`
-// (creates its parent, prints the resolved path), `mkdir DIR`, `head -n N FILE`, `tail -n N FILE`,
+// platform and taking the flags the mod passes: `pwd`, `head -n N FILE`, `tail -n N FILE`,
 // `grep -[Eicoq] PATTERN FILE...` (POSIX classes read as JS), `find DIR -name
-// GLOB`, `exec NAME ARG...`, which starts a CLI as command.mjs resolves it,
-// `alive PID` (exit 0 while that process runs), and `kill PID`, which ends that
-// process and everything it started.
-// Files are read in bounded chunks or line by line, never whole.
+// GLOB` (DIR may start `{NAME:FALLBACK}`, NAME's value or else FALLBACK, and `~` is
+// the home folder), `exec NAME ARG...`, which starts a CLI as command.mjs resolves it,
+// `alive PID` (exit 0 while that process runs), `ancestors` (the pids above this process, nearest first, one a line; only the
+// parent's when the process table cannot be read), `claim FROM TO`, which renames a seat's mail marker or claim FROM to
+// the claim TO and exits 3 when another process is claiming that seat's report or FROM is gone, so of any number of
+// claims of one report one wins, and `delivered CLAIM`, which deletes a delivered report's claim and every take of it.
 import { execFileSync, spawn } from 'node:child_process'
-import { closeSync, createReadStream, fstatSync, mkdirSync, mkdtempSync, openSync, readSync, readdirSync, realpathSync } from 'node:fs'
-import { dirname, join } from 'node:path'
+import { createReadStream, readdirSync, renameSync, rmSync } from 'node:fs'
+import { homedir } from 'node:os'
+import { basename, dirname, join } from 'node:path'
 import { createInterface } from 'node:readline'
 import { command } from './command.mjs'
+import { claimOf, takeName, takeOf } from './core/layout.mjs'
+import { lines, readJson } from './io-node.mjs'
+import { claimFile } from './liveness.mjs'
 
-const CHUNK = 64 * 1024
 const [tool, ...args] = process.argv.slice(2)
 
-function lines(path, n, fromEnd) {
-  const fd = openSync(path, 'r')
-  const size = fstatSync(fd).size
-  const newlines = text => text.match(/\n/g)?.length ?? 0
-  let text = ''
-  let position = fromEnd ? size : 0
-  while (fromEnd ? position > 0 : position < size) {
-    const length = Math.min(CHUNK, fromEnd ? position : size - position)
-    if (fromEnd) position -= length
-    const buffer = Buffer.alloc(length)
-    readSync(fd, buffer, 0, length, position)
-    text = fromEnd ? buffer.toString('utf8') + text : text + buffer.toString('utf8')
-    if (!fromEnd) position += length
-    if (newlines(text) > n) break
+const alive = pid => {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch (error) {
+    return error.code === 'EPERM'
   }
-  closeSync(fd)
-  const all = (text.endsWith('\n') ? text.slice(0, -1) : text).split('\n')
-  const kept = fromEnd ? all.slice(-n) : all.slice(0, n)
-  return text ? kept.map(line => line + '\n').join('') : ''
+}
+
+const listing = () => process.platform === 'win32'
+  ? execFileSync(join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'), ['-NoProfile', '-NonInteractive', '-Command',
+    'Get-CimInstance Win32_Process | ForEach-Object { "$($_.ProcessId) $($_.ParentProcessId)" }'], { encoding: 'utf8', windowsHide: true, timeout: 20_000 })
+  : execFileSync('ps', ['-A', '-o', 'pid=,ppid='], { encoding: 'utf8', maxBuffer: 64 << 20 })
+
+function ancestors() {
+  const found = [process.ppid]
+  let parents = new Map()
+  try {
+    parents = new Map(listing().split('\n').flatMap(line => {
+      const match = /^\s*(\d+)\s+(\d+)\s*$/.exec(line)
+      return match ? [[Number(match[1]), Number(match[2])]] : []
+    }))
+  } catch {}
+  for (let pid = parents.get(process.ppid); pid > 0 && !found.includes(pid); pid = parents.get(pid)) found.push(pid)
+  process.stdout.write(found.map(pid => pid + '\n').join(''))
 }
 
 async function grep(flags, source, files) {
@@ -60,6 +70,11 @@ async function grep(flags, source, files) {
   process.exitCode = count ? 0 : 1
 }
 
+const expand = dir => {
+  const named = dir.replace(/^\{(\w+):([^}]*)\}/, (_, name, fallback) => process.env[name] || fallback)
+  return named === '~' || named.startsWith('~/') ? homedir() + named.slice(1) : named
+}
+
 function find(dir, glob) {
   const pattern = new RegExp('^' + glob.split('*').map(part => part.replace(/[.+?^${}()|[\]\\]/g, '\\$&')).join('.*') + '$')
   const walk = folder => {
@@ -74,6 +89,39 @@ function find(dir, glob) {
   walk(dir)
 }
 
+const takes = (box, id) => readdirSync(box).flatMap(name => {
+  const take = takeOf(name)
+  return take?.id === id ? [take.g] : []
+}).sort((a, b) => a - b)
+
+// Windows renames by handle (MoveFileExW opens FROM, then renames what it opened), so two renames that both opened
+// FROM both succeed.
+function claim(from, to) {
+  const box = dirname(from)
+  const { id } = claimOf(basename(to))
+  const top = takes(box, id).at(-1) ?? 0
+  const holder = top ? readJson(join(box, takeName(id, top))) : undefined
+  if (top && (holder === undefined || alive(holder.pid))) return 3
+  const take = join(box, takeName(id, top + 1))
+  if (!claimFile(take, JSON.stringify({ pid: process.pid }))) return 3
+  try {
+    renameSync(from, to)
+    return 0
+  } catch (error) {
+    if (error.code === 'ENOENT') return 3
+    throw error
+  } finally {
+    rmSync(take, { force: true })
+  }
+}
+
+function delivered(claimPath) {
+  rmSync(claimPath, { force: true })
+  const box = dirname(claimPath)
+  const { id } = claimOf(basename(claimPath))
+  for (const g of takes(box, id)) rmSync(join(box, takeName(id, g)), { force: true })
+}
+
 function exec(name, rest) {
   const started = command(name, rest)
   const child = spawn(started.file, started.args, { ...started.options, stdio: 'inherit', windowsHide: true })
@@ -84,35 +132,17 @@ function exec(name, rest) {
   child.on('exit', code => process.exit(code ?? 1))
 }
 
-function alive(pid) {
-  try {
-    process.kill(pid, 0)
-    return true
-  } catch (error) {
-    return error.code === 'EPERM'
-  }
-}
-
-// run-seat starts detached, so on POSIX its pid names the group of everything it started.
-function kill(pid) {
-  if (process.platform === 'win32') return execFileSync('taskkill', ['/T', '/F', '/PID', String(pid)], { stdio: 'ignore', windowsHide: true })
-  try { process.kill(-pid, 'SIGKILL') } catch { process.kill(pid, 'SIGKILL') }
-}
-
 try {
   if (tool === 'pwd') process.stdout.write(process.cwd() + '\n')
-  else if (tool === 'mktemp') {
-    mkdirSync(dirname(args[1]), { recursive: true })
-    process.stdout.write(realpathSync.native(mkdtempSync(args[1].replace(/X+$/, ''))) + '\n')
-  }
-  else if (tool === 'mkdir') mkdirSync(args[0])
   else if (tool === 'head') process.stdout.write(lines(args[2], Number(args[1]), false))
   else if (tool === 'tail') process.stdout.write(lines(args[2], Number(args[1]), true))
   else if (tool === 'grep') await grep(args[0], args[1], args.slice(2))
-  else if (tool === 'find') find(args[0], args[2])
+  else if (tool === 'find') find(expand(args[0]), args[2])
   else if (tool === 'exec') exec(args[0], args.slice(1))
   else if (tool === 'alive') process.exit(alive(Number(args[0])) ? 0 : 1)
-  else if (tool === 'kill') kill(Number(args[0]))
+  else if (tool === 'ancestors') ancestors()
+  else if (tool === 'claim') process.exitCode = claim(args[0], args[1])
+  else if (tool === 'delivered') delivered(args[0])
   else throw new Error('unknown tool')
 } catch (error) {
   process.stderr.write(`seat-io ${tool}: ${error.message}\n`)

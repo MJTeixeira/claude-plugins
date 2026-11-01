@@ -304,53 +304,74 @@ export const rowSvg = (queue: QueueDisplay | null, running: number, width: numbe
     + text(width - 4, 16.5, 12.5, Math.round(queue.done / total * 100) + '%', 'class="s" text-anchor="end" font-variant-numeric="tabular-nums"'))
 }
 
-export const windowUsed = (quota: SeatQuotaDisplay | undefined, window: SeatQuotaWindow | undefined): number | undefined =>
-  quota?.known && window ? window.used : undefined
+const pad2 = (value: number): string => String(value).padStart(2, '0')
 
-const meter = (x: number, width: number, label: string, used: number | undefined, out: boolean, color: string): string => {
-  const trackX = x + 19
-  const trackWidth = Math.max(16, width - 19 - 32)
-  const valueX = trackX + trackWidth + 5
-  const name = text(x, 13, 9.5, label, 'class="s" font-weight="600"')
-  if (used === undefined) {
-    return name
-      + `<path d="M${trackX} 9h${trackWidth}" stroke="${UNKNOWN}" stroke-width="2" stroke-dasharray="3 3"/>`
-      + text(valueX, 13, 11, '?', `fill="${UNKNOWN}"`)
-  }
-  const tone = out || used >= 95 ? RED : used >= 80 ? AMBER : color
-  return name
-    + `<rect class="k" x="${trackX}" y="7.5" width="${trackWidth}" height="3" rx="1.5"/>`
-    + `<rect x="${trackX}" y="7.5" width="${Math.round(trackWidth * Math.min(100, used) / 100)}" height="3" rx="1.5" fill="${tone}"/>`
-    + text(valueX, 13, 11, Math.round(used) + '%', `${tone === color ? 'class="s"' : `fill="${tone}"`} font-variant-numeric="tabular-nums"`)
+export const clockTime = (at: number, now: number): string => {
+  const date = new Date(at)
+  const time = pad2(date.getHours()) + ':' + pad2(date.getMinutes())
+  return at - now < 24 * 60 * 60 * 1000 ? time : date.getFullYear() + '-' + pad2(date.getMonth() + 1) + '-' + pad2(date.getDate()) + ' ' + time
 }
 
+export const quotaNote = (quota: SeatQuotaDisplay | undefined): string | undefined => {
+  if (quota?.state === 'out') return quota.back === undefined ? 'out' : 'out until ' + quota.back
+  return quota === undefined || quota.state === 'unknown' || quota.windows.length === 0 ? '?' : undefined
+}
+
+export const windowTone = (window: SeatQuotaWindow, color: string): string =>
+  window.state === 'out' ? RED : window.state === 'busy' ? AMBER : color
+
 const QUOTA_NAME_W = 46
-const QUOTA_METER_W = 92
+const QUOTA_TRACK_W = 41
 const QUOTA_GAP = 22
-const QUOTA_BLOCK_W = QUOTA_NAME_W + QUOTA_METER_W * 2
+const LABEL_SIZE = 9.5
 
-// The quota line's width: one fixed block per shown vendor, never stretched to the band.
-export const quotaWidth = (shown: readonly SeatVendor[] = VENDORS): number =>
-  shown.length * QUOTA_BLOCK_W + (shown.length - 1) * QUOTA_GAP
+const meterWidth = (window: SeatQuotaWindow): number => Math.ceil(textWidth(window.id, LABEL_SIZE)) + 5 + QUOTA_TRACK_W + 37
 
-// One line, a block per shown vendor: its name, then its 5-hour and weekly windows.
-export const quotaSvg = (quotas: Quotas, shown: readonly SeatVendor[] = VENDORS): string =>
-  svg(quotaWidth(shown), QUOTA_H, shown.map((vendor, index) => {
-    const x = index * (QUOTA_BLOCK_W + QUOTA_GAP)
+const noteWidth = (note: string): number => Math.ceil(textWidth(note, 11)) + 4
+
+const blockWidth = (quota: SeatQuotaDisplay | undefined): number => {
+  const note = quotaNote(quota)
+  return QUOTA_NAME_W + (note !== undefined ? noteWidth(note) : (quota?.windows ?? []).reduce((sum, window) => sum + meterWidth(window), 0))
+}
+
+const meter = (x: number, window: SeatQuotaWindow, color: string): string => {
+  const trackX = x + Math.ceil(textWidth(window.id, LABEL_SIZE)) + 5
+  const tone = windowTone(window, color)
+  return text(x, 13, LABEL_SIZE, window.id, 'class="s" font-weight="600"')
+    + `<rect class="k" x="${trackX}" y="7.5" width="${QUOTA_TRACK_W}" height="3" rx="1.5"/>`
+    + `<rect x="${trackX}" y="7.5" width="${Math.round(QUOTA_TRACK_W * Math.min(100, window.used) / 100)}" height="3" rx="1.5" fill="${tone}"/>`
+    + text(trackX + QUOTA_TRACK_W + 5, 13, 11, Math.round(window.used) + '%', `${tone === color ? 'class="s"' : `fill="${tone}"`} font-variant-numeric="tabular-nums"`)
+}
+
+export const quotaWidth = (quotas: Quotas, shown: readonly SeatVendor[] = VENDORS): number =>
+  shown.reduce((sum, vendor) => sum + blockWidth(quotas[vendor]), 0) + (shown.length - 1) * QUOTA_GAP
+
+export const quotaSvg = (quotas: Quotas, shown: readonly SeatVendor[] = VENDORS): string => {
+  let x = 0
+  return svg(quotaWidth(quotas, shown), QUOTA_H, shown.map(vendor => {
     const quota = quotas[vendor]
-    const out = quota?.out === true
-    return text(x, 13, 11, vendor, `fill="${PALETTE[vendor]}" font-weight="700"`)
-      + meter(x + QUOTA_NAME_W, QUOTA_METER_W, '5H', windowUsed(quota, quota?.fiveHour), out, PALETTE[vendor])
-      + meter(x + QUOTA_NAME_W + QUOTA_METER_W, QUOTA_METER_W, 'WK', windowUsed(quota, quota?.weekly), out, PALETTE[vendor])
+    const at = x
+    x += blockWidth(quota) + QUOTA_GAP
+    const note = quotaNote(quota)
+    const name = text(at, 13, 11, vendor, `fill="${PALETTE[vendor]}" font-weight="700"`)
+    if (note === '?') {
+      return name + `<path d="M${at + QUOTA_NAME_W} 9h${QUOTA_TRACK_W}" stroke="${UNKNOWN}" stroke-width="2" stroke-dasharray="3 3"/>`
+        + text(at + QUOTA_NAME_W + QUOTA_TRACK_W + 5, 13, 11, '?', `fill="${UNKNOWN}"`)
+    }
+    if (note !== undefined) return name + text(at + QUOTA_NAME_W, 13, 11, note, `fill="${RED}" font-weight="600"`)
+    let meterX = at + QUOTA_NAME_W
+    return name + (quota?.windows ?? []).map(window => {
+      const drawn = meter(meterX, window, PALETTE[vendor])
+      meterX += meterWidth(window)
+      return drawn
+    }).join('')
   }).join(''))
+}
 
 export const quotaAlt = (quotas: Quotas, shown: readonly SeatVendor[] = VENDORS): string => shown.map(vendor => {
   const quota = quotas[vendor]
-  const percent = (window: SeatQuotaWindow | undefined) => {
-    const used = windowUsed(quota, window)
-    return used === undefined ? '?' : Math.round(used) + '%'
-  }
-  return vendor + ' 5h ' + percent(quota?.fiveHour) + ', weekly ' + percent(quota?.weekly)
+  const note = quotaNote(quota)
+  return vendor + ' ' + (note ?? (quota?.windows ?? []).map(window => window.id + ' ' + Math.round(window.used) + '%').join(', '))
 }).join('; ')
 
 // The pane's backdrop: a dotted grid as tall as the content laid over it. The engine refuses an

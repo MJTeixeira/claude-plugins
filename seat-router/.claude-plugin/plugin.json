@@ -1,7 +1,11 @@
 {
   "name": "seat-router",
-  "version": "1.5.1",
+  "version": "1.11.0",
   "description": "Routes marked Agent calls through durable external seats",
+  "author": {
+    "name": "Marcos Teixeira",
+    "url": "https://github.com/MJTeixeira"
+  },
   "license": "MIT",
   "types": "./types/index.d.ts",
   "userConfig": {
@@ -26,7 +30,7 @@
     "busyAt": {
       "type": "number",
       "title": "Busy at % used (leave at 80)",
-      "description": "The mod moves a seat to another model once one's 5-hour or weekly quota is this used, or its week is used faster than it has passed.",
+      "description": "A model counts as busy, and is tried after free ones, once any of its quota windows is this used, until that window resets; a week used over 15 points ahead of the time passed counts too.",
       "default": 80
     },
     "mixFanouts": {
@@ -38,13 +42,19 @@
     "delegate": {
       "type": "string",
       "title": "Delegate code work: auto, on or off (leave as auto)",
-      "description": "Sends features, fixes and PR owners to owner seats on your other CLIs: auto while Claude's quota is busy, on always, off never. /seats setup asks it too.",
+      "description": "Sends features, fixes and PR owners to owner seats on your other CLIs: auto while Claude's quota is busy or out, on always, off never. /seats setup asks it too.",
       "default": "auto"
     },
     "claudeAccounts": {
       "type": "string",
       "title": "Other Claude accounts (leave empty)",
       "description": "Claude subscriptions on this machine besides the session's own, as comma-separated <name> <config folder>, e.g. work ~/.claude-work. A seat line naming one (seat: work standard reviewer) runs Claude on that account.",
+      "default": ""
+    },
+    "jobs": {
+      "type": "string",
+      "title": "Jobs: where each kind of work runs (leave empty)",
+      "description": "A seat line's optional last word names a job. Shipped: code, and image (only models that make images). Add or change jobs as <job> [(<what it is for>)]: <rule>, ... separated by ;, a rule being only, not or first and a CLI, family, account or model pattern, e.g. art (layouts, styling, images, diagrams): only codex, only agy, not claude, first codex. /seats setup asks it too.",
       "default": ""
     }
   }
