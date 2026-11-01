@@ -8,7 +8,10 @@ seat keeps running after the session that started it ends.
 
 You do not write rules for the session. The mod adds the seat-line grammar, each size's models and
 the jobs this machine can run to the session's system prompt, so the session writes seat lines
-itself when you ask for work on another model family.
+itself when you ask for work on another model family. The same text says that a seat has none of
+the session's MCP tools and no browser, so work that needs them stays on Claude, and, with
+`mixFanouts` on, that the session mixes model families whenever it runs several agents on the same
+task. That default names no skill and yields to you or to a skill in use that sets its own panel.
 
 ## What you need
 
@@ -235,7 +238,7 @@ plugin fields.
 | --- | --- | --- |
 | `heavySeats`, `standardSeats`, `lightSeats` | `auto` | Each size's candidates in list order, as `auto` or as comma-separated `<codex\|agy\|claude> <model> [effort]`. The mod drops an entry that names no known CLI. |
 | `busyAt` | `80` | The percentage used at which a window makes its scope busy. See [Quota](#quota). |
-| `mixFanouts` | on | Tells the session to add one reviewer seat per other model family beside its Claude agents in every review or verification fan-out, all in one message. |
+| `mixFanouts` | on | Tells the session that whenever it runs several agents on the same task (a review, a verification, a bakeoff, competing designs or attempts), it adds one reviewer seat per other model family beside its Claude agents, all in one message. This is a default: it yields when you or a skill in use says otherwise, and it never puts a seat on work a seat cannot do. |
 | `delegate` | `auto` | When code work goes to owner seats. `auto` sends it while the session's Claude account is busy or out, `on` always, `off` never. See [Delegate mode](#delegate-mode). |
 | `claudeAccounts` | empty | Your other Claude accounts on this machine, as comma-separated `<name> <config folder>`, such as `work ~/.claude-work`. A name may not be a CLI, family, size or tier word, `other` or `session`. |
 | `jobs` | empty | Your jobs, as `<job> [(<what it is for>)]: <rule>, ...` entries separated by `;`. See [Jobs](#jobs). |
