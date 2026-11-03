@@ -460,6 +460,7 @@ const scope = line => {
     }
   }
   if (hit !== undefined || !(opaque || dynamicHead)) return hit
+  const unquoted = [false, true].map(windows => joined(line, windows).replace(HEREDOC, '$1'))
   const words = [false, true].flatMap(windows => {
     const text = joined(line, windows)
     return [text.replace(/\\_/g, ' ').replace(/[\\^`'"]/g, ''), ...commands(text, windows).flat()].flatMap(tokens)
@@ -467,8 +468,8 @@ const scope = line => {
   const aborts = words.some(word => /^--(abort|quit|skip)$/i.test(word))
   const found = words.filter(word => DISCARD_WORDS.includes(word.toLowerCase()) || /^--force-(with-lease|if-includes)/i.test(word)
     || (aborts && ABORTING.includes(word.toLowerCase())))
-  const reached = (dynamicHead && found.length > 0) || (opaque && ((words.some(namesGit) && (found.length > 0 || /[$`]/.test(line)))
-    || (found.some(word => !/^(rm|reset)$/i.test(word)) && /[${}`%]/.test(line))))
+  const hasGit = words.some(namesGit)
+  const reached = (dynamicHead && found.length > 0) || (opaque && hasGit && (found.length > 0 || unquoted.some(t => /[$`]/.test(t))))
   if (!reached) return undefined
   return found.length === 0 ? 'commands' : found[0].startsWith('-') ? 'push' : found[0].toLowerCase()
 }
@@ -630,8 +631,10 @@ const placeRules = (own, path, cdpath) => {
     path,
     cdpath: Boolean(cdpath),
     seat: seat === null ? null : folded(seat, path),
-    refuse: sub => `Run git ${sub} only inside this seat's folder, ${own}: this line runs it elsewhere, or where the guard cannot tell. `
-      + `Run the git command as its own plain call, optionally after a plain cd to a folder inside ${own}.`,
+    refuse: (sub, others) => others
+      ? `Run git ${sub} only inside this seat's folder, ${own}: this line also runs ${others}. Run the git command as its own call.`
+      : `Run git ${sub} only inside this seat's folder, ${own}: this line runs it elsewhere, or where the guard cannot tell. `
+        + `Run the git command as its own plain call, optionally after a plain cd to a folder inside ${own}.`,
     script: sub => `git ${sub} here runs a command line the guard cannot check, on a line that may reach a git command that discards `
       + 'work. Run those commands as separate calls instead.',
     lease: `Force-push with a lease only from the folder the command starts in, inside this seat's folder, ${own}, onto the branch checked out there.`,
@@ -702,6 +705,20 @@ const walk = (parts, start, rules, sub) => {
 // either way, is the line inside it, read as PowerShell reads it.
 const WRAPPER = /^\s*(?:"(?:[^"]*[\\/])?(?:powershell|pwsh)(?:\.exe)?"|(?:[^\s"']*[\\/])?(?:powershell|pwsh)(?:\.exe)?)(?:\s+-(?:NoProfile|NoLogo|NonInteractive))*\s+-Command\s+(?:'([^']*)'|"([^"]*)")\s*$/i
 
+const otherCommands = (text, windows) => {
+  const others = []
+  for (const words of commands(text, windows)) {
+    const clean = words.filter(word => !isRedirect(word))
+    const first = clean.find(word => !/^[A-Za-z_][A-Za-z0-9_]*=/.test(word))
+    if (!first) continue
+    const name = programName(first)
+    if (!name || CD_WORDS.includes(name) || /^(?:cd|chdir)[./\\]/i.test(first) || name === 'git') continue
+    if (CONTROL_WORDS.split('|').includes(name) || LEADS.includes(name)) continue
+    others.push(name)
+  }
+  return [...new Set(others)]
+}
+
 // Why a line is refused once check() has allowed it and the seat's folder is known, or undefined when it may run. A line
 // that may reach a discarding git command passes only as plain cd-like and git commands joined by && ; or newline, read
 // alike as a POSIX and a Windows shell would, with every discarding git command inside the seat's folder. Any other
@@ -715,7 +732,10 @@ const stray = (line, start, rules, bash) => {
   for (const windows of script === undefined && (bash || !(rules.path.sep === '\\' && line.includes('\\'))) ? [false, true] : [true]) {
     const text = joined(script ?? line, windows)
     const parts = notSimpleLine(text) ? undefined : sequence(text, windows)?.map(({ words, goesOn }) => ({ command: plain(words), goesOn }))
-    if (parts === undefined || parts.some(({ command }) => command === undefined)) return rules.refuse(sub)
+    if (parts === undefined || parts.some(({ command }) => command === undefined)) {
+      const others = otherCommands(text, windows)
+      return rules.refuse(sub, others.length ? others.join(', ') : undefined)
+    }
     const runs = parts.find(({ command }) => command.script)
     if (runs) return rules.script(runs.command.script)
     const reason = walk(parts, start, rules, sub)

@@ -22,8 +22,8 @@ import { LAUNCHER_CHECK_MS, LAUNCHER_GRACE_MS, MAX_ATTEMPT, claimFile, outsideRe
 import { removeTree as removeTreeNow } from './remove-tree.mjs'
 
 const OWNER_GUARD_NOTE = 'An owner guard refuses force pushes, git reset --hard, git worktree remove and move (seat-router removes '
-  + 'this seat\'s worktree when it ends), git branch -D, clean -f, checkout, restore and forced switch aimed at another folder (-C, --work-tree) or run outside this seat\'s folder (after a cd, say), forced recursive deletes, gh pr merge --admin and gh repo delete. A refusal is final: do not reach the same result another way (another shell, python, node or a '
-  + 'script). Say in your report what was refused and why you needed it.\n'
+  + 'this seat\'s worktree when it ends), git branch -D, clean -f, checkout, restore and forced switch aimed at another folder (-C, --work-tree) or run outside this seat\'s folder (after a cd, say), forced recursive deletes, gh pr merge --admin and gh repo delete. A refused git command may be rerun on its own line in the form the refusal names; only reaching the refused result by another route (another shell, python, node or a '
+  + 'script) is banned. Say in your report what was refused and why you needed it.\n'
 const GH_MISSING = 'gh gave no GitHub token here, so this owner ran without GitHub credentials: a push or a pull request over HTTPS may have failed.'
 const WIN = process.platform === 'win32'
 const TICK_MS = Number(process.env.SEAT_ROUTER_TICK_MS) || (WIN ? 5_000 : 2_000)
