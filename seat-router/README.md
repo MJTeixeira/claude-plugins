@@ -347,7 +347,8 @@ refuses these commands:
 The commands that discard work (`git clean -f`, `git checkout`, `git restore`, a forced
 `git switch`, `git stash`, `git rm`, `git reset`) run only on a line of plain `cd` and `git`
 commands inside the seat's folder. Run such a command as its own plain call. The brief tells each
-owner that a refusal is final. The guard reads the command text, so it stops a confused agent's
+owner that a refused git command may be rerun on its own line in the form the refusal names; only
+reaching the refused result by another route is banned. The guard reads the command text, so it stops a confused agent's
 mistake (the wrong folder, a forgotten `cd`, a wrapper around git), not a command built to get
 around it.
 
