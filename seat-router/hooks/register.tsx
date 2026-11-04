@@ -176,6 +176,8 @@ async function inUse($: EngineInterface): Promise<Candidate[]> {
 
 function refresh($: EngineInterface): Promise<void> {
   return singleFlight('refresh', async () => {
+    // A failed usage read must not hold up the other accounts or the band.
+    await $.session.usage().then(usage => writeSessionQuota($, usage.rateLimits)).catch(() => undefined)
     await refreshQuotas($, await inUse($), await accountDirs($))
     await band($)
   })
@@ -439,8 +441,6 @@ export const register: Register = (on, options) => {
     void probeSandboxes($).catch(() => undefined)
     $.clock.every(5_000, () => singleFlightPoll($))
     void singleFlightPoll($)
-    // A failed usage read leaves the account unknown until the refresher reads it.
-    void $.session.usage().then(usage => writeSessionQuota($, usage.rateLimits)).catch(() => undefined).then(() => band($))
     $.clock.every(BAND_EVERY_MS, () => band($))
     $.clock.every(REFRESH_EVERY_MS, () => refresh($))
     void refresh($)
