@@ -77,31 +77,6 @@ export const POWERSHELL_51_NOTE = 'Your shell may be Windows PowerShell 5.1, whe
 // otherwise, so a seat's python script turns UTF-8 text into mojibake (PEP 686).
 export const PYTHON_UTF8 = { PYTHONUTF8: '1' }
 
-// Writes never repeat: a seat that writes between runs is making progress. agy names a write by
-// its path alone and codex's file changes carry no content, so neither says what it wrote.
-const WRITES = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit', 'write_file', 'write_to_file', 'create_file', 'edit_file',
-  'replace_file_content', 'multi_replace_file_content', 'apply_patch', 'delete_file', 'move_file'])
-
-export const call = (tool, input, result, name, id) =>
-  ({ name, key: WRITES.has(tool) ? '#' + id : JSON.stringify([tool, input, result]) })
-
-const LOOP_CALLS = 24
-const LOOP_REPEATS = 3
-
-export const findLoop = calls => {
-  if (calls.length < LOOP_CALLS) return undefined
-  for (let size = 1; size * LOOP_REPEATS <= LOOP_CALLS; size += 1) {
-    let run = size
-    while (run < calls.length && calls[calls.length - 1 - run]?.key === calls[calls.length - 1 - run + size]?.key) run += 1
-    if (run >= LOOP_CALLS) return { cycle: calls.slice(-size).map(found => found.name), repeats: Math.floor(run / size) }
-  }
-  return undefined
-}
-
-// A loop of LOOP_CALLS calls takes about four transcript lines a call on agy, fewer on codex and Claude.
-export const loopSignal = (transcript, toolCalls) => async (view, dir) =>
-  findLoop(toolCalls(await view.tail(join(dir, transcript), 400)))
-
 export const lastActionWith = actionOf => text => {
   let action
   for (const line of text.split('\n')) {

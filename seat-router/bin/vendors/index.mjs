@@ -12,8 +12,6 @@ import { codex } from './codex.mjs'
  * @typedef {import('../core/ledger.mjs').Window} LedgerWindow
  * @typedef {{ script: string } | { exec: string[] }} Run  a bin/ helper run with node, or a CLI run through seat-io's exec
  * @typedef {{ text: string, failed: boolean, quota: boolean, detail: string, refused?: string[] }} Check
- * @typedef {{ name: string, key: string }} Call
- * @typedef {{ cycle: string[], repeats: number }} Loop
  * @typedef {{ id: string, dir: string, workDir: string, tier: 'reviewer'|'owner', model: string, effort: string,
  *             account?: string, resumeConversation?: string }} PlanSeat
  * @typedef {{ seat: PlanSeat, brief: string, os: 'windows'|'posix', guard: string, seatRoot: string, configDir?: string }} PlanContext
@@ -53,8 +51,6 @@ import { codex } from './codex.mjs'
  * @property {(input: PlanContext & { facts: Record<string, unknown> }) => Plan} plan   pure
  * @property {(view: AttemptView, dir: string, exitCode: number|undefined) => Promise<Check>} judge
  * @property {(view: AttemptView, dir: string, memo: Record<string, unknown>) => Promise<{ tokens?: number, memo?: Record<string, unknown> }>} liveTokens
- * @property {(text: string) => Call[]} toolCalls
- * @property {(view: AttemptView, dir: string) => Promise<Loop|undefined>} loopSignal
  * @property {(text: string) => string|undefined} lastAction
  * @typedef {VendorAdapter & {
  *   account: { args: string[], env: (dir: string) => Record<string, string> },

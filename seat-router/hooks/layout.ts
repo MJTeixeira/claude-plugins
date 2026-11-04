@@ -29,13 +29,3 @@ export async function seatHome($: EngineInterface): Promise<string> {
   if (!found) throw new Error('this environment names no home folder for seat-router')
   return found.home
 }
-
-// Where seat-router 1.x kept seat folders: /tmp on macOS and Linux, the user's TEMP on Windows, PUBLIC under a
-// non-ASCII profile. Seats it started there are drained, never advanced.
-export async function legacySeatRoot($: EngineInterface): Promise<string> {
-  if (await osOf($) !== 'windows') return '/tmp'
-  const temp = slashed(await $.env.get('TEMP') ?? 'C:/Windows/Temp')
-  const ascii = [temp, await $.env.get('USERPROFILE') ?? ''].every(path => /^[\x20-\x7e]*$/.test(path))
-  const shared = await $.env.get('PUBLIC')
-  return ascii || !shared ? temp : slashed(shared) + '/seat-router'
-}

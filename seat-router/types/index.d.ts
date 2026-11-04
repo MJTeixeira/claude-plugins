@@ -52,6 +52,7 @@ declare module 'claude-code' {
       seats: Shaped<SeatDisplay[]>
       quotas: Shaped<Partial<Record<SeatVendor, SeatQuotaDisplay>>>
       queue: QueueDisplay | null
+      protection: string
       seatPaneTick: number
       seatPanel: { isDoneCollapsed: boolean }
       delegateShown: string | null

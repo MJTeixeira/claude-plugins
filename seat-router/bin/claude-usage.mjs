@@ -10,10 +10,10 @@
 // on its login alone. Exits 1 naming what failed.
 import { execFile, spawn } from 'node:child_process'
 import { tmpdir } from 'node:os'
-import { withoutClaudeAuth } from './claude-auth.mjs'
+import { claudeConfigEnv, withoutClaudeAuth } from './claude-auth.mjs'
 import { command } from './command.mjs'
 
-const env = process.argv.includes('--account') ? withoutClaudeAuth(process.env) : process.env
+const env = claudeConfigEnv(process.argv.includes('--account') ? withoutClaudeAuth(process.env) : process.env)
 
 const children = []
 const fail = why => {

@@ -1,4 +1,4 @@
-import { POWERSHELL_51_NOTE, PYTHON_UTF8, asObject, call, candidateScopes, defined, familyOfModel, fileName, join, lastActionWith, loopSignal, numberAt, readJson, resetTime, textAt } from './shared.mjs'
+import { POWERSHELL_51_NOTE, PYTHON_UTF8, asObject, candidateScopes, defined, familyOfModel, fileName, join, lastActionWith, numberAt, readJson, resetTime, textAt } from './shared.mjs'
 
 // In -p mode agy keeps a run open while a background task (a long run_command, a schedule
 // timer) runs and wakes the agent when it ends, so an answer given early is not the run's
@@ -96,22 +96,20 @@ const isQuota = errors => {
   return error?.status === 'RESOURCE_EXHAUSTED' || error?.error_code === 429 || CREDITS.test(errors)
 }
 
-// A run agy refused an action fails: in -p mode a refusal halts the conversation that asked,
-// so a subagent's work never reaches its parent and the answer can be stale.
 export const failedAgy = (exitCode, jsonl, stderr) => {
   const result = resultOf(jsonl)
   // agy's last error is its word on the run: a 401 there is not a quota failure, whatever ran before it.
   const quota = isQuota(result.valid || UNAUTHENTICATED.test(result.error) ? '' : result.error + '\n' + stderr)
   const blank = !result.text.trim()
   const baseDetail = quota ? 'usage limit reached' : exitCode !== 0 ? 'exit ' + String(exitCode) : blank ? 'empty final text' : ''
-  const failed = exitCode !== 0 || blank || !result.valid || result.guardCrashed || result.denied.length > 0
+  const failed = exitCode !== 0 || blank || !result.valid || result.guardCrashed
   const refused = result.denied.length ? 'agy refused ' + result.denied.join(', ') : ''
   const error = result.valid ? '' : result.error.replace(/\s+/g, ' ').trim()
   const reason = baseDetail || (result.guardCrashed ? 'owner guard could not run' : !result.valid && !error ? 'agy result failed' : '')
   const detail = quota ? baseDetail : [reason, error ? 'agy\'s error: ' + error : '', refused].filter(Boolean).join(', ')
   const text = !result.valid && result.text.trim()
     ? 'agy\'s error: ' + (error || '(none given)') + '\nThe text the seat produced before agy\'s error:\n\n' + result.text
-    : result.text
+    : [refused, result.text].filter(Boolean).join('\n\n')
   return { text, failed, quota, detail, ...(result.denied.length ? { refused: result.denied } : {}) }
 }
 
@@ -149,23 +147,6 @@ const actionOf = event => {
   const path = textAt(parameters.Path) ?? textAt(parameters.AbsolutePath) ?? textAt(parameters.TargetFile)
   return name.replace(/_/g, ' ') + (path ? ' ' + fileName(path) : '')
 }
-
-// agy's parameters hold a command's working folder (`Cwd`) when it names one.
-const callOf = step => {
-  if (step.step_type !== 'tool' || (step.state !== 'DONE' && step.state !== 'ERROR')) return undefined
-  const info = asObject(step.tool_info) ?? {}
-  const parameters = asObject(info.parameters) ?? {}
-  const tool = textAt(step.tool_name) ?? 'tool'
-  const command = textAt(parameters.CommandLine)
-  return call(tool, parameters, info.output ?? asObject(info.error)?.message,
-    command ? 'Ran ' + command : tool + ' ' + JSON.stringify(parameters), String(step.step_index))
-}
-
-const toolCalls = text => text.split('\n').flatMap(line => {
-  const step = asObject(asObject(readJson(line))?.step_update)
-  const found = step && callOf(step)
-  return found ? [found] : []
-})
 
 const conversationOf = jsonl => {
   const event = asObject(readJson(jsonl))
@@ -259,7 +240,5 @@ export const agy = {
   plan,
   judge,
   liveTokens,
-  toolCalls,
-  loopSignal: loopSignal('agy.jsonl', toolCalls),
   lastAction: lastActionWith(actionOf),
 }

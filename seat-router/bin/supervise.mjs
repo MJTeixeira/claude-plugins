@@ -15,6 +15,7 @@ import { claimOf, deliveryFile, liveFile, mailDir, outcomeFile } from './core/la
 import { RULES, merge, stateOf, withObservations } from './core/ledger.mjs'
 import { DEADLINE_MS, KILL_DETAIL, SEAT_SCHEMA, outcomeOf, reportText, step } from './core/lifecycle.mjs'
 import * as io from './io-node.mjs'
+import { worktreeKeepReason, worktreeRemoveFlags } from './worktree.mjs'
 import {
   attemptQuiet, attemptView, claimLock, claimSolo, endSolo, exists, held, holders, lines, liveEntries, outsideOf, quotaFiles, readJson, readText, seatHolders, soloHolder,
 } from './io-node.mjs'
@@ -22,12 +23,15 @@ import { LAUNCHER_CHECK_MS, LAUNCHER_GRACE_MS, MAX_ATTEMPT, claimFile, outsideRe
 import { removeTree as removeTreeNow } from './remove-tree.mjs'
 
 const OWNER_GUARD_NOTE = 'An owner guard refuses force pushes, git reset --hard, git worktree remove and move (seat-router removes '
-  + 'this seat\'s worktree when it ends), git branch -D, clean -f, checkout, restore and forced switch aimed at another folder (-C, --work-tree) or run outside this seat\'s folder (after a cd, say), forced recursive deletes, gh pr merge --admin and gh repo delete. A refused git command may be rerun on its own line in the form the refusal names; only reaching the refused result by another route (another shell, python, node or a '
-  + 'script) is banned. Say in your report what was refused and why you needed it.\n'
+  + 'this seat\'s worktree when it ends), git branch -D of branches other than this seat\'s own or ones its worktree checked out, '
+  + 'and work-discarding git commands aimed outside this seat\'s folder (-C, --work-tree or after a cd). Combined commands inside this seat\'s folder are allowed. '
+  + 'Forced recursive deletes are allowed only for explicit paths inside this seat\'s folder, excluding the seat and worktree roots. '
+  + 'gh pr merge --admin and gh repo delete are refused. Never reach a refused result through another shell, interpreter or script. '
+  + 'Say in your report what was refused and why you needed it.\n'
 const GH_MISSING = 'gh gave no GitHub token here, so this owner ran without GitHub credentials: a push or a pull request over HTTPS may have failed.'
 const WIN = process.platform === 'win32'
 const TICK_MS = Number(process.env.SEAT_ROUTER_TICK_MS) || (WIN ? 5_000 : 2_000)
-const LOOP_CHECK_MS = 60_000
+const QUOTA_CHECK_MS = 60_000
 // A supervisor's signal never cuts short the launcher's own polite end of its CLI.
 const KILL_PATIENCE_MS = LAUNCHER_CHECK_MS + LAUNCHER_GRACE_MS + 13_000
 const UNENDED_MS = 5_000
@@ -164,10 +168,9 @@ const attemptOf = async name => {
     return undefined
   }
   const ending = readJson(join(folder, 'ending.json'))
-  const loop = readJson(join(folder, 'loop.json'))
   const owner = readJson(join(folder, 'owner.json'))
   const kill = readJson(join(folder, 'kill'))?.reason
-  const base = { ...record, ...(kill ? { kill } : {}), ...(loop ? { loopSince: loop.since, loop: loop.detail } : {}),
+  const base = { ...record, ...(kill ? { kill } : {}),
     ...(owner ? { ownerUnchanged: owner.unchanged } : {}) }
   if (ending) {
     const pending = ending.left && !exists(join(folder, 'released'))
@@ -425,7 +428,7 @@ const judge = async n => {
   const reason = readJson(join(folder, 'kill'))?.reason ?? exit?.killed
   const endedAt = Date.now()
   if (reason) {
-    const detail = reason === 'loop' ? readJson(join(folder, 'loop.json'))?.detail ?? KILL_DETAIL.loop : KILL_DETAIL[reason]
+    const detail = KILL_DETAIL[reason]
     return endAttempt(n, { kind: reason, detail, text: partialOutput(candidate), endedAt })
   }
   let ending
@@ -501,23 +504,12 @@ const kill = async ({ n, why }) => {
   return sleep(TICK_MS)
 }
 
-let loopCheckedAt = 0
+let quotaCheckedAt = 0
 const watch = async n => {
   await sleep(TICK_MS)
-  if (Date.now() - loopCheckedAt < LOOP_CHECK_MS) return
-  loopCheckedAt = Date.now()
-  const folder = attemptDir(n)
-  const index = readJson(join(folder, 'attempt.json')).index
-  const candidate = seat.candidates[index]
-  await recordQuota(index)
-  let loop
-  try { loop = await ADAPTERS[candidate.vendor].loopSignal(view, dir) } catch {}
-  const path = join(folder, 'loop.json')
-  if (!loop) return rmSync(path, { force: true })
-  if (exists(path)) return
-  const calls = loop.cycle.length === 1 ? 'tool call' : loop.cycle.length + ' tool calls'
-  const oneLine = text => text.replace(/\s+/g, ' ').trim().slice(0, 120)
-  writeAtomic(path, JSON.stringify({ since: Date.now(), detail: 'stuck: the same ' + calls + ' ' + loop.repeats + ' times in a row: ' + loop.cycle.map(oneLine).join('; ') }))
+  if (Date.now() - quotaCheckedAt < QUOTA_CHECK_MS) return
+  quotaCheckedAt = Date.now()
+  await recordQuota(readJson(join(attemptDir(n), 'attempt.json')).index)
 }
 
 // git makes wt/.git and locks the worktree before it checks out a file, so only `wt-ready`, written once `git worktree
@@ -546,21 +538,15 @@ const probeOwner = async n => {
   writeAtomic(join(attemptDir(n), 'owner.json'), JSON.stringify({ unchanged }))
 }
 
-// git worktree remove keeps a worktree with untracked files but deletes the ones git ignores, which may be what the
-// seat was asked to make. A reviewer's branch goes with its worktree, also when an earlier release removed the
-// worktree and died before the branch; an owner's stays for a pull request to name.
 const releaseWorktree = async () => {
   if (seat.isolation !== 'worktree') return undefined
   const tree = join(dir, 'wt')
   const branch = 'seat/' + seat.id
   if (exists(join(tree, '.git')) && !ready()) await git(['worktree', 'remove', '--force', '--force', tree])
   else if (exists(join(tree, '.git'))) {
-    const ignored = (await git(['-C', tree, 'status', '--porcelain', '--ignored'])).stdout.split('\n').filter(line => line.startsWith('!! ')).map(line => line.slice(3))
-    if (ignored.length) {
-      return 'Worktree: ' + branch + ' at ' + tree + ' (kept: it has files git ignores, which removing it would delete: '
-        + ignored.slice(0, 5).join(', ') + (ignored.length > 5 ? ', and ' + (ignored.length - 5) + ' more' : '') + ')'
-    }
-    if ((await git(['worktree', 'remove', tree])).exitCode !== 0) return 'Worktree: ' + branch + ' at ' + tree + ' (kept: it has uncommitted changes or untracked files)'
+    const reason = await worktreeKeepReason(git, tree, seat.baseSha)
+    if (reason) return 'Worktree: ' + branch + ' at ' + tree + ' (kept: ' + reason + ')'
+    if ((await git(['worktree', 'remove', ...await worktreeRemoveFlags(git, tree), tree])).exitCode !== 0) return 'Worktree: ' + branch + ' at ' + tree + ' (kept: git could not remove it)'
     if (seat.tier === 'owner') return 'Branch: ' + branch + ' (its worktree was removed)'
   }
   if (seat.tier === 'reviewer') {

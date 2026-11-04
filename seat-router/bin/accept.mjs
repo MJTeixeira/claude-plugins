@@ -8,7 +8,7 @@
 // the folder first).
 // Usage: node accept.mjs < request.json
 import { execFileSync, spawn } from 'node:child_process'
-import { cpSync, mkdirSync, readFileSync, realpathSync } from 'node:fs'
+import { cpSync, mkdirSync, readFileSync, realpathSync, statfsSync } from 'node:fs'
 import { randomBytes } from 'node:crypto'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -46,6 +46,13 @@ if (shared) {
 }
 
 mkdirSync(join(home, 'seats'), { recursive: true, mode: 0o700 })
+if (request.isolation === 'worktree') {
+  const floor = request.minFreeDiskGiB ?? 10
+  if (typeof floor !== 'number' || !Number.isFinite(floor) || floor < 0) refuse('minFreeDiskGiB must be a non-negative number')
+  const disk = statfsSync(home)
+  const free = disk.bavail * disk.bsize / 1024 ** 3
+  if (free < floor) refuse('the seat-router home has ' + free.toFixed(1) + ' GiB free, below minFreeDiskGiB (' + floor + ' GiB); free disk space or lower that setting')
+}
 const tooLong = socketPaths(realpathSync.native(join(home, 'seats')) + '/seat-xxxxxx').find(path => Buffer.byteLength(path) > SOCKET_PATH_MAX)
 if (process.platform !== 'win32' && tooLong) {
   refuse('the seat-router home ' + home + ' is too deep: a seat binds sockets at paths like ' + tooLong + ', longer than the '
