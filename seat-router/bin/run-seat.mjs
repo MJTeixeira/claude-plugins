@@ -2,7 +2,7 @@
 // One attempt's launcher, started detached by its supervisor so that it leads its own process group and outlives the
 // mod's reloads. It answers asks on the attempt's endpoint (POSIX: the listener the supervisor passed as fd 3; Windows:
 // the pipe attempt.json names), claims `started` before anything else, starts the CLI in its own process group, and
-// ends the attempt itself on the attempt's `kill`, the seat's `stop`, or the deadline, supervised or not: SIGINT to the
+// ends the attempt itself on the attempt's `kill`, the seat's `stop`, supervised or not: SIGINT to the
 // CLI, up to LAUNCHER_GRACE_MS for it to exit, then `exit` and SIGKILL to its whole group (Windows: taskkill /T /F, then the
 // job libuv put the CLI in ends with this process). On POSIX it records in `outside`, while the CLI runs and once more
 // before it ends its group, what the CLI started outside the group.
@@ -21,7 +21,7 @@ import { appendFileSync, existsSync, openSync, readFileSync, renameSync, writeFi
 import net from 'node:net'
 import { delimiter, dirname, join, parse } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { withoutClaudeAuth } from './claude-auth.mjs'
+import { claudeConfigEnv, withoutClaudeAuth } from './claude-auth.mjs'
 import { command } from './command.mjs'
 import { LAUNCHER_CHECK_MS, LAUNCHER_GRACE_MS, claimFile, createdAt, outsideRecorder, taskkillTree } from './liveness.mjs'
 
@@ -85,7 +85,7 @@ const finish = async record => {
   process.kill(0, 'SIGKILL')
 }
 
-const due = () => readJson(file('kill'))?.reason ?? (spec.stop && existsSync(spec.stop) ? 'stopped' : Date.now() >= (spec.deadline ?? Infinity) ? 'deadline' : undefined)
+const due = () => readJson(file('kill'))?.reason ?? (spec.stop && existsSync(spec.stop) ? 'stopped' : undefined)
 
 const end = reason => {
   if (ending) return
@@ -133,7 +133,7 @@ try {
 if (!claimFile(file('started'), JSON.stringify({ pid: process.pid }))) process.exit(0)
 
 setInterval(check, LAUNCHER_CHECK_MS)
-setTimeout(check, Math.min(Math.max(0, (spec.deadline ?? Infinity) - Date.now()), 2 ** 31 - 1))
+
 check()
 
 const startCli = () => {
@@ -145,7 +145,7 @@ const startCli = () => {
     renameSync(path, join(folder, `${name}.${n}${ext}`))
   }
   const inherited = spec.reviewer ? reviewerEnv(process.env, dir) : process.env
-  const env = spec.claudeLogin ? withoutClaudeAuth({ ...inherited, ...spec.env }) : { ...inherited, ...spec.env }
+  const env = claudeConfigEnv(spec.claudeLogin ? withoutClaudeAuth({ ...inherited, ...spec.env }) : { ...inherited, ...spec.env })
   for (const name of spec.unset ?? []) delete env[name]
   if (spec.home) {
     const home = execFileSync(process.execPath, [join(dirname(self), 'agy-seat-home.mjs'), ...spec.home], { encoding: 'utf8', windowsHide: true, timeout: 120_000 }).trim()

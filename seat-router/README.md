@@ -35,7 +35,7 @@ task. That default names no skill and yields to you or to a skill in use that se
 
 ## Write a seat line
 
-The seat line is the first line of the Agent call's prompt, and the brief follows it. A line has
+The seat line comes before the brief in the Agent call's prompt. A line has
 one of two forms. With the shipped jobs and no other Claude accounts, the mod spells them this way
 when it refuses a line:
 
@@ -44,11 +44,9 @@ seat: [<codex|agy|claude|gpt|gemini>] <light|standard|heavy> <reviewer|owner> [<
 seat: <codex|agy> <model> <effort> <reviewer|owner> [<code|image>]
 ```
 
-Write the line in lower case, with single spaces and nothing after its last word. A line that ends
-in CRLF is fine. A prompt whose first line starts with `seat` and a colon, in any case, but is not
-exactly one of the two forms is refused, and never runs as an ordinary subagent. Examples are a
-blank line or a space before it, a trailing space, `Seat:`, a misspelt family and
-`seat: claude opus high reviewer`.
+The seat line is the first non-blank line. `seat:` accepts any case; trailing spaces and extra
+spaces between words are fine, as is CRLF. Unknown families, sizes, tiers and jobs are refused;
+a malformed seat line never runs as an ordinary subagent.
 
 The sized form leaves the model to the mod, which starts the size's best candidate by quota. To
 keep the seat on one CLI (`codex`, `agy`) or one model family (`claude`, `gpt`, `gemini`), name it
@@ -231,12 +229,13 @@ which is the job's need, its `only` rules or its `not` rules.
 ## Settings
 
 Nothing needs setting, so leave every field as the install screen shows it. To change them, run
-`/seats setup`, or `claude plugin configure seat-router@code4food`. The `/config` menu does not list
-plugin fields.
+`/seats setup`, or `claude plugin configure seat-router@code4food`. Both `/seats setup` and
+`/config` edit plugin settings.
 
 | Setting | Default | What it does |
 | --- | --- | --- |
 | `heavySeats`, `standardSeats`, `lightSeats` | `auto` | Each size's candidates in list order, as `auto` or as comma-separated `<codex\|agy\|claude> <model> [effort]`. The mod drops an entry that names no known CLI. |
+| `minFreeDiskGiB` | `10` | Refuse new worktree seats below this free space on the seat home volume; 0 disables the floor. Running seats continue. |
 | `busyAt` | `80` | The percentage used at which a window makes its scope busy. See [Quota](#quota). |
 | `mixFanouts` | on | Tells the session that whenever it runs several agents on the same task (a review, a verification, a bakeoff, competing designs or attempts), it adds one reviewer seat per other model family beside its Claude agents, all in one message. This is a default: it yields when you or a skill in use says otherwise, and it never puts a seat on work a seat cannot do. |
 | `delegate` | `auto` | When code work goes to owner seats. `auto` sends it while the session's Claude account is busy or out, `on` always, `off` never. See [Delegate mode](#delegate-mode). |
@@ -300,9 +299,8 @@ An owner keeps the session's environment and gets your `gh` login's token.
 - Each agy seat runs under a home folder of its own whose links reach your agy sign-in. The mod
   deletes that folder when each attempt ends. agy saves the images it makes there, so the mod first
   copies them to the seat's `artifacts` folder, and the report names each copy.
-- A run in which agy refused an action fails and names the refusal, because the refusal halts the
-  conversation that asked. A seat whose guard hook could not run fails too, though agy calls the run
-  a success.
+- A run with a valid, non-blank answer succeeds even if agy refused an action; the report names
+  the refusal. A blank answer or a guard hook that could not run still fails.
 - agy keeps a run open while a background task the seat started still runs. The brief tells the seat
   to wait for or stop each one before its final answer, and to have each subagent it starts report
   first.
@@ -313,7 +311,9 @@ An owner keeps the session's environment and gets your `gh` login's token.
 ### Claude
 
 Every Claude seat runs as `claude -p` from the config folder of its account, recorded when the seat
-starts. The plugins that the session's settings or the account's own settings enable are disabled
+starts. An account whose folder resolves to the default `~/.claude` runs without
+`CLAUDE_CONFIG_DIR`, for both quota reads and seats, so macOS uses the default Keychain login.
+The plugins that the session's settings or the account's own settings enable are disabled
 in the seat, and so is every plugin claude.ai synced into the account's folder. The mods the session
 loads through `--plugin-dir` or `CLAUDE_CODE_PLUGIN_DIRS` stay out too, and so does auto memory. A
 copy of seat-router that loads anyway does nothing, so a seat never starts seats.
@@ -333,24 +333,30 @@ refuses these commands:
 - A force push, except `--force-with-lease=<branch>:<sha>` onto the branch checked out where the
   command runs, inside the seat's folder, when that branch is not `main`, `master`, `dev`,
   `develop` or `trunk`.
-- `git reset --hard`, and `git branch -D` of any branch.
+- `git reset --hard`, and `git branch -D` of a branch other than this seat's own `seat/<id>`.
 - `git worktree remove` and `git worktree move` of any worktree. The mod removes the seat's own
   worktree when the seat ends.
 - `git clean -f`, `git checkout`, `git restore` and a forced `git switch` that `-C` or
   `--work-tree` aims at another folder, or that runs outside the seat's folder.
-- A forced recursive delete, such as `rm -rf`.
+- A forced recursive delete, such as `rm -rf`, unless every explicit target resolves inside this
+  seat's folder. The seat folder and worktree root themselves, outside paths and unresolved
+  variables or expansions stay protected.
 - `gh pr merge --admin` and `gh repo delete`.
 - A `git push` that deletes a remote branch other than the seat's own `seat/<id>` or one its
   worktree checked out, `git push --mirror` or `--prune`, and anything that skips the repository's
   push hooks (`--no-verify`, or `core.hooksPath` set for the command).
 
 The commands that discard work (`git clean -f`, `git checkout`, `git restore`, a forced
-`git switch`, `git stash`, `git rm`, `git reset`) run only on a line of plain `cd` and `git`
-commands inside the seat's folder. Run such a command as its own plain call. The brief tells each
-owner that a refused git command may be rerun on its own line in the form the refusal names; only
-reaching the refused result by another route is banned. The guard reads the command text, so it stops a confused agent's
+`git switch`, `git stash`, `git rm`, `git reset`) may run in combined lines with `&&`, `;`, pipes
+or other commands when they run inside this seat's folder. The guard follows folder changes and
+refuses commands aimed outside it or whose folder cannot be placed. The guard reads the command
+text, so it stops a confused agent's
 mistake (the wrong folder, a forgotten `cd`, a wrapper around git), not a command built to get
 around it.
+
+An inline Python, Node, Ruby, Perl, Deno or Bun script, or a heredoc fed to it, may mention Git
+commands while editing files. Those mentions are checked as commands only when the script also
+names a process runner. Shell wrappers keep the same checks.
 
 ### Windows
 
@@ -386,15 +392,10 @@ bucket only, so it keeps to one line; `/seats` prints the Argon and third-party 
 While seats run, it shows a `×N` button that opens the seats pane. When the session reports an
 autopilot queue through the mod's `queue` tool, the band also shows the queue's progress.
 
-`/seats` opens or closes the pane, with one card per seat of this session. Opening it also prints
-these lines:
-
-1. Whether GitHub protects the repository's default branch. The answer is on, off, or not
-   available on this plan, as for a private repository on a free plan.
-2. Any problems in the `jobs` setting.
-3. The quota rules, then each scope with its state, the rule that set it, its source and its age,
-   and each background read that failed.
-4. Every report that no session has delivered, with its path.
+`/seats` opens or closes the pane, with one card per seat of this conversation. Opening it prints
+one chat line, "Seats pane opened." Branch protection, quota rules and scopes, and this
+conversation's undelivered reports appear inside the pane. Chat adds lines only for jobs-setting
+problems and failed quota reads that need attention. `/seats setup` still configures the plugin.
 
 To stop a seat, the session calls TaskStop with the seat's id. The mod answers at once with
 "Stopping seat <id>; its report follows.", ends the seat's CLI, and sends the report as usual. For
@@ -422,12 +423,9 @@ A seat moves along its candidates by these rules:
 - An owner whose worktree changed, or that ran without a worktree, never moves to another candidate
   and never reruns, whatever ended it, its quota included. Rerunning one that committed would repeat
   its work.
-- A seat whose last 24 tool calls repeat one cycle at least three times, with no write between, and
-  keep doing so for 30 minutes, is stuck. The mod ends it and fails it, naming the cycle. The 30
-  minutes spare a seat that waits on CI or a background task.
-- No seat launches anything 6 hours after it started. A CLI still running then is ended with its
-  process group, and the report says "Gave up after 6 hours". A seat whose every known reset falls
-  after that deadline reports at once.
+- After 6 hours the seat starts no new attempts, and a quota wait ends and reports. A CLI still
+  running continues until it finishes or the session stops it with TaskStop. There is no stuck
+  detection or timer that kills a running CLI.
 - A seat whose every candidate failed reports that no CLI could take it, with the floor of its size
   (the size's Claude model) and the last candidate's output.
 
@@ -437,7 +435,8 @@ notes about the seat's folder. Then comes the seat's answer, or what ended the s
 so far.
 
 When a seat finishes, the mod removes its worktree. A worktree with uncommitted changes, untracked
-files or files git ignores stays, and the report names it. A reviewer's `seat/<id>` branch goes with
+files, unpushed commits or submodule changes stays, and the report names it. Ignored build output
+does not keep a worktree. A reviewer's `seat/<id>` branch goes with
 its worktree. An owner's branch stays, and its report names it. The mod keeps a worktree while a
 process still uses it, and the report names those processes. A seat run again keeps each earlier
 attempt's logs in its folder, numbered (`agy.1.jsonl`, `agy.1.err`, `final.1.md`).
@@ -456,7 +455,9 @@ conversation.
   gives it up, and `/seats` lists it with its path. A refusal after you interrupt a turn does not
   count.
 - A report that no session takes waits until the session that started the seat runs again, and
-  `/seats` in any session lists it.
+  `/seats` lists it only in that conversation's lineage. A report is dropped once its session's
+  transcript is gone from `<config dir>/projects/*/<session id>.jsonl`, following Claude Code's
+  own `cleanupPeriodDays` retention sweep.
 
 Claude Code never learns that a seat ended, so a resumed session lists every seat as a background
 agent that did not finish. The mod corrects that notice before the model reads it.
@@ -474,14 +475,18 @@ mod writes there, it makes your account the folder's owner and its only access e
 inherited, and checks that no link or junction leads to it. When any check fails, the mod refuses
 the seat.
 
-When a session starts, the mod deletes seat folders whose report is more than a week old. It keeps
-a worktree with changes or untracked files, a seat that a process still uses, and a seat whose
+When a session starts, the mod sweeps finished worktrees after one day and seat folders after
+seven days. It keeps a worktree with changes, non-ignored untracked files, unpushed commits or
+submodule changes, a seat that a process still uses, and a seat whose
 worktree or branch git could not remove, which it tries again next time. An owner's `seat/<id>`
 branch stays. The home also keeps a record of how each seat ended (`outcomes/`) and of each
-delivery (`deliveries/`) for 60 days.
+delivery (`deliveries/`), lineage and mail records for 60 days. Mail is dropped earlier when its
+session's transcript is gone.
 
-Seats that seat-router 1.x started under `/tmp` (`TEMP` on Windows) are drained. The session
-delivers how each one ended, once, and moves none of them on.
+New worktree seats check free space on the volume holding the seat-router home before admission.
+The `minFreeDiskGiB` setting defaults to **10 GiB**, leaving room for several typical build
+worktrees. Lower it to suit the machine (0 disables the floor). A refusal names the free space
+and the setting; it never stops a running seat.
 
 ## Refusals and what to write instead
 
@@ -490,8 +495,7 @@ A refused Agent call runs nothing, on Claude or anywhere else. Each refusal star
 
 | The refusal says | What to do |
 | --- | --- |
-| `"<line>" is not a seat line` | Write one of the two forms it quotes, in lower case with single spaces. |
-| `the prompt starts with a blank line` | Put the seat line on the prompt's first line. |
+| `"<line>" is not a seat line` | Write one of the two forms it quotes with known words; `seat:` accepts any case and extra spaces are fine. |
 | `its last word, "<word>", is not a job` | Use a job it lists, drop the word, or add the job to `jobs`. |
 | `... model this machine can run, so job <job> has nothing to try` | Name another CLI or family, or none, or install and log in that CLI. |
 | `job <job> needs image generation` | Name a CLI or family it lists as having it, or drop the job word. |
@@ -501,6 +505,7 @@ A refused Agent call runs nothing, on Claude or anywhere else. Each refusal star
 | `every candidate is out of quota` | Wait for the reset time it names, or name another CLI or family. |
 | `isolation: "worktree" needs a git repository with a commit` | Start the seat from a git repository with a commit, or drop `isolation`. |
 | `git did not answer in <n> seconds` | Call it again once git answers in that folder. |
+| `the seat-router home has ... below minFreeDiskGiB` | Free disk space or lower `minFreeDiskGiB` in `/config`; running seats continue. |
 | `the seat-router home ... is too deep` | Set `SEAT_ROUTER_HOME` to a shorter folder. |
 | `... under %PUBLIC% could not be locked to this user` | Set `SEAT_ROUTER_HOME` to a folder whose path is ASCII. |
 | `seat-router took too long to start this seat` | Call it again. |

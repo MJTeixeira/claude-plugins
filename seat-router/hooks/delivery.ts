@@ -274,7 +274,7 @@ export async function stopTask($: EngineInterface, taskId: string | undefined): 
 export async function undeliveredLines($: EngineInterface): Promise<string[]> {
   const home = await seatHome($)
   const lines: string[] = []
-  for (const seatSession of await listNames($, join(home, 'mail'))) {
+  for (const seatSession of await lineage($)) {
     for (const name of await listNames($, mailDir(home, seatSession))) {
       const claim = claimOf(name)
       const id = isSeatId(name) ? name : claim?.id

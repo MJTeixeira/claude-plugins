@@ -1,5 +1,5 @@
 import { fnv } from '../core/layout.mjs'
-import { PYTHON_UTF8, asObject, call, defined, fileName, join, lastActionWith, loopSignal, numberAt, oneLine, readJson, resetTime, scriptUsage, slashed, textAt } from './shared.mjs'
+import { PYTHON_UTF8, asObject, defined, fileName, join, lastActionWith, numberAt, oneLine, readJson, resetTime, scriptUsage, slashed, textAt } from './shared.mjs'
 
 const CONFIG_ENV = 'CLAUDE_CONFIG_DIR'
 const SHELL_TOOLS = ['Bash', 'PowerShell']
@@ -159,29 +159,6 @@ const actionOf = event => {
   return action
 }
 
-const toolCalls = text => {
-  const calls = []
-  // A Claude call's result arrives in a later event, under the call's id.
-  const started = new Map()
-  for (const line of text.split('\n')) {
-    const event = asObject(readJson(line))
-    const content = asObject(event?.message)?.content
-    for (const block of Array.isArray(content) ? content.map(asObject) : []) {
-      const id = textAt(block?.id) ?? textAt(block?.tool_use_id)
-      if (!block || !id) continue
-      // A transcript can hold the same call twice (a resumed session copies its history).
-      if (block.type === 'tool_use' && !started.has(id)) started.set(id, { tool: textAt(block.name) ?? 'tool', input: block.input, cwd: event.cwd })
-      const use = started.get(id)
-      if (block.type !== 'tool_result' || !use || use.done) continue
-      use.done = true
-      const command = textAt(asObject(use.input)?.command)
-      calls.push(call(use.tool, [use.input, use.cwd], [block.is_error, block.content],
-        command ? 'Ran ' + command : use.tool + ' ' + JSON.stringify(use.input), id))
-    }
-  }
-  return calls
-}
-
 // A model's own bucket is named for the word that sets the model apart (`Fable 7d` is claude-fable's and fable's).
 const modelWord = model => model.toLowerCase().split(/[^a-z]+/).find(word => word && word !== 'claude') ?? model.toLowerCase()
 
@@ -246,7 +223,5 @@ export const claude = {
   plan,
   judge,
   liveTokens: async (view, dir) => ({ tokens: claudeTokens(await view.read(join(dir, 'claude.jsonl'))) }),
-  toolCalls,
-  loopSignal: loopSignal('claude.jsonl', toolCalls),
   lastAction: lastActionWith(actionOf),
 }

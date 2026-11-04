@@ -32,6 +32,7 @@ const seatPanelState = atom({ plugin: 'seat-router', key: 'seatPanel' } as const
 const delegateShownState = atom({ plugin: 'seat-router', key: 'delegateShown' } as const, null)
 
 const PANE = 'seats'
+const protectionState = atom({ plugin: 'seat-router', key: 'protection' } as const, '')
 
 type Usable = Record<Size, Candidate[]>
 
@@ -66,7 +67,7 @@ const seatRules = (vendors: readonly ExternalVendor[], usable: Usable, mixFanout
   const others = families.filter(family => family !== 'claude')
   const { sized, explicit } = seatLineForms([...vendors, ...families], vendors, jobs)
   return 'The seat-router mod is loaded: an Agent call whose prompt starts with a seat line runs on another CLI ('
-    + vendors.join(', ') + ') or as a separate Claude process, and its report arrives later as a message from the seat-router plugin. A seat line is either '
+    + vendors.join(', ') + ') or as a separate Claude process, and its report arrives later as a message from the seat-router plugin. Blank lines before a seat line, any case of `seat:`, trailing spaces and extra spaces between words are accepted. A seat line is either '
     + '`' + sized + '`, where the mod picks the model of that size by '
     + 'quota and never leaves the named CLI (' + vendors.join('|') + ') or model family (' + families.join('|') + '), or '
     + '`' + explicit + '`, which runs that model, and only while it is out moves to the other models of its family in its effort\'s size, at that effort. A task that names an '
@@ -244,6 +245,8 @@ async function togglePane($: EngineInterface): Promise<boolean> {
     await $.ui.close({ id: PANE })
     return false
   }
+  const protection = await branchProtection($).catch(() => 'Branch protection: cannot be read.')
+  await update($, protectionState, () => protection)
   await $.ui.open({ id: PANE, title: 'Seats' })
   await startElapsedTick($)
   return true
@@ -456,7 +459,8 @@ export const register: Register = (on, options) => {
     if (e.args.trim() === 'setup') return { text: await setup($) }
     if (!await togglePane($)) return { text: 'Seats pane closed.' }
     const problems = seatJobs().problems.map(problem => 'Jobs setting: ' + problem)
-    return { text: ['Seats pane opened.', await branchProtection($), ...problems, ...await quotaLines($, busyAtSetting()), ...await undeliveredLines($)].join('\n') }
+    const failures = (await quotaLines($, busyAtSetting())).filter(line => line.includes(' quota unreadable at '))
+    return { text: ['Seats pane opened.', ...problems, ...failures].join('\n') }
   }).catch(($, e, next) => next.called ? next(e) : { text: 'seat-router could not run /seats.' })
 
   on('tool.call', { tool: 'mcp__seat-router__queue' }, async ($, e, next) => {
@@ -609,6 +613,9 @@ export const register: Register = (on, options) => {
       />
     )
     const empty = cards.length === 0 && <Text dimColor>No seats yet.</Text>
+    const details = [String(await read($, protectionState) ?? ''), ...seatJobs().problems.map(problem => 'Jobs setting: ' + problem),
+      ...await quotaLines($, busyAtSetting()), ...await undeliveredLines($)].filter(Boolean)
+    const notes = <Box flexDirection="column">{details.map((line, index) => <Text key={'detail-' + index}>{line}</Text>)}</Box>
 
     if (e.surface !== 'terminal' && 'Svg' in ui) {
       const width = Math.max(240, Math.min(900, (e.props.bodyColumns || 40) * 8 - 8))
@@ -642,6 +649,7 @@ export const register: Register = (on, options) => {
             {doneToggle}
             {shownDone.map(card)}
           </Box>
+          {notes}
         </Box>
       )
     }
@@ -660,6 +668,7 @@ export const register: Register = (on, options) => {
         {running.map(card)}
         {doneToggle}
         {shownDone.map(card)}
+        {notes}
       </Box>
     )
   })

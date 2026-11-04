@@ -4,9 +4,8 @@ import type { SeatDisplay, SeatStatus, SeatTier, SeatVendor } from '../types/ind
 import { ADAPTERS, EXPLICIT_VENDORS, FACTS } from '../bin/vendors/index.mjs'
 import { accountCandidate, autoCandidates, familyOf, FAMILIES, floorCandidate, formatCandidate, isAuto, parseAccounts, parseCandidates, RESERVED, SIZES, sizeOf } from './chain'
 import type { Candidate, CliModel, CliModels, Size } from './chain'
-import { homeDir, join, legacySeatRoot, osOf, seatHome, slashed } from './layout'
+import { homeDir, join, osOf, seatHome, slashed } from './layout'
 import { isSeatId, seatDir as seatDirOf } from '../bin/core/layout.mjs'
-import { withoutSystemNotices } from '../bin/core/lifecycle.mjs'
 import { candidateSet, DEFAULT_JOB, jobWords, parseJobs } from '../bin/core/policy.mjs'
 import { acceptRefused, boundSeats, deliverMail, lineage, pickSeat } from './delivery'
 
@@ -35,7 +34,7 @@ export type Match = { cli: string } | { family: string } | { account: string } |
 export type JobPolicy = { needs: readonly string[], only: readonly Match[], not: readonly Match[], first: readonly Match[], description?: string }
 export type Policies = Readonly<Record<string, JobPolicy>>
 export type Jobs = { setting: string, policies: Policies, problems: string[] }
-export type SeatConfig = { sizes: Record<Size, string>, busyAt: number, delegate: Delegate, accounts: Record<string, string>, jobs: Jobs }
+export type SeatConfig = { minFreeDiskGiB?: number, sizes: Record<Size, string>, busyAt: number, delegate: Delegate, accounts: Record<string, string>, jobs: Jobs }
 export type CandidateSet = { kind: 'ok', candidates: Candidate[], firsts: readonly Match[], only: readonly Match[] } | { kind: 'empty', reason: string }
 
 export const jobsOf = (setting: string, accounts: Record<string, string>): Jobs => ({
@@ -58,6 +57,7 @@ export function seatConfigFrom(options: Readonly<Record<string, unknown>>): Seat
   const setting = String(options.jobs ?? '')
   const accounts = parseAccounts(String(options.claudeAccounts ?? ''), Object.keys(jobsOf(setting, {}).policies))
   return {
+    minFreeDiskGiB: typeof options.minFreeDiskGiB === 'number' ? options.minFreeDiskGiB : 10,
     sizes, busyAt: typeof options.busyAt === 'number' ? options.busyAt : 80, delegate: delegateOf(options.delegate),
     accounts, jobs: jobsOf(setting, accounts),
   }
@@ -182,15 +182,6 @@ type Shown = {
   endedAt?: number
 }
 
-export type Check = {
-  text: string
-  failed: boolean
-  quota: boolean
-  detail: string
-  // What the run's CLI refused it, when it answered anyway.
-  refused?: string[]
-}
-
 type Read = { kind: 'marker', marker: Marker } | { kind: 'not-job', word: string } | { kind: 'not-a-line' }
 
 function parseMarker(prompt: string): Read {
@@ -239,8 +230,13 @@ const quoted = (line: string): string =>
 
 export function parseSeatLine(prompt: string): Parsed {
   if (!looksLikeSeatLine(prompt)) return { kind: 'none' }
-  const read = parseMarker(prompt)
-  const grammar = 'A seat line is the first line of the prompt, in lower case with single spaces: ' + grammarText(EXTERNAL_VENDORS) + '.'
+  const leading = /^(?:[ \t]*\r?\n)*/.exec(prompt)?.[0] ?? ''
+  const body = prompt.slice(leading.length)
+  const end = body.indexOf('\n')
+  const first = end === -1 ? body : body.slice(0, end)
+  const normalized = first.replace(/[ \t]+\r?$/, '').replace(/[ \t]+/g, ' ').replace(/^seat:/i, 'seat:')
+  const read = parseMarker(normalized + (end === -1 ? '' : '\n' + body.slice(end + 1)))
+  const grammar = 'A seat line is the first non-blank line of the prompt (seat: is case-insensitive; extra spaces are allowed): ' + grammarText(EXTERNAL_VENDORS) + '.'
   if (read.kind === 'not-job') {
     const jobs = jobWords(seatConfig.jobs.policies)
     return {
@@ -252,8 +248,7 @@ export function parseSeatLine(prompt: string): Parsed {
   if (read.kind === 'marker') return { kind: 'seat', marker: read.marker }
   const lines = prompt.split('\n')
   const line = lines.find(text => text.trim() !== '') ?? ''
-  const why = lines[0]?.trim() === '' ? 'the prompt starts with a blank line, so ' + quoted(line) + ' is not its first line.'
-    : quoted(line) + ' is not a seat line.'
+  const why = quoted(line) + ' is not a seat line.'
   return {
     kind: 'refused',
     reason: 'seat-router refused this seat: ' + why + ' ' + grammar,
@@ -262,10 +257,6 @@ export function parseSeatLine(prompt: string): Parsed {
 
 function asObject(value: unknown): Record<string, unknown> | undefined {
   return value !== null && typeof value === 'object' ? value as Record<string, unknown> : undefined
-}
-
-function numberAt(value: unknown): number | undefined {
-  return typeof value === 'number' && Number.isFinite(value) ? value : undefined
 }
 
 function textAt(value: unknown): string | undefined {
@@ -341,9 +332,7 @@ function runTool($: EngineInterface, run: Run, init: { timeoutMs?: number, env?:
   return 'script' in run ? $.process.run(['node', join($.plugin.root, 'bin', run.script), ...args], init) : io($, ['exec', ...run.exec, ...args], init)
 }
 
-// Claude Code 2.1.310 lists no plugin userConfig rows in /config, so $.config.set
-// refuses them: settings are saved through the CLI, under the id the plugin is
-// installed as. A --plugin-dir load (`@inline`) has none: its options live in
+// Settings are saved through the CLI, under the id the plugin is installed as. A --plugin-dir load (`@inline`) has none: its options live in
 // settings.json. Returns why nothing was saved, or undefined once saved.
 export async function saveOptions($: EngineInterface, values: Record<string, string>): Promise<string | undefined> {
   const same = (path: string) => slashed(path).replace(/\/+$/, '').toLowerCase()
@@ -485,11 +474,6 @@ export async function branchProtection($: EngineInterface): Promise<string> {
   return 'Branch protection on ' + branch + ': ' + state + '.'
 }
 
-async function checkSeat($: EngineInterface, seat: Shown): Promise<Check> {
-  const exitCode = Number((await readText($, join(seat.dir, 'exit'))).trim())
-  return ADAPTERS[seat.vendor].judge(attemptView($), seat.dir, Number.isNaN(exitCode) ? undefined : exitCode)
-}
-
 const UNFINISHED = 'didn\'t finish before the previous session ended'
 
 type Resumed = 'reported' | 'running' | 'finished'
@@ -540,20 +524,6 @@ async function replaceAsync(text: string, pattern: RegExp, replace: (match: stri
   return text.replace(pattern, () => replaced[index++] ?? '')
 }
 
-async function launcherPid($: EngineInterface, seat: Shown): Promise<number | undefined> {
-  return numberAt(asObject(readJson(await readText($, join(seat.dir, 'pid'))))?.launcher)
-}
-
-async function launcherGone($: EngineInterface, seat: Shown): Promise<boolean> {
-  const pid = await launcherPid($, seat)
-  return pid !== undefined && (await io($, ['alive', String(pid)])).exitCode === 1
-}
-
-async function partialOutput($: EngineInterface, seat: Shown): Promise<string> {
-  const adapter = ADAPTERS[seat.vendor]
-  return (await readText($, join(seat.dir, 'final.md'))).trim() || adapter.lastAction(await tail($, join(seat.dir, adapter.transcript), 20)) || ''
-}
-
 // A seat's live entry, written by accept.mjs and kept by its supervisor while the seat runs.
 type LiveEntry = {
   id: string
@@ -591,7 +561,7 @@ async function acceptRequest($: EngineInterface, input: AgentInput, marker: Mark
     sessionId: await $.session.id(), description: input.description, tier: marker.tier, brief: marker.brief,
     cwd: (await io($, ['pwd'])).stdout.trim(), isolation: input.isolation === 'worktree' ? 'worktree' : 'folder',
     candidates: initial.chain, first: initial.position, trail: initial.trail, scopes: initial.scopes, ranked: initial.ranked, pinned: initial.pinned,
-    busyAt: seatConfig.busyAt,
+    busyAt: seatConfig.busyAt, minFreeDiskGiB: seatConfig.minFreeDiskGiB ?? 10,
     firstRanks: initial.firstRanks,
     floor: formatCandidate(floorCandidate(sizeOfMarker(marker))), accounts: await accountDirs($),
     settings: { enabledPlugins: await $.settings.read({ key: 'enabledPlugins' }) },
@@ -642,61 +612,11 @@ export async function poll($: EngineInterface): Promise<void> {
   if (now - adoptedAt < ADOPT_EVERY_MS) return
   adoptedAt = now
   await $.process.run(['node', join($.plugin.root, 'bin', 'adopt.mjs'), home], { timeoutMs: 60_000 })
-  await drainLegacy($, home, ids[0] ?? '')
 }
 
-/** Deletes seat folders that ended over a week ago, from every session on this machine (see prune-seats.mjs). */
+/** Sweeps finished worktrees after one day and seat records after 60 (see prune-seats.mjs). */
 export async function pruneSeats($: EngineInterface): Promise<void> {
-  for (const root of [join(await seatHome($), 'seats'), await legacySeatRoot($)]) {
-    await $.process.run(['node', join($.plugin.root, 'bin', 'prune-seats.mjs'), root], { timeoutMs: 120_000 })
-  }
-}
-
-// A seat-router 1.x seat, as its seat.json in the legacy root says.
-type LegacySeat = Shown & { sessionId: string, reported: boolean }
-
-async function legacySeats($: EngineInterface, sessionId: string): Promise<LegacySeat[]> {
-  const root = await legacySeatRoot($)
-  const seats: LegacySeat[] = []
-  for (const name of await listNames($, root)) {
-    if (!name.startsWith('seat.')) continue
-    const seat = asObject(readJson(await readText($, join(root, name, 'seat.json')))) as LegacySeat | undefined
-    if (seat?.sessionId === sessionId && typeof seat.dir === 'string' && !seat.reported && ['running', 'waiting', 'reporting'].includes(seat.status)) seats.push(seat)
-  }
-  return seats
-}
-
-const LEGACY = 'seat-router 1.x started this seat; this version delivers how it ended but does not move it on.'
-// 1.x wrote the launcher's pid within a second of starting it; no 1.x process is left to write one later.
-const LEGACY_START_MS = 60_000
-
-/** Delivers how each 1.x seat of this session ended, once, writing nothing into its folder. */
-async function drainLegacy($: EngineInterface, home: string, sessionId: string): Promise<void> {
-  for (const seat of await legacySeats($, sessionId)) {
-    const drained = join(home, 'drained', seat.id)
-    if (await $.fs.exists(drained)) continue
-    const exited = (await readText($, join(seat.dir, 'exit'))).trim() !== ''
-    // 1.x wrote report.md, then submitted it, then marked the seat reported: a seat it left between those two is
-    // delivered from that report, the same text 1.x would have sent.
-    const written = seat.status === 'reporting' ? await readText($, join(seat.dir, 'report.md')) : ''
-    let body: string
-    if (written) {
-      await $.prompt.submit({ text: written })
-      await $.fs.write(drained, '')
-      continue
-    }
-    if (seat.status === 'waiting') body = LEGACY + ' It was waiting to try its candidates again, and was not continued. Its output so far:\n\n' + (await partialOutput($, seat) || '(none)')
-    else if (exited) {
-      const checked = await checkSeat($, seat)
-      body = checked.failed ? LEGACY + ' It failed (' + checked.detail + '). Its output:\n\n' + (checked.text || await partialOutput($, seat) || '(none)')
-        : withoutSystemNotices(checked.text).text
-    } else if (await launcherGone($, seat)) body = LEGACY + ' Its process ended without an exit code. Its output so far:\n\n' + (await partialOutput($, seat) || '(none)')
-    else if (await launcherPid($, seat) === undefined && await $.clock.now() - seat.startedAt > LEGACY_START_MS) {
-      body = LEGACY + ' Its CLI never recorded a process, so nothing runs it. Its output so far:\n\n' + (await partialOutput($, seat) || '(none)')
-    } else continue
-    await $.prompt.submit({ text: 'Seat ' + seat.id + ' ("' + seat.description + '", ' + seat.vendor + ' ' + seat.model + ' ' + seat.effort + ' ' + seat.tier + ') finished.\n\n' + body })
-    await $.fs.write(drained, '')
-  }
+  await $.process.run(['node', join($.plugin.root, 'bin', 'prune-seats.mjs'), join(await seatHome($), 'seats')], { timeoutMs: 120_000 })
 }
 
 let activePoll: Promise<void> | undefined

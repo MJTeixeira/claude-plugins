@@ -1,4 +1,4 @@
-import { POWERSHELL_51_NOTE, PYTHON_UTF8, asObject, call, candidateScopes, durationName, familyOfModel, fileName, join, lastActionWith, loopSignal, numberAt, readJson, scriptUsage, textAt } from './shared.mjs'
+import { POWERSHELL_51_NOTE, PYTHON_UTF8, asObject, candidateScopes, durationName, familyOfModel, fileName, join, lastActionWith, numberAt, readJson, scriptUsage, textAt } from './shared.mjs'
 
 // codex's unelevated Windows sandbox refuses a process node starts with piped stdio (EPERM,
 // openai/codex#47868); one that inherits or ignores stdio starts, and so do
@@ -189,22 +189,6 @@ const actionOf = event => {
   return undefined
 }
 
-// codex runs every command in the seat's folder, so a `cd` is part of the command.
-const callOf = event => {
-  const item = asObject(event.item)
-  if (event.type !== 'item.completed' || !item) return undefined
-  const command = textAt(item.command)
-  if (item.type === 'command_execution' && command) {
-    return call('command', command, [item.exit_code, item.aggregated_output], 'Ran ' + shellCommand(command), String(item.id))
-  }
-  return item.type === 'file_change' || item.type === 'mcp_tool_call' ? { name: String(item.type), key: '#' + String(item.id) } : undefined
-}
-
-const toolCalls = text => text.split('\n').map(line => asObject(readJson(line))).flatMap(event => {
-  const found = event && callOf(event)
-  return found ? [found] : []
-})
-
 // codex-usage.mjs names a bucket for one model by that model's whole id (normalModelSlug): gpt-5.3-codex's is not gpt-5.3-codex-spark's.
 const SHARED = 'codex/codex'
 const scopeOfModel = model => 'codex/' + model.toLowerCase()
@@ -261,7 +245,5 @@ export const codex = {
   plan,
   judge,
   liveTokens,
-  toolCalls,
-  loopSignal: loopSignal('codex.jsonl', toolCalls),
   lastAction: lastActionWith(actionOf),
 }

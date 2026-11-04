@@ -1,21 +1,7 @@
 #!/usr/bin/env node
-// The owner seat's PreToolUse hook on codex and agy: refuses the commands an
-// owner may never run (force push, git reset --hard, git worktree remove or move,
-// git branch -D, rm -rf, gh pr merge --admin, gh repo delete) however the command
-// line spells them. Every worktree is refused: another is someone else's checkout,
-// and the mod removes the seat's own when the seat ends, keeping it when it holds
-// uncommitted work. For the same reason clean -f, checkout, restore and a forced
-// switch are refused when -C, --work-tree or GIT_WORK_TREE aim them at another
-// directory than the one the command runs in, and, with the seat's folder known
-// (`--own`), these, stash, rm, reset and the like run only on a line of plain cd and
-// git commands that keeps them inside it. One force push
-// passes: `--force-with-lease=<branch>:<sha>` to the branch checked out where the
-// command runs, run there and inside the seat's folder, when that is no default branch,
-// as a rebase flow needs. The CLIs'
-// own prefix rules miss `git -C . reset --hard`, `rm -fr` and any line their
-// shell parser gives up on, such as `git reset --hard HEAD~1`. A git push may delete
-// on the remote only the seat's own `seat/<id>` or a branch the worktree checked out,
-// and may not skip the repository's push hooks.
+// The owner seat's PreToolUse hook: protects other checkouts and irreversible Git operations.
+// Discarding work and deleting explicit build paths inside the seat are allowed; its roots stay protected.
+// A push may delete only the seat's own branch or one its worktree checked out, and keeps push hooks enabled.
 // codex and Claude send `tool_input.command` and `cwd` (codex reports a call's own
 // workdir there only from openai/codex#57198) and are refused with a
 // `hookSpecificOutput` deny, not exit 2: on Windows codex runs the hook through
@@ -165,14 +151,21 @@ function mayDiscardWork(sub, rest) {
     || (sub === 'switch' && (forced || rest.some(arg => longOption(arg, '--discard-changes'))))
 }
 
-function refusal(words, branch, cwd, path) {
+const forceDeletesBranch = args => {
+  const flags = args.map(shortFlags).join('')
+  const deletes = flags.includes('d') || args.some(arg => longOption(arg, '--delete'))
+  return flags.includes('D') || (deletes && (flags.includes('f') || args.some(arg => longOption(arg, '--force'))))
+}
+
+function refusal(words, branch, cwd, path, own, allowedBranches = [], cdpath = undefined) {
   const assigned = words.find(word => word.startsWith('GIT_WORK_TREE='))?.slice('GIT_WORK_TREE='.length)
   const [first, ...args] = strip(words)
   if (!first) return undefined
   const name = programName(first)
   if (SHELLS.includes(name)) {
     const script = shellScript(args)
-    return script === undefined ? undefined : check(script, branch, cwd, path)
+    const placed = words[0] === first && ['-c', '/c', '-command'].includes(args[0]?.toLowerCase())
+    return script === undefined ? undefined : check(script, branch, cwd, path, placed ? own : undefined, allowedBranches, cdpath)
   }
   if (name === 'git') {
     let index = 0
@@ -188,9 +181,9 @@ function refusal(words, branch, cwd, path) {
     if (mayDiscardWork(sub, rest) && !samePath(gitTree(args.slice(0, index), assigned, cwd, path), path.resolve(cwd), path)) {
       return `Run git ${sub} only in the folder the command runs in: -C, --work-tree or GIT_WORK_TREE point this one at another folder.`
     }
-    const short = rest.map(shortFlags).join('')
-    const deletes = short.includes('d') || rest.some(arg => longOption(arg, '--delete'))
-    if (sub === 'branch' && (short.includes('D') || (deletes && (short.includes('f') || rest.some(arg => longOption(arg, '--force')))))) {
+    if (sub === 'branch' && forceDeletesBranch(rest)) {
+      const targets = rest.filter(arg => !arg.startsWith('-')).map(branchOf)
+      if (targets.length && targets.every(target => allowedBranches.includes(target))) return undefined
       return 'Delete a branch only with git branch -d, which keeps unmerged commits: another agent may own the branch.'
     }
     if (sub === 'push' && !isLeasedPush(rest, branch) && rest.some(arg => longOption(arg, '--force', '--force-with-lease', '--force-if-includes')
@@ -218,7 +211,18 @@ function refusal(words, branch, cwd, path) {
     const switches = cmdRemover ? [first, ...args].flatMap(arg => [...arg.matchAll(/\/([a-z])/gi)].map(match => match[1].toLowerCase())) : []
     const recursive = switches.includes('s') || flags.some(arg => longOption(arg, '--recursive') || /^-r(e(c(u(r(s(e)?)?)?)?)?)?(:.*)?$/i.test(arg) || (!forceParameter(arg) && /[rR]/.test(shortFlags(arg))))
     const force = switches.includes('q') || switches.includes('f') || flags.some(arg => longOption(arg, '--force') || forceParameter(arg) || shortFlags(arg).includes('f'))
-    if (recursive && force) return 'Remove only explicit paths, without a forced recursive delete.'
+    if (recursive && force) {
+      const targets = args.filter(arg => !arg.startsWith('-'))
+      if (remover === 'rm' && words[0] === first && own !== undefined && targets.length && targets.every(target => {
+        if (!placeable(target)) return false
+        const folders = moved([cwd], target, path)
+        const seat = real(path.resolve(own), path)
+        if (seat === null) return false
+        const roots = [folded(seat, path), folded(path.join(seat, 'wt'), path)]
+        return folders.every(folder => within(folder, folded(seat, path), path) && !roots.includes(folded(real(folder, path), path)))
+      })) return undefined
+      return 'Remove only explicit paths, without a forced recursive delete.'
+    }
   }
   return undefined
 }
@@ -229,10 +233,19 @@ function refusal(words, branch, cwd, path) {
  * The shell that runs a line is unknown: codex on Windows hands over `"C:\WINDOWS\...\powershell.exe" -Command '...'`,
  * where a POSIX reading drops every `\`. A line is refused when either its POSIX or its Windows reading refuses it.
  */
-export function check(line, branch, cwd = process.cwd(), path = nodePath) {
+export function check(line, branch, cwd = process.cwd(), path = nodePath, own = undefined, allowedBranches = [], cdpath = undefined) {
   for (const windows of [false, true]) {
+    let places = [path.resolve(cwd)]
     for (const words of commands(line, windows)) {
-      const reason = refusal(words, branch, cwd, path)
+      const command = plain(words)
+      if (own !== undefined && command?.target !== undefined) places = cdpath && searched(command.target) ? [null] : [...new Set([...places, ...moved(places, command.target, path)])]
+      else if (own !== undefined && command?.pop) places = [null]
+      else if (own !== undefined && (assignments(words).some(word => /^CDPATH=/i.test(word)) || ['source', '.', 'eval', 'iex'].includes(words[0]?.toLowerCase()))) places = [null]
+      const program = programName(strip(words)[0] ?? '')
+      const nestedRemoval = SHELLS.includes(program) && /\brm\b/.test(shellScript(strip(words).slice(1)) ?? '')
+      const located = program === 'rm' || nestedRemoval ? places : [cwd]
+      const expandedRemoval = /\brm\b[^\n;&|]*(?:\$\(|`|[{}]|[<>]\()/.test(line)
+      const reason = located.map(place => refusal(words, branch, place ?? cwd, path, place === null || expandedRemoval ? undefined : own, allowedBranches, cdpath)).find(Boolean)
       if (reason) return reason
     }
   }
@@ -340,7 +353,7 @@ const pushCheck = (line, deletable) => {
   return undefined
 }
 
-// A worktree seat's branch is seat/seat-<suffix>, its folder <home>/seats/seat-<suffix> (seat.<suffix> for a seat-router 1.x seat); the hook knows only the folder.
+// A worktree seat's branch is seat/seat-<suffix>; the hook knows its seat-<suffix> folder.
 const seatBranches = (own, path) => {
   const suffix = own === undefined ? undefined : /^seat[.-]([^.]+)$/.exec(path.basename(own))?.[1]
   return suffix === undefined ? [] : [`seat/seat-${suffix}`]
@@ -362,7 +375,7 @@ const ABORTING = ['rebase', 'merge', 'cherry-pick', 'revert', 'am']
 const VALUE_OPTIONS = [...GIT_VALUE_OPTIONS, '--attr-source', '--shallow-file', '--super-prefix']
 // Programs that run a script, a file or another command given to them, so the line's text may hold what they run.
 const RUNNERS = ['sh', 'bash', 'zsh', 'dash', 'ksh', 'csh', 'tcsh', 'fish', 'pwsh', 'powershell', 'cmd', 'xargs', 'find', 'perl', 'ruby',
-  'python', 'node', 'env', 'sudo', 'nice', 'timeout', 'stdbuf', 'ionice', 'time', 'command', 'exec', 'caffeinate', 'arch', 'script', 'watch',
+  'python', 'node', 'deno', 'bun', 'env', 'sudo', 'nice', 'timeout', 'stdbuf', 'ionice', 'time', 'command', 'exec', 'caffeinate', 'arch', 'script', 'watch',
   'noglob', 'start-process', 'eval', 'source', '.', 'iex', 'invoke-expression']
 // Shell words a command's program may follow.
 const LEADS = ['if', 'then', 'else', 'elif', 'do', 'while', 'until', '!', '{', 'time', 'coproc']
@@ -373,13 +386,11 @@ const isRedirect = word => /^(?:\d+|&)?(?:>>?|<>?|>&|<)/.test(word) || word === 
 // The line with a shell's line continuation removed, so a command split across lines reads as one.
 const joined = (line, windows) => windows ? line.replace(/[`^]\r?\n/g, '') : line.replace(/\\\r?\n/g, '')
 
-// A line is simple only when it is a sequence of commands joined by && ; or newline: no pipe, subshell, command
-// substitution, process substitution, here-string, background & or shell control word stands between them, even inside
-// quotes. A brace or a `2>&1` stays inside the words it belongs to, which plain() then reads.
+// Parentheses, substitutions, background execution and shell control flow need more context than a command sequence.
 const notSimpleLine = line => {
   const text = line.replace(/['"]/g, '')
-  return /[|()`]/.test(text) || /<</.test(text) || /(^|[^&>])&([^&>]|$)/.test(text)
-    || new RegExp(`(^|[\\s;])(${CONTROL_WORDS})([\\s;]|$)`).test(text)
+  return /[()`]/.test(text) || /<</.test(text) || /(^|[^&>])&([^&>]|$)/.test(text)
+    || commands(line).some(words => CONTROL_WORDS.split('|').includes(words[0]))
 }
 
 const tokens = text => text.match(/[\w.\-/\\*?[\]:~+]+/g) ?? []
@@ -429,6 +440,46 @@ const quoted = windows => windows ? /'[^']*'|"[^"]*"/g : /'[^']*'|"(?:[^"\\]|\\.
 // A here-document whose delimiter is quoted is text: its body runs only when a shell reads it, and a shell is a runner.
 const HEREDOC = /(<<-?[ \t]*(['"])([^'"\s]+)\2[^\n]*)\n[\s\S]*?\n[ \t]*\3[ \t]*(?=\n|$)/g
 const SUBSTITUTION = /\$\(|`|[<>]\(/
+
+const interpreter = word => /^(python[\d.]*|node|ruby|perl|deno|bun)$/.test(programName(word))
+const processRunner = (text, program) => /\b(?:subprocess|child_process)\b|\bos\.(?:system|exec\w*|popen)\b|\bpty\.spawn\b|\b(?:execSync|exec|spawn|execFile|spawnSync|system)\s*(?:\(|["'])|\b(?:Bun\.spawn|Deno\.Command)\b/.test(text)
+  || (/^(ruby|perl)$/.test(programName(program)) && /`|%x\b/.test(text))
+
+// Interpreter payloads are data unless they name a process runner. Keep shell substitutions visible and leave
+// shell wrappers alone: their payloads still run as shell commands, even when they contain an interpreter.
+const interpreterData = line => {
+  const text = line.replace(/(<<-?[ \t]*(['"]?)([^'"\s]+)\2[^\n]*)\n([\s\S]*?)\n[ \t]*\3[ \t]*(?=\n|$)/g,
+    (whole, opener, quote, _delimiter, body, offset) => {
+      const header = line.slice(line.lastIndexOf('\n', offset - 1) + 1, offset)
+      const words = commands(header).at(-1) ?? []
+      const program = strip(words)[0] ?? ''
+      return interpreter(program) && !processRunner(header + body, program) && (quote || !SUBSTITUTION.test(body)) ? opener : whole
+    })
+  const words = []
+  const payloads = []
+  const edits = []
+  const finish = () => {
+    const program = strip(words)[0] ?? ''
+    if (!processRunner(words.join(' '), program)) edits.push(...payloads)
+    words.length = 0
+    payloads.length = 0
+  }
+  for (const match of text.matchAll(/'[^']*'|"(?:[^"\\]|\\.)*"|[;&|\n]|[^\s'";&|\n]+/g)) {
+    const token = match[0]
+    if (/^[;&|\n]$/.test(token)) {
+      finish()
+      continue
+    }
+    const program = strip(words)[0] ?? ''
+    const payload = /^['"]/.test(token) && /^-[ce]$/.test(words.at(-1) ?? '') && interpreter(program)
+    if (payload && (token[0] === "'" || !SUBSTITUTION.test(token))) payloads.push({ at: match.index, length: token.length })
+    words.push(token)
+  }
+  finish()
+  let result = text
+  for (const { at, length } of edits.reverse()) result = result.slice(0, at) + "''" + result.slice(at + length)
+  return result
+}
 
 // The discarding git command a line may reach, named for its refusal, or undefined when it reaches none and check() alone
 // decides. Its commands are read as a POSIX and a Windows shell would, with here-document bodies dropped and the text of
@@ -498,9 +549,9 @@ const sequence = (text, windows) => {
       for (index += 1; index < text.length && text[index] !== '"'; index += 1) if (!windows && text[index] === '\\') return undefined
       if (index === text.length) return undefined
     } else if (char === '#' || (windows ? char === '^' && !/^[\d^~\s]?$/.test(text[index + 1] ?? '') : char === '\\')) return undefined
-    else if (char === ';' || char === '\n' || (char === '&' && text[index + 1] === '&')) {
+    else if (char === ';' || char === '\n' || (char === '&' && text[index + 1] === '&') || char === '|') {
       parts.push({ words: wordsOf(text.slice(from, index), windows), goesOn: char !== '&' })
-      if (char === '&') index += 1
+      if (char === '&' || (char === '|' && text[index + 1] === '|')) index += 1
       from = index + 1
     }
   }
@@ -512,6 +563,7 @@ const sequence = (text, windows) => {
 // rm, reset (but --soft with no other mode, which git would apply, abbreviated or not), read-tree -u or --reset, a forced or
 // whole checkout-index, and an --abort, --quit or --skip of ABORTING.
 const discards = (sub, args) => mayDiscardWork(sub, args) || sub === 'rm'
+  || (sub === 'branch' && forceDeletesBranch(args))
   || (sub === 'stash' && !['list', 'show'].includes(args[0]))
   || (sub === 'reset' && (!args.includes('--soft')
     || args.some(arg => arg.length > 2 && ['--mixed', '--hard', '--merge', '--keep'].some(mode => mode.startsWith(arg)))))
@@ -549,7 +601,14 @@ const plain = words => {
     const target = cdTarget(rest, head)
     return target === undefined ? undefined : { target, push: PUSH_WORDS.includes(name) }
   }
-  if (programName(head) !== 'git' || /[*?[\]{}$%`!=~]/.test(head)) return undefined
+  if (programName(head) !== 'git') {
+    if (scope(words.join(' ')) !== undefined || (runner(head) && rest.some(namesGit))
+      || ['source', '.', 'eval', 'iex', 'invoke-expression'].includes(name) || dynamic(head) || head.includes(':')
+      || /^(?:GIT_|CDPATH=|\$env:)/i.test(head)
+      || assignments(words).some(word => /^(?:GIT_|CDPATH=)/i.test(word))) return undefined
+    return { hops: [], discard: false }
+  }
+  if (/[*?[\]{}$%`!=~]/.test(head)) return undefined
   const hops = []
   let index = 0
   while (rest[index]?.startsWith('-')) {
@@ -719,17 +778,13 @@ const otherCommands = (text, windows) => {
   return [...new Set(others)]
 }
 
-// Why a line is refused once check() has allowed it and the seat's folder is known, or undefined when it may run. A line
-// that may reach a discarding git command passes only as plain cd-like and git commands joined by && ; or newline, read
-// alike as a POSIX and a Windows shell would, with every discarding git command inside the seat's folder. Any other
-// command on such a line (a wrapper, a nested shell, an interpreter, npm or echo) refuses it. On a Windows host, where
-// PowerShell and cmd run the line, a backslash is a folder separator, so a line with one has only the Windows reading;
-// not when `bash`, the line run by Claude Code's Bash tool, which is Git Bash there.
+// Discarding Git commands must stay inside the seat even beside other commands or pipes. A Windows path's
+// backslashes are separators; Claude's Bash tool on Windows still needs the POSIX reading too.
 const stray = (line, start, rules, bash) => {
   const script = WRAPPER.exec(line)?.slice(1).find(inner => inner !== undefined)
   const sub = scope(script ?? line)
   if (sub === undefined) return undefined
-  for (const windows of script === undefined && (bash || !(rules.path.sep === '\\' && line.includes('\\'))) ? [false, true] : [true]) {
+  for (const windows of script === undefined && (bash || /\\\r?\n/.test(line) || !(rules.path.sep === '\\' && line.includes('\\'))) ? [false, true] : [true]) {
     const text = joined(script ?? line, windows)
     const parts = notSimpleLine(text) ? undefined : sequence(text, windows)?.map(({ words, goesOn }) => ({ command: plain(words), goesOn }))
     if (parts === undefined || parts.some(({ command }) => command === undefined)) {
@@ -748,15 +803,17 @@ const stray = (line, start, rules, bash) => {
  * Why an owner seat's command line is refused, or undefined when it may run: whatever check() refuses, and then, with the
  * seat's folder known (`own`), a line that may reach a discarding git command (clean -f, checkout, restore, a forced switch,
  * stash, rm, reset but --soft, read-tree -u, checkout-index -f, a rebase or merge --abort, --quit or --skip, a leased push)
- * unless it is plain cd-like and git commands that keep each such git command inside that folder. With no folder known,
+ * unless the line keeps each such git command inside that folder. With no folder known,
  * check() alone: a Claude subagent owner's hook input carries the parent session's folder, not the seat's. With `cdpath`
  * set (the hook's CDPATH), a cd to a bare relative name may land anywhere it lists, so the line is refused. `bash` says
  * the line runs in Claude Code's Bash tool, a POSIX shell on every host. `checkedOutBranches`: the branches the worktree
  * checked out, which a push may delete besides `seat/<id>`.
  */
-export const guard = (line, branch, cwd = process.cwd(), path = nodePath, own = undefined, cdpath = undefined, bash = false, checkedOutBranches = []) =>
-  check(line, branch, cwd, path) ?? pushCheck(line, [...seatBranches(own, path), ...checkedOutBranches])
+export const guard = (line, branch, cwd = process.cwd(), path = nodePath, own = undefined, cdpath = undefined, bash = false, checkedOutBranches = []) => {
+  line = interpreterData(line)
+  return check(line, branch, cwd, path, own, seatBranches(own, path), cdpath) ?? pushCheck(line, [...seatBranches(own, path), ...checkedOutBranches.filter(name => !DEFAULT_BRANCHES.includes(name))])
     ?? (own === undefined ? undefined : stray(line, [path.resolve(cwd)], placeRules(own, path, cdpath), bash))
+}
 
 // The hook runs whatever link its path came through (macOS's /var, a linked plugin folder, a Windows junction), where
 // argv[1] and the module's own path differ; a path that cannot be resolved runs it too, since a silent guard allows all.
@@ -784,7 +841,7 @@ if (invoked()) {
     const reflog = gitDir ? nodePath.join(gitDir, 'logs', 'HEAD') : undefined
     return reflog && existsSync(reflog) ? checkedOut(readFileSync(reflog, 'utf8')) : []
   }
-  const pushes = typeof line === 'string' && /\bpush\b/.test(line)
+  const pushes = typeof line === 'string' && /\b(push|branch)\b/.test(line)
   const reason = typeof line === 'string'
     ? guard(line, pushes ? branch() : undefined, cwd, nodePath, own, process.env.CDPATH, bash, pushes ? checkedOutHere() : [])
     : undefined

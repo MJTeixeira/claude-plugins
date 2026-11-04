@@ -4,7 +4,6 @@ import { rank } from './rank.mjs'
 
 export const SEAT_SCHEMA = 1
 export const DEADLINE_MS = 6 * 60 * 60 * 1000
-export const LOOP_MS = 30 * 60 * 1000
 export const EXHAUSTION_DEFAULT_MS = 30 * 60 * 1000
 export const SLOT_CHECK_MS = 60_000
 export const DIED_RERUNS = 1
@@ -31,7 +30,7 @@ export const MAX_NOT_STARTED = 3
 /**
  * How one attempt ended. `text` is the answer (done) or the output so far; `resume` a conversation the CLI can continue.
  * `left` marks an attempt that ended while a process of it may still run; `note` says so in the report.
- * @typedef {'stopped'|'deadline'|'loop'|'crashed'} Kill
+ * @typedef {'stopped'|'deadline'|'crashed'} Kill
  * @typedef {{ kind: 'done'|'quota'|'transient'|'failed'|'unclassified'|'died'|'not-started'|Kill,
  *             detail: string, text: string, endedAt: number, until?: number, resume?: string, left?: boolean, note?: string }} Ending
  * An attempt's `state` is how it reads now. `starting`: its launcher has not claimed it yet. `answered` and `silent`:
@@ -43,7 +42,7 @@ export const MAX_NOT_STARTED = 3
  * a folder its release deletes, `quiet` once neither.
  * @typedef {{ n: number, index: number, startedAt: number, resume?: string, rerun?: boolean, rankedAs?: string,
  *             state: 'starting'|'answered'|'silent'|'left'|'gone'|'not-started'|'unknown'|'exited'|'ended', kill?: Kill,
- *             ending?: Ending, leftover?: 'running'|'held'|'quiet', loopSince?: number, loop?: string, ownerUnchanged?: boolean }} Attempt
+ *             ending?: Ending, leftover?: 'running'|'held'|'quiet', ownerUnchanged?: boolean }} Attempt
  * @typedef {{ kind: 'done'|'owner-changed'|'stopped'|'deadline'|'exhausted'|'crashed', detail?: string }} Verdict
  * `quota` is how each candidate stands in the merged ledger now, `families` each one's model family, and `running` the
  * seats running on this machine by family, this one left out: what failover ranks by.
@@ -62,7 +61,7 @@ export const MAX_NOT_STARTED = 3
  */
 
 const TERMINAL = { done: 'done', stopped: 'stopped', deadline: 'deadline' }
-const FAILED = new Set(['failed', 'unclassified', 'loop', 'transient', 'died'])
+const FAILED = new Set(['failed', 'unclassified', 'transient', 'died'])
 
 const resumesOn = (attempts, index) => attempts.filter(attempt => attempt.index === index && attempt.resume !== undefined).length
 const diedOn = (attempts, index) => attempts.filter(attempt => attempt.index === index && attempt.ending?.kind === 'died').length
@@ -101,7 +100,7 @@ export const availability = (tree, now, budgets) => tree.seat.candidates.map((_,
 
 export const KILL_DETAIL = {
   stopped: 'stopped on request', deadline: 'still running at the deadline',
-  crashed: 'ended because seat-router stopped supervising the seat', loop: 'stuck in a loop',
+  crashed: 'ended because seat-router stopped supervising the seat',
 }
 
 const LEFT_NOTE = {
@@ -111,22 +110,19 @@ const LEFT_NOTE = {
 
 /**
  * A step for an attempt that has no ending yet. A kill due on an attempt whose launcher is gone ends it without a
- * signal, and a loop never does: no next attempt starts beside a CLI that may still run.
+ * signal: no next attempt starts beside a CLI that may still run.
  * @returns {Step}
  */
 const running = (tree, attempt, now, crashed) => {
   const { n } = attempt
   if (attempt.state === 'exited' || attempt.state === 'gone') return { kind: 'judge', n }
   if (attempt.state === 'not-started') {
-    const kind = attempt.kill === undefined || attempt.kill === 'loop' ? 'not-started' : attempt.kill
+    const kind = attempt.kill === undefined ? 'not-started' : attempt.kill
     return { kind: 'end', n, ending: { kind, detail: kind === 'not-started' ? 'its launcher never started it' : KILL_DETAIL[kind], text: '', endedAt: now } }
   }
-  const loopDue = attempt.loopSince !== undefined && now - attempt.loopSince >= LOOP_MS
-  const due = tree.stopRequested ? 'stopped' : now >= tree.seat.createdAt + DEADLINE_MS ? 'deadline' : crashed !== undefined ? 'crashed'
-    : attempt.kill ?? (loopDue ? 'loop' : undefined)
+  const due = tree.stopRequested ? 'stopped' : crashed !== undefined ? 'crashed' : ['stopped', 'crashed'].includes(attempt.kill) ? attempt.kill : undefined
   if (!due) return { kind: 'watch', n }
   if (attempt.state === 'left' || attempt.state === 'unknown') {
-    if (due === 'loop') return { kind: 'watch', n }
     return { kind: 'end', n, ending: { kind: due, detail: KILL_DETAIL[due], text: '', endedAt: now, left: true, note: LEFT_NOTE[attempt.state] } }
   }
   return { kind: 'kill', n, why: due }
@@ -301,7 +297,6 @@ export const reportText = (tree, verdict, extra) => {
   if (trail.length) lines.push('Fallback: ' + trail.join(' → '))
   if (extra.waits.quota) lines.push('Waited ' + seconds(extra.waits.quota) + ' seconds for quota reset.')
   if (extra.waits.slot) lines.push('Waited ' + seconds(extra.waits.slot) + ' seconds for the one Claude seat on the session\'s account that this machine runs at a time.')
-  if (last?.ending?.kind === 'deadline' && !last.ending.left) lines.push('Its CLI was still running at the deadline and was ended.')
   lines.push(...new Set(tree.attempts.flatMap(attempt => attempt.ending?.note ?? [])))
   if (extra.release) lines.push(extra.release)
   if (extra.kept.length) lines.push('Images the seat made, copied out of its CLI\'s home: ' + extra.kept.join(', '))
