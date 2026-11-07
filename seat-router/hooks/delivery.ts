@@ -60,10 +60,14 @@ const rowText = (content: readonly { type: string, [field: string]: unknown }[])
     : Array.isArray(block.content) ? block.content.map(part => String(asObject(part)?.text ?? '')).join('\n') : ''
 }).join('\n')
 
+// Keeps every running entry and the DONE_KEPT that ended last.
+export function boundDone<T extends { startedAt: number, endedAt?: number }>(items: readonly T[], isDone: (item: T) => boolean): T[] {
+  const done = items.filter(isDone).sort((a, b) => (b.endedAt ?? b.startedAt) - (a.endedAt ?? a.startedAt)).slice(DONE_KEPT)
+  return done.length ? items.filter(item => !done.includes(item)) : [...items]
+}
+
 export function boundSeats(seats: readonly SeatDisplay[]): SeatDisplay[] {
-  const done = seats.filter(seat => seat.status !== 'running' && seat.status !== 'waiting')
-    .sort((a, b) => (b.endedAt ?? b.startedAt) - (a.endedAt ?? a.startedAt)).slice(DONE_KEPT)
-  return done.length ? seats.filter(seat => !done.includes(seat)) : [...seats]
+  return boundDone(seats, seat => seat.status !== 'running' && seat.status !== 'waiting')
 }
 
 async function markReported($: EngineInterface, id: string): Promise<void> {

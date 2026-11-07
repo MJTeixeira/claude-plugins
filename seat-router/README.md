@@ -389,14 +389,17 @@ names a process runner. Shell wrappers keep the same checks.
 The band above the prompt shows each vendor's quota state, and the time an out vendor is back.
 Each window is named by its length, such as `5h` or `7d`. For agy the band shows the Gemini
 bucket only, so it keeps to one line.
-While seats run, it shows a `×N` button that opens the seats pane. When the session reports an
+While seats or subagents run, it shows a `×N` button that opens the seats pane. When the session reports an
 autopilot queue through the mod's `queue` tool, the band also shows the queue's progress.
 The mod clears the queue when the main turn ends with no seat or subagent still running.
 
-`/seats` opens or closes the pane, with one card per seat of this conversation. Opening it prints
+`/seats` opens or closes the pane, with one card per agent working for this conversation: its seats,
+and the subagents (nested ones included) and workflow agents Claude Code starts itself. Each card's
+second line opens with how the agent was started, `seat`, `subagent` or `workflow`; a subagent's or
+workflow agent's card has a dashed frame and the Claude crab in its native purple colour. Opening it prints
 one chat line, "Seats pane opened." Below the cards, the pane shows only this conversation's
 undelivered reports, jobs-setting problems, failed quota reads, and branch-protection read errors
-that may also block a seat using GitHub. Chat adds lines only for jobs-setting problems and failed
+that may also block a seat using GitHub (a folder without a GitHub remote shows no protection line). Chat adds lines only for jobs-setting problems and failed
 quota reads that need attention. `/seats setup` still configures the plugin.
 
 To stop a seat, the session calls TaskStop with the seat's id. The mod answers at once with

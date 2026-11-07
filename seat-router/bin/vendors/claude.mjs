@@ -128,7 +128,12 @@ const judge = async (view, dir, exitCode) => {
   return stderr ? { ...checked, detail: checked.detail + ': ' + stderr } : checked
 }
 
-const usageTokens = usage =>
+/**
+ * A Claude usage record's tokens: input, output, cache reads and cache writes.
+ * @param {Record<string, unknown> | null | undefined} usage
+ * @returns {number}
+ */
+export const usageTokens = usage =>
   ['input_tokens', 'output_tokens', 'cache_read_input_tokens', 'cache_creation_input_tokens'].reduce((sum, key) => sum + (numberAt(usage?.[key]) ?? 0), 0)
 
 /** A Claude transcript's tokens: its result's total once it has one, else each assistant message's usage once. */
@@ -144,16 +149,24 @@ export const claudeTokens = jsonl => {
   return messages.size ? [...messages.values()].reduce((sum, value) => sum + value, 0) : undefined
 }
 
+/**
+ * What a Claude tool call does, as a card's last action, on one line: the command it runs, else the tool and the file it touches.
+ * @param {string | undefined} name
+ * @param {Record<string, unknown>} input
+ * @returns {string}
+ */
+export const toolAction = (name, input) => {
+  const command = textAt(input.command)
+  const path = textAt(input.file_path) ?? textAt(input.path)
+  return oneLine(command ? 'Ran ' + command : (name ?? 'tool') + (path ? ' ' + fileName(path) : ''))
+}
+
 const actionOf = event => {
   const content = asObject(event.message)?.content
   if (event.type !== 'assistant' || !Array.isArray(content)) return undefined
   let action
   for (const block of content.map(asObject)) {
-    const input = asObject(block?.input) ?? {}
-    const command = textAt(input.command)
-    const path = textAt(input.file_path) ?? textAt(input.path)
-    if (block?.type === 'tool_use' && command) action = 'Ran ' + command
-    else if (block?.type === 'tool_use') action = (textAt(block.name) ?? 'tool') + (path ? ' ' + fileName(path) : '')
+    if (block?.type === 'tool_use') action = toolAction(textAt(block.name), asObject(block.input) ?? {})
     else if (block?.type === 'text') action = textAt(block.text)?.split('\n')[0] ?? action
   }
   return action
