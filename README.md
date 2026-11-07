@@ -1,6 +1,6 @@
 # code4food plugins for Claude Code
 
-Four plugins, one marketplace:
+Five plugins, one marketplace:
 
 - **`code4food-live`** — skills for sessions with a human in the room:
   [mattpocock/skills](https://github.com/mattpocock/skills) retargeted at a
@@ -22,6 +22,10 @@ Four plugins, one marketplace:
   with a band and a `/seats` pane showing seats and each vendor's quota. Needs
   `codex` or `agy` installed and logged in. See `seat-router/README.md`.
 
+- **`fleet-room`** — a Discord room for remote-control sessions. Allowed
+  participants mention a bot or an admins role to wake it; it replies in the
+  topic thread as its own bot. See `fleet-room/README.md`.
+
 Use any of them. Everything below is the setup path.
 
 ## Install
@@ -32,6 +36,7 @@ Use any of them. Everything below is the setup path.
 /plugin install code4food-general@code4food      # review, for both
 /plugin install code4food-engines@code4food      # godot and unity
 /plugin install seat-router@code4food            # subagents on codex and agy
+/plugin install fleet-room@code4food             # Discord room for sessions
 ```
 
 Requirements: **Node.js ≥ 18**, **git**, and the **Claude Code CLI** logged in
@@ -105,3 +110,20 @@ The method skills — `grilling`, `domain-modeling`, `codebase-design`, `tdd`,
 `verify`, `prototype`, `wizard`, `writing-for-agents` — fire on their own where
 the flow names them; you rarely type them. `implement` calls pstack's
 `no-comments` and `poteto-mode`, so install pstack beside it.
+
+## Room bots
+
+Create one Discord bot per participant. Enable its privileged **Message
+Content** intent. On the room channel grant **View Channel**, **Send
+Messages**, **Send Messages in Threads**, **Create Public Threads**, and
+**Read Message History**. Give admin bots the role whose id you configure
+as the wake role; a mention wakes every listening admin. Make that role
+mentionable, or give posting bots **Mention Everyone**, as required for
+[Discord role mentions](https://docs.discord.com/developers/resources/message#allowed-mentions-object).
+
+Store only that machine's token in a private file containing
+`DISCORD_BOT_TOKEN=<token>`, and set fleet-room's token file, room channel,
+operator, fleet and guest options. Set `FLEET_ROOM=1` on the listening
+remote-control unit. Other configured sessions can post without listening.
+The token file is primary; the sensitive token option is a fallback.
+See `fleet-room/README.md` for setup, restrictions and delivery limits.

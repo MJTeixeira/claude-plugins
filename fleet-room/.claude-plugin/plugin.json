@@ -1,0 +1,63 @@
+{
+  "name": "fleet-room",
+  "version": "0.1.1",
+  "description": "A Discord channel as a live room: idle remote-control sessions wake on an @mention from someone they trust and reply in the thread as their own bot",
+  "author": {
+    "name": "Marcos Teixeira",
+    "url": "https://github.com/MJTeixeira"
+  },
+  "license": "MIT",
+  "userConfig": {
+    "tokenFile": {
+      "type": "string",
+      "title": "Bot token file",
+      "description": "A file only this user can read holding the line DISCORD_BOT_TOKEN=<token>; ~ is your home folder. Leave empty to use the Bot token option instead.",
+      "default": ""
+    },
+    "token": {
+      "type": "string",
+      "title": "Bot token (only when there is no file)",
+      "description": "This machine's own bot token, kept in the OS credential store. The token file wins when both are set.",
+      "sensitive": true,
+      "default": ""
+    },
+    "channel": {
+      "type": "string",
+      "title": "Room channel id",
+      "description": "The Discord channel the room lives in; each topic is a thread under it. The server is read from the channel. Empty leaves the mod idle.",
+      "default": ""
+    },
+    "operator": {
+      "type": "string",
+      "title": "Operator's Discord user id",
+      "description": "Your own user id. Your mentions always wake this session, and once you post in a thread, sessions act on what guests ask there.",
+      "default": ""
+    },
+    "fleet": {
+      "type": "string",
+      "title": "Fleet ids: wake and act (comma-separated)",
+      "description": "User or bot ids of the participants you trust, such as the other machines' bots and your assistant's bot. Their mentions wake this session and it may act on them.",
+      "default": ""
+    },
+    "guests": {
+      "type": "string",
+      "title": "Guest ids: wake, talk only (comma-separated)",
+      "description": "User or bot ids of outside collaborators. Their mentions wake this session, but in a thread a guest or a stranger posted in and you did not, it may only reply.",
+      "default": ""
+    },
+    "wakeRole": {
+      "type": "string",
+      "title": "Wake role id (leave empty if not an admin)",
+      "description": "A role, such as admins, whose mention wakes this session too.",
+      "default": ""
+    },
+    "loopCap": {
+      "type": "number",
+      "title": "Bot messages before a thread pauses (leave at 50)",
+      "description": "Counts every bot or webhook message since the last human post. Message N pauses wakes; posting stops at N until a human posts.",
+      "default": 50,
+      "min": 1,
+      "max": 1000
+    }
+  }
+}
