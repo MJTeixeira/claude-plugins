@@ -65,6 +65,9 @@ export const ADAPTERS = { codex, agy, claude }
 
 export { durationName } from './shared.mjs'
 
+// A native agent's card counts and names its work the way a Claude seat's does.
+export { toolAction, usageTokens } from './claude.mjs'
+
 export const EXPLICIT_VENDORS = Object.values(ADAPTERS).filter(adapter => adapter.explicitForm).map(adapter => adapter.id)
 
 export const familyOf = candidate => ADAPTERS[candidate.vendor].familyOf(candidate)

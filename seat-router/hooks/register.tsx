@@ -4,7 +4,7 @@ import type { EngineInterface, Register, Timer } from 'claude-code'
 import type { QueueDisplay, SeatDisplay, SeatVendor } from '../types/index'
 import {
   CARD_H, HEADER_H, LINE_H, QUOTA_H, ROW_H, SECTION_H, VENDORS,
-  cardSvg, fmtTime, fmtTokens, gridSvg, gridTiles, headerSvg, plural, quotaAlt, quotaSvg, quotaWidth,
+  cardSvg, fmtTime, fmtTokens, gridSvg, gridTiles, headerSvg, headline, metaLine, plural, quotaAlt, quotaSvg, quotaWidth,
   rowSvg, runningSvg, stepLine, totals,
 } from './art'
 import type { Card } from './art'
@@ -19,6 +19,7 @@ import {
 import type { Delegate, ExternalVendor, FoundAccount, Jobs, Policies } from './router'
 import { answered, noteClear, sighted, stopTask, turnEnded, unanswered, undeliveredLines } from './delivery'
 import { decide, delegateReason, noteComposed, quotaLines, refreshBand, refreshQuotas, writeSessionQuota } from './quota'
+import { agentActed, agentCard, agentEnded, agentSpawned, agentStepped, agentToolDone, LISTED_RUNNING, nativeAgents } from './agents'
 import { isSeatId } from '../bin/core/layout.mjs'
 import { FACTS } from '../bin/vendors/index.mjs'
 import { candidateSet, capableWords, CODE_JOB, jobWords, ruleText, SHIPPED_JOBS } from '../bin/core/policy.mjs'
@@ -189,6 +190,7 @@ const isRunning = (status: string): boolean => status === 'running' || status ==
 
 const seatCard = (seat: SeatDisplay): Card => ({
   id: seat.id,
+  origin: 'seat',
   vendor: seat.vendor,
   description: seat.description,
   model: seat.account === undefined ? seat.model : seat.account + ' · ' + seat.model,
@@ -224,36 +226,53 @@ async function isPaneOpen($: EngineInterface): Promise<boolean> {
   return (await $.ui.panes()).some(pane => pane.id === PANE)
 }
 
-async function hasRunningSeat($: EngineInterface): Promise<boolean> {
-  return (await read($, seatsState)).some(seat => isRunning(seat.status))
+// Every agent working for the session: its seats and the agents the engine started.
+async function sessionCards($: EngineInterface): Promise<Card[]> {
+  const [seats, agents] = await Promise.all([read($, seatsState), nativeAgents($)])
+  return [...seats.map(seatCard), ...agents.map(agentCard)]
+}
+
+async function hasRunningCard($: EngineInterface): Promise<boolean> {
+  return (await sessionCards($)).some(card => card.status === 'running')
 }
 
 // The engine's agent list, not a record of launches: a message resumes a finished agent under its id, and a reload
 // or /clear starts any record of the mod's over while its agents run on.
-const AGENT_RUNS: ReadonlySet<string> = new Set(['pending', 'running', 'waiting'])
-
 async function hasRunningAgent($: EngineInterface): Promise<boolean> {
-  return (await $.agent.list()).some(agent => AGENT_RUNS.has(agent.status))
+  return (await $.agent.list()).some(agent => LISTED_RUNNING.has(agent.status))
 }
 
 // The model reports the queue and can forget to clear it: a main turn that ends with nothing left running clears it.
 async function clearIdleQueue($: EngineInterface, e: { agentId?: string }): Promise<void> {
   if (e.agentId !== undefined || await read($, queueState) === null) return
-  if (await hasRunningSeat($) || await hasRunningAgent($)) return
+  if (await hasRunningCard($) || await hasRunningAgent($)) return
   await update($, queueState, () => null)
 }
 
+// Keeps a native agent's card in a session that draws the panel. A card that fails to write is dropped, never the spawn,
+// step or tool call it describes.
+async function keepCard($: EngineInterface, work: () => Promise<unknown>): Promise<void> {
+  try {
+    if (!await isSeat($)) await work()
+  } catch {}
+}
+
+const isWorking = async ($: EngineInterface): Promise<boolean> => await hasRunningCard($) || await hasRunningAgent($)
+
+// The last tick redraws the pane once more: an agent the engine stops listing as running ends with no event.
 async function tickElapsed($: EngineInterface): Promise<void> {
-  if (await isPaneOpen($) && await hasRunningSeat($)) {
-    await update($, seatPaneTickState, tick => tick + 1)
-    return
-  }
+  if (!await isPaneOpen($)) return stopElapsedTick()
+  await update($, seatPaneTickState, tick => tick + 1)
+  if (!await isWorking($)) stopElapsedTick()
+}
+
+function stopElapsedTick(): void {
   elapsedTick?.cancel()
   elapsedTick = undefined
 }
 
 async function startElapsedTick($: EngineInterface): Promise<void> {
-  if (elapsedTick !== undefined || !await hasRunningSeat($) || !await isPaneOpen($)) return
+  if (elapsedTick !== undefined || !await isWorking($) || !await isPaneOpen($)) return
   elapsedTick = $.clock.every(1_000, () => tickElapsed($))
 }
 
@@ -509,8 +528,24 @@ export const register: Register = (on, options) => {
     if (await isSeat($)) return ended
     await turnEnded($, e)
     await clearIdleQueue($, e)
+    if (e.agentId !== undefined) await agentEnded($, e.agentId)
     return ended
   }).catch(($, e, next) => next(e))
+
+  on('agent.spawn', async ($, e, next) => {
+    const started = await next(e)
+    await keepCard($, async () => {
+      if (await agentSpawned($, e, started)) await startElapsedTick($)
+    })
+    return started
+  }).catch(($, e, next) => next(e))
+
+  on('turn.step', async function* ($, e, next) {
+    const result = yield* next(e)
+    const { agentId } = e
+    if (agentId !== undefined) await keepCard($, () => agentStepped($, agentId, e, result.usage))
+    return result
+  })
 
   on('session.end', async ($, e, next) => {
     if (e.reason === 'clear' && !await isSeat($)) noteClear(e.sessionId)
@@ -552,14 +587,25 @@ export const register: Register = (on, options) => {
     return { deny: 'seat-router could not start this seat (' + why + '), so nothing runs for this call.' }
   })
 
+  // Kept after the Agent hook: registered before it, this hook's .catch answered for a failed Agent hook and ran the
+  // seat's call unrouted (engine 2.1.319).
+  on('tool.call', async ($, e, next) => {
+    const { agentId } = e
+    if (agentId === undefined) return next(e)
+    await keepCard($, () => agentActed($, agentId, e.tool, e as Record<string, unknown>))
+    const done = await next(e)
+    await keepCard($, () => agentToolDone($, agentId))
+    return done
+  }).catch(($, e, next) => next(e))
+
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     if (e.props.hasSurvey || await isSeat($)) return next(e)
     // Other mods' bands go beneath ours; the engine's placeholder ({ type: 'engine' }) is never nested.
     const drawn = await Promise.resolve(next(e)).catch(() => null)
     const below = drawn && typeof drawn === 'object' && (drawn as { type?: string }).type !== 'engine' ? drawn : null
-    const [quotas, queue, seats, vendors] = await Promise.all([read($, quotasState), read($, queueState), read($, seatsState), read($, vendorsState)])
+    const [quotas, queue, cards, vendors] = await Promise.all([read($, quotasState), read($, queueState), sessionCards($), read($, vendorsState)])
     const shown: readonly SeatVendor[] = vendors ? ['claude', ...vendors] : VENDORS
-    const cards = seats.map(seatCard)
+    const noun = cards.every(card => card.origin === 'seat') ? 'seat' : 'agent'
     const count = cards.filter(card => card.status === 'running').length
     const progress = queue ?? batch(cards)
     const hasRow = progress !== null
@@ -572,8 +618,8 @@ export const register: Register = (on, options) => {
     if (e.surface !== 'terminal' && 'Svg' in ui) {
       const width = Math.max(180, Math.min(1600, (e.props.bodyColumns || 100) * 8 - 60))
       const alt = progress
-        ? (progress.label ?? 'Autopilot queue') + ': tasks ' + progress.done + '/' + queueTotal(progress) + ', ' + plural(count, 'seat') + ' running'
-        : plural(count, 'seat') + ' running'
+        ? (progress.label ?? 'Autopilot queue') + ': tasks ' + progress.done + '/' + queueTotal(progress) + ', ' + plural(count, noun) + ' running'
+        : plural(count, noun) + ' running'
       return (
         <Box flexDirection="column">
           {hasRow && (
@@ -612,8 +658,8 @@ export const register: Register = (on, options) => {
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e, next) => {
     if (await isSeat($)) return next(e)
     await read($, seatPaneTickState)
-    const [seats, panel, now] = await Promise.all([read($, seatsState), read($, seatPanelState), $.clock.now()])
-    const cards = seats.map(seatCard)
+    const [all, panel, now] = await Promise.all([sessionCards($), read($, seatPanelState), $.clock.now()])
+    const cards = all
       .sort((a, b) => (b.startedAt ?? -1) - (a.startedAt ?? -1))
     const running = cards.filter(card => card.status === 'running')
     const done = cards.filter(card => card.status === 'done')
@@ -643,7 +689,7 @@ export const register: Register = (on, options) => {
         <ui.Svg
           key={item.id}
           source={drawnOnce('svg', width, item, () => cardSvg(width, item, now))}
-          alt={item.description + ': ' + item.vendor + ' ' + item.model + ', ' + stepLine(item)}
+          alt={item.description + ': ' + metaLine(item) + ', ' + stepLine(item)}
           width={width}
           height={CARD_H}
         />
@@ -657,7 +703,7 @@ export const register: Register = (on, options) => {
           <Box flexDirection="column" position="absolute" top={0} left={0} right={0}>
             <ui.Svg
               source={headerSvg(width, summary)}
-              alt={plural(cards.length, 'seat') + ', ' + fmtTokens(summary.tokens) + ' tokens, ' + fmtTime(summary.time)}
+              alt={(summary.agents === summary.seats ? plural(summary.seats, 'seat') : headline(summary)) + ', ' + fmtTokens(summary.tokens) + ' tokens, ' + fmtTime(summary.time)}
               width={width}
               height={HEADER_H}
             />

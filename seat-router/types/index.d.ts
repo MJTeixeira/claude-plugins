@@ -20,6 +20,21 @@ export type SeatDisplay = {
   lastTokens?: number
 }
 
+/** A subagent or workflow agent the engine ran for this session, kept from its spawn, steps, tool calls and turn ends. */
+export type NativeAgent = {
+  id: string
+  origin: 'subagent' | 'workflow'
+  description: string
+  model: string
+  effort?: string
+  status: 'running' | 'done'
+  startedAt: number
+  endedAt?: number
+  tokens: number
+  steps: number
+  lastAction?: string
+}
+
 export type SeatQuotaState = 'free' | 'unknown' | 'busy' | 'out'
 
 /** One window of a vendor's reading; `used` is a percentage. */
@@ -50,6 +65,7 @@ declare module 'claude-code' {
   interface PluginState {
     'seat-router': {
       seats: Shaped<SeatDisplay[]>
+      agents: Shaped<NativeAgent[]>
       quotas: Shaped<Partial<Record<SeatVendor, SeatQuotaDisplay>>>
       queue: QueueDisplay | null
       protection: string

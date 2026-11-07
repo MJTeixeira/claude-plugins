@@ -1,8 +1,11 @@
 // Adapted from savvy-progress by johnnyvizz; see ../NOTICE.md.
 import type { QueueDisplay, SeatQuotaDisplay, SeatQuotaWindow, SeatVendor } from '../types/index'
 
+export type Origin = 'seat' | 'subagent' | 'workflow'
+
 export type Card = {
   id: string
+  origin: Origin
   vendor: SeatVendor
   description: string
   model: string
@@ -15,11 +18,12 @@ export type Card = {
   lastAction?: string
 }
 
-export type Totals = { seats: number, tokens: number, time: number }
+export type Totals = { agents: number, seats: number, subagents: number, workflows: number, tokens: number, time: number }
 type Quotas = Partial<Record<SeatVendor, SeatQuotaDisplay>>
 
 export const VENDORS = ['claude', 'codex', 'agy'] as const
 export const PALETTE: Record<SeatVendor, string> = { claude: '#D97757', codex: '#168A88', agy: '#4285D4' }
+export const NATIVE = '#9333EA'
 export const ACCENT = '#8F8CF4'
 export const GREEN = '#3B9C5F'
 export const STEP = '#E07A52'
@@ -73,14 +77,44 @@ export const elapsed = (card: Card, now: number): number =>
 export const totals = (cards: Card[], now: number): Totals => {
   const started = cards.map(card => card.startedAt ?? now)
   const ended = cards.map(card => card.endedAt ?? Math.max(now, card.startedAt ?? now))
+  const count = (origin: Origin) => cards.filter(card => card.origin === origin).length
   return {
-    seats: cards.length,
+    agents: cards.length,
+    seats: count('seat'),
+    subagents: count('subagent'),
+    workflows: count('workflow'),
     tokens: cards.reduce((sum, card) => sum + (card.tokens ?? 0), 0),
     time: cards.length ? Math.max(...ended) - Math.min(...started) : 0,
   }
 }
 
 export const plural = (count: number, word: string): string => count + ' ' + word + (count === 1 ? '' : 's')
+
+const hasNative = (values: Totals): boolean => values.agents !== values.seats
+
+// A session with seats alone reads as it always has; one with native agents names the split.
+export const headline = (values: Totals): string => hasNative(values)
+  ? [plural(values.agents, 'agent'), values.seats ? plural(values.seats, 'seat') : '', values.subagents ? plural(values.subagents, 'subagent') : '',
+    values.workflows ? plural(values.workflows, 'workflow agent') : ''].filter(Boolean).join(' · ')
+  : plural(values.seats, 'seat') + ' in this session'
+
+export const countLabel = (values: Totals): string => hasNative(values) ? 'Agents' : 'Seats'
+
+export const shortModel = (model: string): string => {
+  const m1 = model.match(/^claude-([a-z]+)-(\d+)-(\d+)(?:-\d+)?$/i)
+  if (m1) return `${m1[1]} ${m1[2]}.${m1[3]}`
+  const m2 = model.match(/^claude-(\d+)-(\d+)-([a-z]+)$/i)
+  if (m2) return `${m2[3]} ${m2[1]}.${m2[2]}`
+  const m3 = model.match(/^claude-([a-z]+)-(\d+\.\d+)$/i)
+  if (m3) return `${m3[1]} ${m3[2]}`
+  const m4 = model.match(/^claude-([a-z]+)$/i)
+  if (m4) return m4[1]
+  return model
+}
+
+// A native agent always runs on Claude, which its model names, so its line leaves the vendor out.
+export const metaLine = (card: Card): string =>
+  [card.origin, card.origin === 'seat' ? card.vendor : '', shortModel(card.model), card.effort].filter(Boolean).join(' · ')
 
 // Seats report no planned total: the bar creeps toward full as steps add up, and fills when done.
 export const progress = (card: Card): number => card.status === 'done' ? 1 : card.steps / (card.steps + 6)
@@ -232,24 +266,30 @@ const halfMoon = (x: number, y: number, color: string): string =>
   `<circle cx="${x}" cy="${y}" r="5" fill="none" stroke="${color}" stroke-width="1.4"/><path d="M${x} ${y - 5}a5 5 0 0 0 0 10z" fill="${color}"/>`
 
 export const cardSvg = (width: number, card: Card, now: number): string => {
-  const color = PALETTE[card.vendor]
+  const isSeat = card.origin === 'seat'
+  const color = isSeat ? PALETTE[card.vendor] : NATIVE
   const isDone = card.status === 'done'
   const left = 82
   const right = width - 16
   const stats = fmtTokens(card.tokens) + ' tokens · ' + fmtTime(elapsed(card, now))
-  const meta = [card.vendor, card.model, card.effort].filter(Boolean).join(' · ')
-  const metaWidth = right - left - textWidth(stats, 12) - 12
+  const meta = metaLine(card)
+  const statsWidth = textWidth(stats, 12)
+  const isWide = right - left - statsWidth - 16 >= textWidth(meta, 12)
   const step = stepLine(card)
   const barWidth = right - left
   const fill = Math.round(barWidth * progress(card))
+  const stepX = isDone ? left : left + 16
+  const wideStepWidth = right - stepX
+  const narrowStepWidth = Math.max(30, right - stepX - statsWidth - 8)
   return svg(width, CARD_H, ''
-    + `<rect x="0.75" y="0.75" width="${width - 1.5}" height="${CARD_H - 9.5}" rx="10" fill="${color}" fill-opacity="${isDone ? 0.03 : 0.06}" stroke="${color}" stroke-opacity="${isDone ? 0.35 : 0.65}" stroke-width="1.5"/>`
-    + sprite(card.vendor, 20, 26, 2, isDone, !isDone)
+    + `<rect x="0.75" y="0.75" width="${width - 1.5}" height="${CARD_H - 9.5}" rx="10" fill="${color}" fill-opacity="${isDone ? 0.03 : 0.06}" stroke="${color}" stroke-opacity="${isDone ? 0.35 : 0.65}" stroke-width="1.5"${isSeat ? '' : ' stroke-dasharray="6 4"'}/>`
+    + (isSeat ? sprite(card.vendor, 20, 26, 2, isDone, !isDone) : CRAB_CSS + crab(20, 26, color, 2, isDone, !isDone))
     + text(left, 25, 14, fitText(card.description, 14, right - left - 20), 'class="t" font-weight="600"')
-    + text(left, 44, 12, fitText(meta, 12, Math.max(40, metaWidth)), 'class="s"')
-    + text(right, 44, 12, stats, 'class="s" text-anchor="end" font-variant-numeric="tabular-nums"')
+    + text(left, 44, 12, meta, 'class="s"')
+    + (isWide ? text(right, 44, 12, stats, 'class="s" text-anchor="end" font-variant-numeric="tabular-nums"') : '')
     + (isDone ? '' : halfMoon(left + 5, 59.5, STEP))
-    + text(isDone ? left : left + 16, 64, 12.5, fitText(step, 12.5, right - left - 16), `fill="${isDone ? GREEN : STEP}" font-weight="500"`)
+    + text(stepX, 64, 12.5, fitText(step, 12.5, isWide ? wideStepWidth : narrowStepWidth), `fill="${isDone ? GREEN : STEP}" font-weight="500"`)
+    + (isWide ? '' : text(right, 64, 12, stats, 'class="s" text-anchor="end" font-variant-numeric="tabular-nums"'))
     + `<rect class="k" x="${left}" y="72" width="${barWidth}" height="3" rx="1.5"/>`
     + `<rect x="${left}" y="72" width="${fill}" height="3" rx="1.5" fill="${color}"${isDone ? ' fill-opacity=".6"' : ''}/>`
     + statusMark(right - 2, 21, card.status))
@@ -264,8 +304,8 @@ export const headerSvg = (width: number, values: Totals): string => {
       + text(x + 12, 47, 12, label, 'class="s"')
       + text(x + 12, 67, 15, value, `fill="${PALETTE.claude}" font-weight="600" font-variant-numeric="tabular-nums"`)
   }
-  return svg(width, HEADER_H, text(0, 17, 15, plural(values.seats, 'seat') + ' in this session', `fill="${PALETTE.claude}" font-weight="600"`)
-    + tile(0, 'Seats', String(values.seats))
+  return svg(width, HEADER_H, text(0, 17, 15, fitText(headline(values), 15, width), `fill="${PALETTE.claude}" font-weight="600"`)
+    + tile(0, countLabel(values), String(values.agents))
     + tile(1, 'Tokens', fmtTokens(values.tokens))
     + tile(2, 'Time', fmtTime(values.time)))
 }

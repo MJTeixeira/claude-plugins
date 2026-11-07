@@ -410,9 +410,12 @@ function attemptView($: EngineInterface) {
 
 
 async function readActivity($: EngineInterface, seat: Shown): Promise<Activity | undefined> {
-  const adapter = ADAPTERS[seat.vendor]
-  if (seat.status !== 'running') return undefined
-  const transcript = join(seat.dir, adapter.transcript)
+  return seat.status === 'running' ? activityIn($, seat.vendor, seat.dir) : undefined
+}
+
+async function activityIn($: EngineInterface, vendor: SeatVendor, dir: string): Promise<Activity> {
+  const adapter = ADAPTERS[vendor]
+  const transcript = join(dir, adapter.transcript)
   let steps = 0
   // A transcript not written yet, or a grep that fails, leaves the seat at 0 steps until the next poll.
   try {
@@ -457,13 +460,20 @@ export async function probeSandboxes($: EngineInterface): Promise<void> {
     ? [runTool($, { script: adapter.probe.script }, { timeoutMs: 90_000 }, [join(root, adapter.probe.file)])] : []))
 }
 
+const isNoRemote = (text: string): boolean =>
+  /no git remotes found|none of the git remotes|not a git repository/i.test(text)
+
 // The forge's protection of the session repository's default branch, as a /seats line. GitHub refuses
 // the read with HTTP 403 on a private repository of a free plan, and answers 404 for both an
-// unprotected branch and a repository the token cannot administer.
+// unprotected branch and a repository the token cannot administer. A folder without a GitHub remote has nothing to protect.
 export async function branchProtection($: EngineInterface): Promise<string> {
   const repo = await io($, ['exec', 'gh', 'api', 'repos/{owner}/{repo}', '--jq', '.default_branch'], { timeoutMs: 15_000 })
   const branch = repo.stdout.trim()
-  if (repo.exitCode !== 0 || !branch) return 'Branch protection: cannot be read (' + (repo.stderr.trim().split('\n').pop() || 'gh exited ' + repo.exitCode) + ').'
+  if (repo.exitCode !== 0 || !branch) {
+    const error = repo.stderr.trim().split('\n').pop() || 'gh exited ' + repo.exitCode
+    if (isNoRemote(error)) return ''
+    return 'Branch protection: cannot be read (' + error + ').'
+  }
   const read = await io($, ['exec', 'gh', 'api', 'repos/{owner}/{repo}/branches/' + branch + '/protection'], { timeoutMs: 15_000 })
   const answer = asObject(readJson(read.stdout))
   const message = typeof answer?.message === 'string' ? answer.message : ''
@@ -583,6 +593,7 @@ export async function startSeat($: EngineInterface, input: AgentInput, marker: M
   }
   const seat = { id: picked.id, dir: String(asObject(readJson(made.stdout))?.dir ?? picked.dir) }
   const first = initial.chain[initial.position] ?? initial.chain[0]
+  watched.add(seat.id)
   await putSeat($, {
     id: seat.id, dir: seat.dir, description: input.description, tier: marker.tier, status: 'running', startedAt: await $.clock.now(),
     vendor: first?.vendor ?? 'claude', model: first?.model ?? '', effort: first?.effort ?? '', ...(first?.account ? { account: first.account } : {}),
@@ -593,6 +604,9 @@ export async function startSeat($: EngineInterface, input: AgentInput, marker: M
 const ADOPT_EVERY_MS = 60_000
 let adoptedAt = 0
 const liveTokenMemos = new Map<string, Record<string, unknown>>()
+// Seats started here or seen running: a seat can end and leave the live folder between two polls, so the poll that
+// first misses one reads its folder once more.
+const watched = new Set<string>()
 
 async function liveTokens($: EngineInterface, seat: Shown): Promise<number | undefined> {
   if (seat.status !== 'running') return undefined
@@ -601,12 +615,34 @@ async function liveTokens($: EngineInterface, seat: Shown): Promise<number | und
   return found.tokens
 }
 
+// A seat's last tokens, steps and action, from its folder once it has ended.
+async function settleSeat($: EngineInterface, id: string, dir: string): Promise<void> {
+  const prior = (await read($, seatsState)).find(seat => seat.id === id)
+  if (!prior || !await $.fs.exists(join(dir, ADAPTERS[prior.vendor].transcript))) return
+  const { tokens } = await ADAPTERS[prior.vendor].liveTokens(attemptView($), dir, liveTokenMemos.get(id) ?? {})
+  const activity = await activityIn($, prior.vendor, dir)
+  await update($, seatsState, seats => seats.map(seat => {
+    if (seat.id !== id || seat.vendor !== prior.vendor) return seat
+    const { liveTokens: _, ...rest } = seat
+    const lastTokens = tokens ?? seat.liveTokens ?? seat.lastTokens
+    return { ...rest, ...activity, ...(lastTokens === undefined ? {} : { lastTokens }) }
+  }))
+}
+
 export async function poll($: EngineInterface): Promise<void> {
   const home = await seatHome($)
   const ids = await lineage($)
   await deliverMail($, ids)
   const shown = (await liveEntries($)).filter(entry => ids.includes(entry.sessionId)).map((entry): Shown => ({ ...entry, startedAt: entry.createdAt }))
-  for (const seat of shown) await putSeat($, seat, await liveTokens($, seat), await readActivity($, seat))
+  for (const seat of shown) {
+    watched.add(seat.id)
+    await putSeat($, seat, await liveTokens($, seat), await readActivity($, seat))
+  }
+  for (const id of watched) {
+    if (shown.some(seat => seat.id === id)) continue
+    watched.delete(id)
+    await settleSeat($, id, seatDirOf(home, id))
+  }
   for (const id of liveTokenMemos.keys()) if (!shown.some(seat => seat.id === id)) liveTokenMemos.delete(id)
   const now = await $.clock.now()
   if (now - adoptedAt < ADOPT_EVERY_MS) return

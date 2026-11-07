@@ -1,8 +1,8 @@
 // Adapted from savvy-progress by johnnyvizz; see ../NOTICE.md.
 import type { QueueDisplay, SeatQuotaDisplay, SeatQuotaWindow, SeatVendor } from '../types/index'
 import {
-  ACCENT, GREEN, INK, PALETTE, RED, STEP, UNKNOWN,
-  elapsed, figureRows, fmtTime, fmtTokens, plural, progress, quotaNote, stepLine, windowTone,
+  ACCENT, GREEN, INK, NATIVE, PALETTE, RED, STEP, UNKNOWN,
+  countLabel, elapsed, figureRows, fmtTime, fmtTokens, headline, metaLine, plural, progress, quotaNote, stepLine, windowTone,
 } from './art'
 import type { Card, Totals } from './art'
 
@@ -98,16 +98,16 @@ export const pixel = (c: Canvas, x: number, y: number, color: number): void => {
   c.pixels[y * c.columns + x] = color
 }
 
-export const frame = (c: Canvas, x: number, y: number, width: number, height: number, color: number): void => {
+export const frame = (c: Canvas, x: number, y: number, width: number, height: number, color: number, dashed = false): void => {
   const right = x + width - 1
   const bottom = y + height - 1
   for (let cx = x + 1; cx < right; cx += 1) {
-    put(c, cx, y, '─', color)
-    put(c, cx, bottom, '─', color)
+    put(c, cx, y, dashed ? '╌' : '─', color)
+    put(c, cx, bottom, dashed ? '╌' : '─', color)
   }
   for (let cy = y + 1; cy < bottom; cy += 1) {
-    put(c, x, cy, '│', color)
-    put(c, right, cy, '│', color)
+    put(c, x, cy, dashed ? '╎' : '│', color)
+    put(c, right, cy, dashed ? '╎' : '│', color)
   }
   put(c, x, y, '╭', color)
   put(c, right, y, '╮', color)
@@ -307,10 +307,10 @@ export const queueRaster = (queue: QueueDisplay | null, running: number, columns
 export const headerRaster = (values: Totals, columns: number): Drawing => {
   const c = canvas(columns, 5)
   const claude = rgb(PALETTE.claude)
-  write(c, 0, 0, plural(values.seats, 'seat') + ' in this session', claude)
+  write(c, 0, 0, headline(values), claude)
   const gap = 1
   const cell = Math.floor((columns - gap * 2) / 3)
-  const tiles: [string, string][] = [['Seats', String(values.seats)], ['Tokens', fmtTokens(values.tokens)], ['Time', fmtTime(values.time)]]
+  const tiles: [string, string][] = [[countLabel(values), String(values.agents)], ['Tokens', fmtTokens(values.tokens)], ['Time', fmtTime(values.time)]]
   tiles.forEach(([label, value], index) => {
     const x = index * (cell + gap)
     frame(c, x, 1, cell, 4, SECONDARY)
@@ -344,22 +344,37 @@ const drawFigure = (c: Canvas, vendor: SeatVendor, x: number, y: number, color: 
 export const cardRaster = (card: Card, now: number, columns: number): Drawing => {
   const c = canvas(columns, CARD_ROWS)
   const isDone = card.status === 'done'
-  const vendor = rgb(PALETTE[card.vendor])
-  const color = isDone ? dim(vendor) : vendor
-  frame(c, 0, 0, columns, CARD_ROWS, color)
-  const hasFigure = columns >= 34
+  const isSeat = card.origin === 'seat'
+  const baseColor = isSeat ? rgb(PALETTE[card.vendor]) : rgb(NATIVE)
+  const color = isDone ? dim(baseColor) : baseColor
+  frame(c, 0, 0, columns, CARD_ROWS, color, !isSeat)
+  const hasFigure = columns >= 48
   if (hasFigure) drawFigure(c, card.vendor, 2, 2, color, isDone ? dim(rgb(INK)) : rgb(INK))
   const left = hasFigure ? 2 + LOGO_COLUMNS + 2 : 2
   const right = columns - 2
   write(c, right - 1, 1, isDone ? '✓' : '●', rgb(GREEN))
   write(c, left, 1, card.description, DEFAULT, right - 2 - left)
+  const meta = metaLine(card)
   const stats = fmtTokens(card.tokens) + ' tokens · ' + fmtTime(elapsed(card, now))
-  const statsX = writeEnd(c, right, 2, stats, SECONDARY)
-  write(c, left, 2, [card.vendor, card.model, card.effort].filter(Boolean).join(' · '), SECONDARY, statsX - 1 - left)
-  if (isDone) write(c, left, 3, stepLine(card), rgb(GREEN), right - left)
-  else {
-    put(c, left, 3, '◑', rgb(STEP))
-    write(c, left + 2, 3, stepLine(card), rgb(STEP), right - left - 2)
+  const isWide = right - left >= meta.length + stats.length + 2
+
+  if (isWide) {
+    const statsX = writeEnd(c, right, 2, stats, SECONDARY)
+    write(c, left, 2, meta, SECONDARY, statsX - 1 - left)
+    if (isDone) write(c, left, 3, stepLine(card), rgb(GREEN), right - left)
+    else {
+      put(c, left, 3, '◑', rgb(STEP))
+      write(c, left + 2, 3, stepLine(card), rgb(STEP), right - left - 2)
+    }
+  } else {
+    write(c, left, 2, meta, SECONDARY, right - left)
+    const statsX = writeEnd(c, right, 3, stats, SECONDARY)
+    const stepEnd = Math.max(left, statsX - 1)
+    if (isDone) write(c, left, 3, stepLine(card), rgb(GREEN), stepEnd - left)
+    else {
+      put(c, left, 3, '◑', rgb(STEP))
+      write(c, left + 2, 3, stepLine(card), rgb(STEP), stepEnd - left - 2)
+    }
   }
   thinBar(c, left, 4, right - left, progress(card), color, SECONDARY)
   return finish(c)
