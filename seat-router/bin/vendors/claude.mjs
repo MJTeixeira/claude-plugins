@@ -48,7 +48,8 @@ const facts = async (io, { seat, configDir }) => {
 // the sandbox not start, the seat fails and moves on rather than run unsandboxed). The sandbox leaves a worktree's git folders writable, so they are denied
 // by absolute path (`//`), which the sandbox and the file tools both honour. On Windows,
 // where Claude Code's sandbox does not run, a reviewer has no shell at all; its file tools
-// stay held to its folder by acceptEdits. A reviewer gets only the tools that read and edit
+// stay held to its folder by acceptEdits. A reviewer's file tools read anywhere, as its sandboxed
+// shell already can (`Read(//**)`): a headless seat cannot answer a read prompt. A reviewer gets only the tools that read and edit
 // files (`--tools`), none that publishes, schedules or messages.
 // An owner runs without prompts, its shell commands past owner-guard.mjs, which sees no MCP
 // tool: so no seat gets an MCP server or a claude.ai connector (`--strict-mcp-config`).
@@ -62,13 +63,13 @@ const plan = ({ seat, brief, os, guard, configDir, facts }) => {
     // --claude: the hook's tool_name names the shell, and Claude Code's Bash tool is a POSIX shell on Windows too.
     hooks: { PreToolUse: [{ matcher: SHELL_TOOLS.join('|'), hooks: [{ type: 'command', command: guard + ' --claude' }] }] },
   } : noShell ? {
-    permissions: { deny: [...SHELL_TOOLS, 'Edit(.git/**)', ...gitDenied, 'WebFetch', 'WebSearch'] },
+    permissions: { allow: ['Read(//**)'], deny: [...SHELL_TOOLS, 'Edit(.git/**)', ...gitDenied, 'WebFetch', 'WebSearch'] },
   } : {
     sandbox: {
       enabled: true, failIfUnavailable: true, autoAllowBashIfSandboxed: true, allowUnsandboxedCommands: false,
       network: { allowedDomains: [] },
     },
-    permissions: { deny: ['Edit(.git/**)', ...gitDenied, 'WebFetch', 'WebSearch'] },
+    permissions: { allow: ['Read(//**)'], deny: ['Edit(.git/**)', ...gitDenied, 'WebFetch', 'WebSearch'] },
   }
   const settings = {
     env: { CLAUDE_CODE_PLUGIN_DIRS: '' },
