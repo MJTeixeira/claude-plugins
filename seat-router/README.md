@@ -388,14 +388,16 @@ names a process runner. Shell wrappers keep the same checks.
 
 The band above the prompt shows each vendor's quota state, and the time an out vendor is back.
 Each window is named by its length, such as `5h` or `7d`. For agy the band shows the Gemini
-bucket only, so it keeps to one line; `/seats` prints the Argon and third-party buckets too.
+bucket only, so it keeps to one line.
 While seats run, it shows a `×N` button that opens the seats pane. When the session reports an
 autopilot queue through the mod's `queue` tool, the band also shows the queue's progress.
+The mod clears the queue when the main turn ends with no seat or subagent still running.
 
 `/seats` opens or closes the pane, with one card per seat of this conversation. Opening it prints
-one chat line, "Seats pane opened." Branch protection, quota rules and scopes, and this
-conversation's undelivered reports appear inside the pane. Chat adds lines only for jobs-setting
-problems and failed quota reads that need attention. `/seats setup` still configures the plugin.
+one chat line, "Seats pane opened." Below the cards, the pane shows only this conversation's
+undelivered reports, jobs-setting problems, failed quota reads, and branch-protection read errors
+that may also block a seat using GitHub. Chat adds lines only for jobs-setting problems and failed
+quota reads that need attention. `/seats setup` still configures the plugin.
 
 To stop a seat, the session calls TaskStop with the seat's id. The mod answers at once with
 "Stopping seat <id>; its report follows.", ends the seat's CLI, and sends the report as usual. For
