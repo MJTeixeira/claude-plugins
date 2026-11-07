@@ -404,6 +404,13 @@ const namesGit = word => {
   return glob.test('git') || glob.test('git.exe')
 }
 
+// A word of wildcards alone (`*`, `???`, `[a-z]*`) names git only through the file names of a folder, so it counts only
+// where it may run: as a command's program word or after a runner or a wrapper.
+const wildcardOnly = word => /^(?:\[[^\]]*\]|[*?])+$/.test(word.split(/[\\/]/).pop())
+const runsGit = words => words.some((word, index) => namesGit(word) && (!wildcardOnly(word)
+  || words.slice(0, index).every(before => /^[A-Za-z_][A-Za-z0-9_]*=/.test(before) || LEADS.includes(before))
+  || words.slice(0, index).some(before => runner(before) || WRAPPERS.includes(programName(before)))))
+
 const dynamic = word => word !== '[' && word !== '[[' && (/[$`*?[\]{}%!]/.test(word) || word.startsWith('='))
 
 const runner = word => {
@@ -439,6 +446,8 @@ const runsScript = (sub, args) => sub === 'filter-branch' || (sub === 'submodule
 const quoted = windows => windows ? /'[^']*'|"[^"]*"/g : /'[^']*'|"(?:[^"\\]|\\.)*"/g
 // A here-document whose delimiter is quoted is text: its body runs only when a shell reads it, and a shell is a runner.
 const HEREDOC = /(<<-?[ \t]*(['"])([^'"\s]+)\2[^\n]*)\n[\s\S]*?\n[ \t]*\3[ \t]*(?=\n|$)/g
+// Any here-document, its delimiter quoted or not: its opener and its body.
+const ANY_HEREDOC = /(<<-?[ \t]*(['"]?)([^'"\s]+)\2[^\n]*)\n([\s\S]*?)\n[ \t]*\3[ \t]*(?=\n|$)/g
 const SUBSTITUTION = /\$\(|`|[<>]\(/
 
 const interpreter = word => /^(python[\d.]*|node|ruby|perl|deno|bun)$/.test(programName(word))
@@ -448,7 +457,7 @@ const processRunner = (text, program) => /\b(?:subprocess|child_process)\b|\bos\
 // Interpreter payloads are data unless they name a process runner. Keep shell substitutions visible and leave
 // shell wrappers alone: their payloads still run as shell commands, even when they contain an interpreter.
 const interpreterData = line => {
-  const text = line.replace(/(<<-?[ \t]*(['"]?)([^'"\s]+)\2[^\n]*)\n([\s\S]*?)\n[ \t]*\3[ \t]*(?=\n|$)/g,
+  const text = line.replace(ANY_HEREDOC,
     (whole, opener, quote, _delimiter, body, offset) => {
       const header = line.slice(line.lastIndexOf('\n', offset - 1) + 1, offset)
       const words = commands(header).at(-1) ?? []
@@ -512,14 +521,14 @@ const scope = line => {
   }
   if (hit !== undefined || !(opaque || dynamicHead)) return hit
   const unquoted = [false, true].map(windows => joined(line, windows).replace(HEREDOC, '$1'))
-  const words = [false, true].flatMap(windows => {
-    const text = joined(line, windows)
-    return [text.replace(/\\_/g, ' ').replace(/[\\^`'"]/g, ''), ...commands(text, windows).flat()].flatMap(tokens)
-  })
+  const loose = text => text.replace(/\\_/g, ' ').replace(/[\\^`'"]/g, '')
+  const readings = [false, true].map(windows => [windows, joined(line, windows)])
+  const words = readings.flatMap(([windows, text]) => [loose(text), ...commands(text, windows).flat()].flatMap(tokens))
   const aborts = words.some(word => /^--(abort|quit|skip)$/i.test(word))
   const found = words.filter(word => DISCARD_WORDS.includes(word.toLowerCase()) || /^--force-(with-lease|if-includes)/i.test(word)
     || (aborts && ABORTING.includes(word.toLowerCase())))
-  const hasGit = words.some(namesGit)
+  const hasGit = words.some(word => namesGit(word) && !wildcardOnly(word))
+    || readings.some(([windows, text]) => [...commands(loose(text), windows), ...commands(text, windows)].some(runsGit))
   const reached = (dynamicHead && found.length > 0) || (opaque && hasGit && (found.length > 0 || unquoted.some(t => /[$`]/.test(t))))
   if (!reached) return undefined
   return found.length === 0 ? 'commands' : found[0].startsWith('-') ? 'push' : found[0].toLowerCase()
@@ -764,9 +773,12 @@ const walk = (parts, start, rules, sub) => {
 // either way, is the line inside it, read as PowerShell reads it.
 const WRAPPER = /^\s*(?:"(?:[^"]*[\\/])?(?:powershell|pwsh)(?:\.exe)?"|(?:[^\s"']*[\\/])?(?:powershell|pwsh)(?:\.exe)?)(?:\s+-(?:NoProfile|NoLogo|NonInteractive))*\s+-Command\s+(?:'([^']*)'|"([^"]*)")\s*$/i
 
+// The programs of a line's commands but git and cd: a here-document's body is the input of its command, and the `&` of a
+// `>&` or `<&` redirection ends no command.
 const otherCommands = (text, windows) => {
   const others = []
-  for (const words of commands(text, windows)) {
+  const lines = text.replace(ANY_HEREDOC, '$1').replace(/([<>])&/g, '$1')
+  for (const words of commands(lines, windows)) {
     const clean = words.filter(word => !isRedirect(word))
     const first = clean.find(word => !/^[A-Za-z_][A-Za-z0-9_]*=/.test(word))
     if (!first) continue

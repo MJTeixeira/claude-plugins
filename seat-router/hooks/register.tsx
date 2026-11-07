@@ -228,6 +228,21 @@ async function hasRunningSeat($: EngineInterface): Promise<boolean> {
   return (await read($, seatsState)).some(seat => isRunning(seat.status))
 }
 
+// The engine's agent list, not a record of launches: a message resumes a finished agent under its id, and a reload
+// or /clear starts any record of the mod's over while its agents run on.
+const AGENT_RUNS: ReadonlySet<string> = new Set(['pending', 'running', 'waiting'])
+
+async function hasRunningAgent($: EngineInterface): Promise<boolean> {
+  return (await $.agent.list()).some(agent => AGENT_RUNS.has(agent.status))
+}
+
+// The model reports the queue and can forget to clear it: a main turn that ends with nothing left running clears it.
+async function clearIdleQueue($: EngineInterface, e: { agentId?: string }): Promise<void> {
+  if (e.agentId !== undefined || await read($, queueState) === null) return
+  if (await hasRunningSeat($) || await hasRunningAgent($)) return
+  await update($, queueState, () => null)
+}
+
 async function tickElapsed($: EngineInterface): Promise<void> {
   if (await isPaneOpen($) && await hasRunningSeat($)) {
     await update($, seatPaneTickState, tick => tick + 1)
@@ -491,7 +506,9 @@ export const register: Register = (on, options) => {
 
   on('turn.complete', async ($, e, next) => {
     const ended = await next(e)
-    if (!await isSeat($)) await turnEnded($, e)
+    if (await isSeat($)) return ended
+    await turnEnded($, e)
+    await clearIdleQueue($, e)
     return ended
   }).catch(($, e, next) => next(e))
 
@@ -613,8 +630,9 @@ export const register: Register = (on, options) => {
       />
     )
     const empty = cards.length === 0 && <Text dimColor>No seats yet.</Text>
-    const details = [String(await read($, protectionState) ?? ''), ...seatJobs().problems.map(problem => 'Jobs setting: ' + problem),
-      ...await quotaLines($, busyAtSetting()), ...await undeliveredLines($)].filter(Boolean)
+    const protection = String(await read($, protectionState) ?? '')
+    const details = [protection.includes('cannot be read') ? protection : '', ...seatJobs().problems.map(problem => 'Jobs setting: ' + problem),
+      ...(await quotaLines($, busyAtSetting())).filter(line => line.includes(' quota unreadable at ')), ...await undeliveredLines($)].filter(Boolean)
     const notes = <Box flexDirection="column">{details.map((line, index) => <Text key={'detail-' + index}>{line}</Text>)}</Box>
 
     if (e.surface !== 'terminal' && 'Svg' in ui) {
