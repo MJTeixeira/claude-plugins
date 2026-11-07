@@ -10,8 +10,8 @@
 // of its own; an owner keeps them all. Nothing under the operator's ~/.gemini is touched.
 // `--home DIR` builds the HOME at DIR instead of the shared one; `--own DIR` names the seat's folder to the guard,
 // and holds in DIR/agy-state the conversation store the operator has none of.
-// `release` copies the images agy saved for the conversation read from `--transcript` to
-// `--keep DIR`, prints each copy's path, and deletes HOME even when a copy fails.
+// `release` copies the images the seat generated for the conversation read from `--transcript`
+// to `--keep DIR` (skipping agy view copies and subfolders), prints each copy's path, and deletes HOME even when a copy fails.
 // Usage: node agy-seat-home.mjs [owner] [--home DIR] [--own DIR]
 //        node agy-seat-home.mjs release --home DIR --own DIR --transcript FILE --keep DIR
 import { execFileSync } from 'node:child_process'
@@ -76,10 +76,10 @@ const within = (root, path) => {
   return rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel)
 }
 
+const VIEW_COPY = /^step_\d+_media_\d+\.[^.]+$/
 const imagesIn = folder => readdirSync(folder, { withFileTypes: true }).flatMap(entry => {
-  const path = join(folder, entry.name)
-  if (entry.isDirectory()) return imagesIn(path)
-  return entry.isFile() && IMAGE.has(extname(entry.name).toLowerCase()) ? [path] : []
+  const isImage = entry.isFile() && IMAGE.has(extname(entry.name).toLowerCase())
+  return isImage && !VIEW_COPY.test(entry.name) ? [join(folder, entry.name)] : []
 })
 
 // A hard link would carry a file from outside the seat in, so only a file with one name is copied.
