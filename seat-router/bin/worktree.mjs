@@ -1,8 +1,14 @@
+const SHOWN_PATHS = 3
+
 /** Why removing a ready worktree would lose work; ignored files do not count. */
 export const worktreeKeepReason = async (git, tree, baseSha) => {
   const status = await git(['-C', tree, 'status', '--porcelain', '--untracked-files=all', '--ignore-submodules=none'])
   if (status.exitCode !== 0) return 'git could not read its changes'
-  if (status.stdout.trim()) return 'it has uncommitted changes, untracked files or submodule changes'
+  const paths = status.stdout.split('\n').filter(Boolean).map(line => line.slice(3))
+  if (paths.length) {
+    const more = paths.length > SHOWN_PATHS ? ' and ' + (paths.length - SHOWN_PATHS) + ' more' : ''
+    return 'it has uncommitted changes, untracked files or submodule changes: ' + paths.slice(0, SHOWN_PATHS).join(', ') + more
+  }
   const commits = await git(['-C', tree, 'rev-list', 'HEAD', '--not', '--remotes', ...(baseSha ? [baseSha] : [])])
   if (commits.exitCode !== 0) return 'git could not read its unpushed commits'
   if (commits.stdout.trim()) return 'it has unpushed commits'

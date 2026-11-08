@@ -1,4 +1,4 @@
-import { POWERSHELL_51_NOTE, PYTHON_UTF8, asObject, candidateScopes, durationName, familyOfModel, fileName, guarded, join, lastActionWith, numberAt, readJson, scriptUsage, textAt } from './shared.mjs'
+import { POWERSHELL_51_NOTE, POWERSHELL_51_UNSET, PYTHON_UTF8, asObject, candidateScopes, durationName, familyOfModel, fileName, guarded, join, lastActionWith, numberAt, readJson, scriptUsage, textAt } from './shared.mjs'
 
 // codex's unelevated Windows sandbox refuses a process node starts with piped stdio (EPERM,
 // openai/codex#47868); one that inherits or ignores stdio starts, and so do
@@ -30,8 +30,11 @@ const PROBE = { script: 'codex-mxc.mjs', file: 'codex-sandbox' }
 // (openai/codex#48183).
 // The hook comes from the command line, which codex runs only past its hook trust check. A worktree reviewer's hook also
 // sees apply_patch, codex's file-edit tool, which reaches PreToolUse as `apply_patch` with the patch as tool_input.command
-// (codex-rs/core/src/tools/handlers/apply_patch.rs, pre_tool_use_payload).
-const guardFlags = (guard, reviewer) => ['--dangerously-bypass-hook-trust', '-c',
+// (codex-rs/core/src/tools/handlers/apply_patch.rs, pre_tool_use_payload). codex's write_stdin, which sends text to a
+// command exec_command started, reaches no PreToolUse (handlers/unified_exec/write_stdin.rs, pre_tool_use_payload), so a
+// guarded seat runs without unified_exec_tty: a command then runs without a terminal, and write_stdin can only poll it or
+// send Ctrl-C (unified_exec/process_manager.rs, StdinClosed).
+const guardFlags = (guard, reviewer) => ['--dangerously-bypass-hook-trust', '-c', 'features.unified_exec_tty=false', '-c',
   'hooks.PreToolUse=[{matcher="' + (reviewer ? 'Bash|apply_patch' : 'Bash') + '",hooks=[{type="command",command=' + JSON.stringify(guard) + '}]}]']
 
 // A codex or agy owner, and a reviewer with a worktree, reach the network, .git, Docker and
@@ -79,7 +82,7 @@ const plan = ({ seat, brief, os, guard, facts, main = [] }) => {
       // it on PATH codex runs System32's powershell.exe. An owner runs outside the sandbox
       // and keeps it: codex prefers pwsh, and Windows PowerShell 5.1 pipes text into a
       // program as ASCII, so each non-ASCII character arrives as `?`.
-      ...(windowsReviewer ? { dropWindowsApps: true } : {}),
+      ...(windowsReviewer ? { dropWindowsApps: true, unset: POWERSHELL_51_UNSET } : {}),
       stdout: join(seat.dir, 'codex.jsonl'), stderr: join(seat.dir, 'codex.err'), outputs: [join(seat.dir, 'final.md')],
     },
   }

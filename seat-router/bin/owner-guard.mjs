@@ -13,6 +13,7 @@
 // Usage: node owner-guard.mjs [--own SEAT_FOLDER] [--reviewer [--main CHECKOUT]...] < hook-input.json
 import { spawnSync } from 'node:child_process'
 import { existsSync, readFileSync, realpathSync } from 'node:fs'
+import { homedir } from 'node:os'
 import nodePath from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -20,28 +21,59 @@ const SHELLS = ['sh', 'bash', 'zsh', 'dash', 'ksh', 'fish', 'pwsh', 'powershell'
 const WRAPPERS = ['command', 'builtin', 'exec', 'nohup', 'time', 'sudo', 'doas', 'xargs', 'nice']
 const GIT_VALUE_OPTIONS = ['-C', '-c', '--git-dir', '--work-tree', '--namespace', '--exec-path', '--config-env']
 const REMOVERS = ['rm', 'remove-item', 'ri', 'del', 'erase', 'rd', 'rmdir']
+// cmd ignores a leading @ and ends an internal command's name at a slash, so @rd/s/q is rd /s /q.
+const CMD_REMOVER = /^@?(rd|rmdir|del|erase)(\/.*)?$/i
+const REMOVER_WORD = /\b(?:rm|rd|rmdir|del|erase|remove-item|ri)\b/i
 const DEFAULT_BRANCHES = ['main', 'master', 'dev', 'develop', 'trunk']
 const PUSH_VALUE_OPTIONS = ['--repo', '--receive-pack', '--exec', '-o', '--push-option']
+// A word that sets a variable, appending to it with +=.
+const ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*\+?=/
 
-/** A command line as simple commands, each a list of words; quotes are honoured, and every shell operator ends a command. A `\` escapes the next character as in a POSIX shell; read the `windows` way, `\` is an ordinary character and cmd's `^` and PowerShell's `` ` `` escape the next one instead. */
-export function commands(line, windows = false) {
+// The index of the `}` closing a parameter expansion (`${f%%/*}`, PowerShell's `${env:TEMP}`) that starts at `at`, or -1 when
+// its body names no parameter, may run a command, or holds a quote, whitespace or another expansion: then the braces still
+// split the line, as before, so a command inside stays visible.
+const braced = (line, at) => {
+  const close = line.indexOf('}', at + 2)
+  const body = line.slice(at + 2, close)
+  return close === -1 || !/^[!#]?[\w@*#?!-]/.test(body) || /[$`'"\\\s(){]/.test(body) ? -1 : close
+}
+
+/**
+ * A command line as simple commands, each a list of words; quotes are honoured, and every shell operator ends a command. A `\` escapes the next character as in a POSIX shell; read the `windows` way, `\` is an ordinary character and cmd's `^` and PowerShell's `` ` `` escape the next one instead.
+ * `operators`, when given, receives for each command the operator characters between it and the command before it.
+ */
+export function commands(line, windows = false, operators = undefined) {
   const found = []
   let words = []
   let word = ''
   let started = false
+  let between = ''
   const endWord = () => {
     if (started) words.push(word)
     word = ''
     started = false
   }
-  const endCommand = () => {
+  const endCommand = (operator = '') => {
     endWord()
-    if (words.length) found.push(words)
+    if (words.length) {
+      found.push(words)
+      operators?.push(between)
+      between = ''
+    }
     words = []
+    between += operator
   }
   for (let index = 0; index < line.length; index += 1) {
     const char = line[index]
-    if (char === "'") {
+    const braces = char === '$' && line[index + 1] === '{' ? braced(line, index) : -1
+    if (!windows && char === '$' && line[index + 1] === "'") {
+      // bash's and zsh's `$'...'`, where `\'` is a quote inside the string.
+      let end = index + 2
+      while (end < line.length && line[end] !== "'") end += line[end] === '\\' ? 2 : 1
+      word += line.slice(index + 2, end)
+      started = true
+      index = end
+    } else if (char === "'") {
       const close = line.indexOf("'", index + 1)
       const end = close === -1 ? line.length : close
       word += line.slice(index + 1, end)
@@ -57,11 +89,15 @@ export function commands(line, windows = false) {
       word += line[index + 1]
       started = true
       index += 1
+    } else if (braces !== -1) {
+      word += line.slice(index, braces + 1)
+      started = true
+      index = braces
     } else if (/\s/.test(char)) {
-      if (char === '\n') endCommand()
+      if (char === '\n') endCommand(char)
       else endWord()
     } else if (';&|()`{}'.includes(char) || (char === '$' && line[index + 1] === '(')) {
-      endCommand()
+      endCommand(char)
     } else {
       word += char
       started = true
@@ -73,15 +109,16 @@ export function commands(line, windows = false) {
 
 const programName = word => word.replaceAll('\\', '/').split('/').pop().toLowerCase().replace(/\.(exe|cmd|bat|com)$/, '')
 
-// The words that run: assignments, `env` and its options, and wrappers like `command` dropped.
+// The words that run: assignments, the shell words a program may follow (`do`, `then`), `env` and its options, and
+// wrappers like `command` dropped.
 function strip(words) {
   let rest = words
   for (;;) {
-    while (rest.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(rest[0])) rest = rest.slice(1)
+    while (rest.length && (ASSIGNMENT.test(rest[0]) || LEADS.includes(rest[0]))) rest = rest.slice(1)
     const name = rest.length ? programName(rest[0]) : ''
     if (name === 'env') {
       rest = rest.slice(1)
-      while (rest.length && (rest[0].startsWith('-') || /^[A-Za-z_][A-Za-z0-9_]*=/.test(rest[0]))) {
+      while (rest.length && (rest[0].startsWith('-') || ASSIGNMENT.test(rest[0]))) {
         rest = rest.slice(['-u', '--unset', '-C', '--chdir', '-S', '--split-string'].includes(rest[0]) ? 2 : 1)
       }
     } else if (WRAPPERS.includes(name)) {
@@ -130,17 +167,22 @@ function isLeasedPush(args, branch) {
   })
 }
 
-// Where a git command's working tree is: `cwd` moved by each `-C`, then `--work-tree` or GIT_WORK_TREE.
-function gitTree(options, assigned, cwd, path) {
-  let dir = path.resolve(cwd)
-  let tree = assigned === undefined ? undefined : path.resolve(cwd, assigned)
+// Where a git command's working tree may be: `cwd` moved by each `-C`, then `--work-tree` or GIT_WORK_TREE, each with its
+// variables expanded by `lookup`. A literal path the guard does not expand is a folder name; null for a variable it cannot.
+function gitTrees(options, assigned, cwd, path, lookup) {
+  const resolved = (dirs, to) => {
+    const values = /[$%~]/.test(to) ? expansions(to, lookup) : [to]
+    return dirs.flatMap(dir => values.map(value => dir === null || value === undefined ? null : path.resolve(dir, value)))
+  }
+  let dirs = [path.resolve(cwd)]
+  let trees = assigned === undefined ? undefined : resolved([path.resolve(cwd)], assigned)
   for (let index = 0; index < options.length; index += 1) {
-    if (options[index] === '-C') dir = path.resolve(dir, options[index + 1] ?? '')
-    else if (options[index] === '--work-tree') tree = path.resolve(dir, options[index + 1] ?? '')
-    else if (options[index].startsWith('--work-tree=')) tree = path.resolve(dir, options[index].slice('--work-tree='.length))
+    if (options[index] === '-C') dirs = resolved(dirs, options[index + 1] ?? '')
+    else if (options[index] === '--work-tree') trees = resolved(dirs, options[index + 1] ?? '')
+    else if (options[index].startsWith('--work-tree=')) trees = resolved(dirs, options[index].slice('--work-tree='.length))
     if (GIT_VALUE_OPTIONS.includes(options[index])) index += 1
   }
-  return tree ?? dir
+  return trees ?? dirs
 }
 
 const samePath = (a, b, path) => path.sep === '\\' ? a.toLowerCase() === b.toLowerCase() : a === b
@@ -159,15 +201,186 @@ const forceDeletesBranch = args => {
   return flags.includes('D') || (deletes && (flags.includes('f') || args.some(arg => longOption(arg, '--force'))))
 }
 
-function refusal(words, branch, cwd, path, own, allowedBranches = [], cdpath = undefined) {
+const VARIABLE = /\$env:([A-Za-z_]\w*)|\$\{([A-Za-z_]\w*)\}|\$([A-Za-z_]\w*)|%([A-Za-z_]\w*)%/g
+const MAX_EXPANSIONS = 32
+
+/**
+ * Each text `target` may expand to, undefined for one the guard cannot read (a command substitution, `~user`, a variable
+ * with no value it knows). `~` is HOME (or USERPROFILE), and `$PWD` at the start the current folder, unless `pwd` is false;
+ * every other variable takes each value `lookup(name)` gives it.
+ */
+const expansions = (target, lookup, pwd = true) => {
+  const homes = () => {
+    const home = lookup('HOME')
+    return home.some(value => value !== undefined) ? home : lookup('USERPROFILE')
+  }
+  const starts = /^~(?=$|[\\/])/.test(target) ? homes().map(home => home === undefined ? undefined : home + target.slice(1))
+    : /^\$\{?PWD\}?(?=$|[\\/])/.test(target) ? [pwd ? target.replace(/^\$\{?PWD\}?/, '.') : undefined] : [target]
+  const found = new Set()
+  const expand = (text, from) => {
+    if (found.size > MAX_EXPANSIONS) return
+    if (text === undefined) return void found.add(undefined)
+    const variable = new RegExp(VARIABLE.source, 'g')
+    variable.lastIndex = from
+    const match = variable.exec(text)
+    if (!match) return void found.add(/[$`]|^~/.test(text) ? undefined : text)
+    const name = match.slice(1, 5).find(Boolean) ?? ''
+    for (const value of lookup(name)) {
+      expand(value === undefined ? undefined : text.slice(0, match.index) + value + text.slice(match.index + match[0].length), match.index + (value?.length ?? 0))
+    }
+  }
+  for (const start of starts) expand(start, 0)
+  return found.size > MAX_EXPANSIONS ? [undefined] : [...found]
+}
+
+// A form that sets a variable to a value the guard does not follow: a loop, read or getopts variable, PowerShell's
+// Set-Variable or a compound assignment but +=, printf -v, mapfile, unset, an array element, or a ${X:=v} default.
+const untracked = (name, raw) => new RegExp('\\b(?:for|foreach|select|set|set-variable|sv|new-variable|nv|coproc)\\s+(?:-\\S+\\s+)*\\(?\\$?' + name + '\\b(?!\\+?=)'
+  + '|\\b(?:read|getopts|mapfile|readarray|unset|vared)\\b[^;&|\\n]*?(?<![\\w$:{/.-])' + name + '\\b(?![=-])'
+  + '|\\bprintf\\s+(?:\\S+\\s+)*?-v\\s*' + name + '\\b|(?<![\\w$])' + name + '\\[[^\\]\\n]*\\]\\+?=|\\$\\{' + name + ':?='
+  + '|\\$(?:env:)?' + name + '\\s*(?:[-*/%]|\\?\\?)=', 'i').test(raw)
+
+// A line that may set any variable: eval, source or PowerShell's Invoke-Expression, a nameref, or a name an expansion
+// gives (`export "$X=v"`, `read "$X"`, `printf -v "$X"`).
+const UNFOLLOWED = new RegExp(/(?:^|[;&|(){}\n]|\b(?:then|do|else)\s)\s*(?:eval|source|\.|iex|invoke-expression)(?:\s|$)/.source
+  + /|\b(?:declare|typeset|local)\s+(?:[-+]\w+\s+)*-\w*n|\b(?:export|declare|typeset|local|readonly|read)\b[^;&|\n<>]*\s["']?\$/.source
+  + /|\bprintf\s+(?:\S+\s+)*?-v\s*["']?\$/.source, 'i')
+// A loop or a function, which may run a command again after a later command set a variable it reads.
+const LOOPS = /(?:^|[;&|(){}\n]|\b(?:then|do|else)\s)\s*(?:while|until|for|select|foreach|repeat|function)\b|\(\)\s*\{/i
+const assigns = name => new RegExp('(?:^|[\\s;&|(]|\\$env:|\\$)' + name + '\\s*\\+?=', 'i')
+
+// Whether the line may set `name` in a way the guard does not follow, or set it again after a command read it.
+const unfollowed = (name, raw) => UNFOLLOWED.test(raw) || untracked(name, raw) || (LOOPS.test(raw) && assigns(name).test(raw))
+
+/** The values a variable has before a line sets it: the environment's, none the guard can read when the line sets it or `env` lacks it. */
+const environment = (env, raw, windows) => name => {
+  if (env === undefined || assigns(name).test(raw) || unfollowed(name, raw)) return [undefined]
+  const key = windows ? Object.keys(env).find(each => each.toLowerCase() === name.toLowerCase()) : name
+  return [key === undefined ? undefined : env[key]]
+}
+
+const ASSIGNING = ['export', 'declare', 'typeset', 'local', 'readonly']
+
+// The variables a command sets: `kept` for the rest of the line (`X=v` alone, export and its kin, cmd's set, PowerShell's
+// `$X = v` and `$env:X = v`), `temporary` for its program alone (`X=v cmd`, `env X=v cmd`). `X+=v` appends: its value is
+// `${X}v`. A value the guard cannot read, as one a command substitution, a PowerShell expression or an attribute gives, is
+// undefined.
+const assignedBy = (words, windows) => {
+  const powershell = /^\$(?:env:)?([A-Za-z_]\w*)(?:(\+?)=(.*))?$/is.exec(words[0] ?? '')
+  const operator = powershell?.[3] === undefined ? words[1] : powershell[2] + '='
+  if (powershell && /^(?:[-+*/%]|\?\?)?=$/.test(operator ?? '')) {
+    const name = powershell[1]
+    const value = powershell[3] !== undefined ? [powershell[3], ...words.slice(1)] : words.slice(2)
+    const read = value.length === 1 && value[0] !== '' && ['=', '+='].includes(operator) ? value[0] : undefined
+    return { kept: [[name, read !== undefined && operator === '+=' ? '${' + name + '}' + read : read]], temporary: [] }
+  }
+  const pair = word => {
+    const at = word.indexOf('=')
+    const append = word[at - 1] === '+'
+    const name = word.slice(0, append ? at - 1 : at)
+    return [name, append ? '${' + name + '}' + word.slice(at + 1) : word.slice(at + 1) || undefined]
+  }
+  const head = words.findIndex(word => !ASSIGNMENT.test(word))
+  if (head === -1) return { kept: words.map(pair), temporary: [] }
+  const program = programName(words[head])
+  const leading = words.slice(0, head).map(pair)
+  const rest = words.slice(head + 1)
+  if (ASSIGNING.includes(program) || (windows && program === 'set')) {
+    // An attribute but export, readonly, global or trace (declare -i, -l, -a, typeset -Z), or cmd's set /a or /p, changes
+    // or reads the value; a declare, typeset or local with no value may unset the name.
+    const follows = rest.every(word => !/^[-+/]/.test(word) || /^[-+][gxrt]+$/.test(word))
+    const unsets = !['export', 'readonly', 'set'].includes(program)
+    const kept = rest.flatMap(word => ASSIGNMENT.test(word) ? [follows ? pair(word) : [pair(word)[0], undefined]]
+      : unsets && /^[A-Za-z_]\w*$/.test(word) ? [[word, undefined]] : [])
+    return { kept, temporary: leading }
+  }
+  if (program === 'env') {
+    const runs = rest.findIndex(word => !word.startsWith('-') && !ASSIGNMENT.test(word))
+    return { kept: [], temporary: [...leading, ...(runs === -1 ? rest : rest.slice(0, runs)).filter(word => ASSIGNMENT.test(word)).map(pair)] }
+  }
+  return { kept: [], temporary: leading }
+}
+
+/**
+ * The variables each command of a line sees, fed the line's commands in order with the operators before each (see
+ * commands()). It starts from `base` (see environment()). Until the first operator but `;` or a newline, or the first
+ * shell keyword, a command that sets a variable sets the one value it has; after one, every value set so far may be it,
+ * and so may the one it had before. A command's own `X=v` adds a value for that command alone. `feed` returns the lookup
+ * for the command fed.
+ */
+const varScope = (base, raw, windows) => {
+  const seen = new Map()
+  let straight = true
+  const key = name => windows ? name.toLowerCase() : name
+  const lookup = name => {
+    const values = seen.get(key(name))
+    return values === undefined ? base(name) : unfollowed(name, raw) ? [...values, undefined] : values
+  }
+  const valuesOf = value => value === undefined ? [undefined] : expansions(value, lookup, false)
+  const feed = (words, before = '') => {
+    if (!/^[;\n]*$/.test(before) || CONTROL_WORDS.split('|').includes(words[0]) || LEADS.includes(words[0])) straight = false
+    const { kept, temporary } = assignedBy(words, windows)
+    const own = new Map(temporary.map(([name, value]) => [key(name), valuesOf(value)]))
+    for (const [name, value] of kept) {
+      const values = valuesOf(value)
+      seen.set(key(name), straight ? values : [...new Set([...lookup(name), ...values])])
+    }
+    return own.size === 0 ? lookup : name => [...new Set([...lookup(name), ...(own.get(key(name)) ?? [])])]
+  }
+  return { feed }
+}
+
+const NO_VARIABLES = () => [undefined]
+
+// The folders the OS keeps temporary files in, by the environment, /tmp on a POSIX host that names none: never a
+// filesystem root, the home folder or a folder holding it.
+const tempRoots = (env, path) => {
+  if (env === undefined) return []
+  const homes = [env.HOME, env.USERPROFILE, ...(path === nodePath ? [homedir()] : [])].filter(Boolean).map(home => real(path.resolve(home), path))
+  const named = ['TMPDIR', 'TEMP', 'TMP'].flatMap(name => env[name] ? [env[name]] : [])
+  return [...new Set((named.length === 0 && path.sep === '/' ? ['/tmp'] : named).map(dir => real(path.resolve(dir), path)))]
+    .filter(root => root !== null && path.parse(root).root !== root && !homes.some(home => home !== null && within(home, folded(root, path), path)))
+    .map(root => folded(root, path))
+}
+
+// Whether `dir` is a git checkout or inside one, up to the folder `top`.
+const inCheckout = (dir, top, path) => {
+  for (let at = dir; within(at, top, path) && folded(at, path) !== top; at = path.dirname(at)) {
+    if (existsSync(path.join(at, '.git'))) return true
+  }
+  return false
+}
+
+/**
+ * Whether a forced recursive delete of `target` from `cwd` removes nothing a seat must keep: each folder it may name,
+ * variables expanded, is inside the seat's folder but neither that folder nor its worktree root, or is inside a folder of
+ * temporary files but not that folder, and is no git checkout, inside none and holds no seat folder.
+ */
+const removable = (target, cwd, path, own, lookup, temps) => {
+  const seat = real(path.resolve(own), path)
+  if (seat === null) return false
+  const roots = [folded(seat, path), folded(path.join(seat, 'wt'), path)]
+  return expansions(target, lookup).every(at => at !== undefined && moved([cwd], at, path).every(folder => {
+    const dir = folder === null ? null : real(folder, path)
+    if (dir === null) return false
+    if (within(dir, folded(seat, path), path)) return !roots.includes(folded(dir, path))
+    return temps.some(temp => within(dir, temp, path) && folded(dir, path) !== temp && !inCheckout(dir, temp, path))
+      && !within(seat, folded(dir, path), path)
+  }))
+}
+
+function refusal(words, branch, cwd, path, own, allowedBranches = [], cdpath = undefined, ctx = undefined, lookup = NO_VARIABLES) {
   const assigned = words.find(word => word.startsWith('GIT_WORK_TREE='))?.slice('GIT_WORK_TREE='.length)
   const [first, ...args] = strip(words)
   if (!first) return undefined
   const name = programName(first)
+  // Whether the program is the command's own first word, after the shell words a program may follow: no assignment or
+  // wrapper changes where or how it runs.
+  const bare = words.find(word => !LEADS.includes(word)) === first
   if (SHELLS.includes(name)) {
     const script = shellScript(args)
-    const placed = words[0] === first && ['-c', '/c', '-command'].includes(args[0]?.toLowerCase())
-    return script === undefined ? undefined : check(script, branch, cwd, path, placed ? own : undefined, allowedBranches, cdpath)
+    const placed = bare && ['-c', '/c', '-command'].includes(args[0]?.toLowerCase())
+    return script === undefined ? undefined : check(script, branch, cwd, path, placed ? own : undefined, allowedBranches, cdpath, ctx)
   }
   if (name === 'git') {
     let index = 0
@@ -180,7 +393,7 @@ function refusal(words, branch, cwd, path, own, allowedBranches = [], cdpath = u
     if (sub === 'worktree' && (rest[0] === 'remove' || rest[0] === 'move')) {
       return 'Leave every worktree where it is and, when a branch you need is checked out in another, work from a new branch or a detached HEAD.'
     }
-    if (mayDiscardWork(sub, rest) && !samePath(gitTree(args.slice(0, index), assigned, cwd, path), path.resolve(cwd), path)) {
+    if (mayDiscardWork(sub, rest) && !gitTrees(args.slice(0, index), assigned, cwd, path, lookup).every(tree => tree !== null && samePath(tree, path.resolve(cwd), path))) {
       return `Run git ${sub} only in the folder the command runs in: -C, --work-tree or GIT_WORK_TREE point this one at another folder.`
     }
     if (sub === 'branch' && forceDeletesBranch(rest)) {
@@ -200,8 +413,7 @@ function refusal(words, branch, cwd, path, own, allowedBranches = [], cdpath = u
     if (plain[0] === 'repo' && plain[1] === 'delete') return 'Do not delete repositories.'
     return undefined
   }
-  // cmd ignores a leading @ and ends an internal command's name at a slash, so @rd/s/q is rd /s /q.
-  const cmdRemover = /^@?(rd|rmdir|del|erase)(\/.*)?$/i.exec(first)
+  const cmdRemover = CMD_REMOVER.exec(first)
   const remover = cmdRemover ? cmdRemover[1].toLowerCase() : name
   if (REMOVERS.includes(remover)) {
     const flags = args.filter(arg => arg.startsWith('-'))
@@ -214,20 +426,23 @@ function refusal(words, branch, cwd, path, own, allowedBranches = [], cdpath = u
     const recursive = switches.includes('s') || flags.some(arg => longOption(arg, '--recursive') || /^-r(e(c(u(r(s(e)?)?)?)?)?)?(:.*)?$/i.test(arg) || (!forceParameter(arg) && /[rR]/.test(shortFlags(arg))))
     const force = switches.includes('q') || switches.includes('f') || flags.some(arg => longOption(arg, '--force') || forceParameter(arg) || shortFlags(arg).includes('f'))
     if (recursive && force) {
-      const targets = args.filter(arg => !arg.startsWith('-'))
-      if (remover === 'rm' && words[0] === first && own !== undefined && targets.length && targets.every(target => {
-        if (!placeable(target)) return false
-        const folders = moved([cwd], target, path)
-        const seat = real(path.resolve(own), path)
-        if (seat === null) return false
-        const roots = [folded(seat, path), folded(path.join(seat, 'wt'), path)]
-        return folders.every(folder => within(folder, folded(seat, path), path) && !roots.includes(folded(real(folder, path), path)))
-      })) return undefined
+      // To cmd a slash in a path may start a switch, so a target with one is not explicit; a word of switches alone
+      // (`/s`, `/s/q`, `/s,/q`) is none. A redirection's file is no target.
+      const targets = strip(withoutRedirects(words)).slice(1)
+        .filter(arg => !arg.startsWith('-') && !(cmdRemover && /^(?:\/[a-z?]|,)+$/i.test(arg)))
+      const temps = tempRoots(ctx?.env, path)
+      if (bare && own !== undefined && targets.length
+        && targets.every(target => !(cmdRemover && target.includes('/')) && removable(target, cwd, path, own, lookup, temps))) return undefined
       return 'Remove only explicit paths, without a forced recursive delete.'
     }
   }
   return undefined
 }
+
+// A line a Windows shell runs, not Claude Code's Bash tool, with a backslash but no line continuation, is read the Windows way
+// only: PowerShell and cmd read a backslash as a separator, and the POSIX reading would drop it, leaving `cd C:\x\wt` a folder
+// it cannot place.
+const windowsLine = (line, path, bash) => path.sep === '\\' && !bash && line.includes('\\') && !/\\\r?\n/.test(line)
 
 /**
  * Why a command line is refused, or undefined when it may run; `branch` is the one checked out where it runs.
@@ -235,23 +450,93 @@ function refusal(words, branch, cwd, path, own, allowedBranches = [], cdpath = u
  * The shell that runs a line is unknown: codex on Windows hands over `"C:\WINDOWS\...\powershell.exe" -Command '...'`,
  * where a POSIX reading drops every `\`. A line is refused when either its POSIX or its Windows reading refuses it.
  */
-export function check(line, branch, cwd = process.cwd(), path = nodePath, own = undefined, allowedBranches = [], cdpath = undefined) {
+export function check(line, branch, cwd = process.cwd(), path = nodePath, own = undefined, allowedBranches = [], cdpath = undefined, ctx = undefined) {
+  // A Windows host runs a line outside Claude's Bash tool in PowerShell or cmd, where a backslash separates folders: as
+  // stray() reads it, a delete there is placed the Windows way alone, when both readings see the same deletes.
+  const removes = words => {
+    const [run = '', ...args] = strip(words)
+    return REMOVERS.includes(programName(run)) || CMD_REMOVER.test(run) || (SHELLS.includes(programName(run)) && REMOVER_WORD.test(shellScript(args) ?? ''))
+  }
+  const removals = windows => commands(line, windows).filter(removes).length
+  const windowsPaths = own !== undefined && ctx !== undefined && windowsLine(line, path, ctx.bash) && removals(false) === removals(true)
   for (const windows of [false, true]) {
     let places = [path.resolve(cwd)]
-    for (const words of commands(line, windows)) {
+    const operators = []
+    const found = commands(line, windows, operators)
+    const variables = varScope(environment(ctx?.env, line, windows), line, windows)
+    for (const [at, words] of found.entries()) {
+      const lookup = variables.feed(words, operators[at])
       const command = plain(words)
-      if (own !== undefined && command?.target !== undefined) places = cdpath && searched(command.target) ? [null] : [...new Set([...places, ...moved(places, command.target, path)])]
+      if (own !== undefined && command?.target !== undefined) places = cdpath && searched(command.target) ? [null] : [...new Set([...places, ...reached(places, command.target, path, lookup)])]
       else if (own !== undefined && command?.pop) places = [null]
       else if (own !== undefined && (assignments(words).some(word => /^CDPATH=/i.test(word)) || ['source', '.', 'eval', 'iex'].includes(words[0]?.toLowerCase()))) places = [null]
-      const program = programName(strip(words)[0] ?? '')
-      const nestedRemoval = SHELLS.includes(program) && /\brm\b/.test(shellScript(strip(words).slice(1)) ?? '')
-      const located = program === 'rm' || nestedRemoval ? places : [cwd]
-      const expandedRemoval = /\brm\b[^\n;&|]*(?:\$\(|`|[{}]|[<>]\()/.test(line)
-      const reason = located.map(place => refusal(words, branch, place ?? cwd, path, place === null || expandedRemoval ? undefined : own, allowedBranches, cdpath)).find(Boolean)
+      const aliased = ctx === undefined ? undefined : aliasRefusal(words, places, cwd, path, ctx, lookup)
+      if (aliased) return aliased
+      if (windowsPaths && !windows && removes(words)) continue
+      const located = removes(words) ? places : [cwd]
+      // `${X}` reads as `$X`; any other brace is a brace or parameter expansion the guard does not place.
+      const expandedRemoval = new RegExp(REMOVER_WORD.source + /[^\n;&|]*(?:\$\(|`|[{}]|[<>]\()/.source, 'i').test(line.replace(/\$\{([A-Za-z_]\w*)\}/g, '$$$1'))
+      const reason = located.map(place => refusal(words, branch, place ?? cwd, path, place === null || expandedRemoval ? undefined : own, allowedBranches, cdpath, ctx, lookup)).find(Boolean)
       if (reason) return reason
     }
   }
   return undefined
+}
+
+const ALIAS_DEPTH = 10
+const ALIAS_DEPTH_REASON = 'Run git commands without nested aliases: this alias expands too deep for the guard to check.'
+const ALIAS_UNREAD_REASON = 'Run git without an alias that --config-env reads from a variable the guard cannot read: it cannot check what the alias runs.'
+
+// A word of a command line, quoted so a POSIX shell reads it back as the same word.
+const shellWord = word => /^[\w@%+=:,./-]+$/.test(word) ? word : "'" + word.replaceAll("'", "'\\''") + "'"
+
+// The values git may read from the environment variable `name`: the command's own `X=v`, else those the line or the
+// environment gave it (see varScope()).
+const gitEnvironment = (words, lookup) => name => {
+  const own = assignedBy(words, false).temporary.findLast(([set]) => set === name)
+  return own === undefined ? lookup(name) : own[1] === undefined ? [undefined] : expansions(own[1], lookup, false)
+}
+
+/**
+ * The command lines git may run for `git <args>` when its subcommand is an alias, or undefined: the expansion with the
+ * options before it and the arguments after it, or a `!` alias's shell command with the arguments after it. A
+ * `-c alias.<name>=<value>` or a `--config-env=alias.<name>=<variable>` on the line gives the alias, the last one winning as
+ * git applies them in order, else `repo` (see Repo). `variable(name)` gives a variable's values (see gitEnvironment());
+ * one the guard cannot read is undefined among them.
+ */
+const aliasExpansions = (args, repo, variable) => {
+  let index = 0
+  while (index < args.length && args[index].startsWith('-')) index += GIT_VALUE_OPTIONS.includes(args[index]) ? 2 : 1
+  const sub = args[index] ?? ''
+  if (!/^[A-Za-z0-9][\w-]*$/.test(sub)) return undefined
+  const options = args.slice(0, index)
+  const setting = new RegExp('^alias\\.' + sub + '=(.*)$', 'is')
+  const given = options.flatMap((option, at) => {
+    const env = option === '--config-env' ? options[at + 1] : option.startsWith('--config-env=') ? option.slice('--config-env='.length) : undefined
+    const name = env === undefined ? undefined : setting.exec(env)?.[1]
+    if (name !== undefined) return [/^[A-Za-z_]\w*$/.test(name) ? variable(name) : [undefined]]
+    const value = option === '-c' ? setting.exec(options[at + 1] ?? '')?.[1] : undefined
+    return value === undefined ? [] : [[value]]
+  }).at(-1)
+  const aliases = given ?? [repo.alias(sub)].filter(alias => alias !== undefined)
+  if (aliases.length === 0) return undefined
+  const rest = args.slice(index + 1).map(shellWord)
+  // git runs a `!` alias from the top of the work tree -C names.
+  const folders = options.flatMap((option, at) => option === '-C' ? ['cd ' + shellWord(options[at + 1] ?? '') + ' && '] : [])
+  return aliases.map(alias => alias === undefined ? undefined : alias.startsWith('!') ? [folders.join('') + alias.slice(1), ...rest].join(' ')
+    : ['git', ...options.map(shellWord), alias, ...rest].join(' '))
+}
+
+// Why a git alias on the line is refused: what it runs is refused from a folder the line may be in, the root of the drive
+// for a folder the guard cannot place, or it is set from a variable the guard cannot read.
+const aliasRefusal = (words, places, cwd, path, ctx, lookup) => {
+  const [first, ...args] = strip(words.filter(word => !isRedirect(word)))
+  if (!first || programName(first) !== 'git') return undefined
+  const runs = aliasExpansions(args, ctx.repo, gitEnvironment(words, lookup))
+  if (runs === undefined) return undefined
+  if (runs.includes(undefined)) return ALIAS_UNREAD_REASON
+  if (ctx.depth >= ALIAS_DEPTH) return ALIAS_DEPTH_REASON
+  return places.flatMap(place => runs.map(run => ctx.expand(run, place ?? path.parse(path.resolve(cwd)).root))).find(Boolean)
 }
 
 const HOOKS_PATH = /^core\.hookspath(=|$)/i
@@ -271,7 +556,6 @@ function deletedBranches(args) {
 
 const HOOKS_REASON = 'Push with the repository\'s own push hooks: no --no-verify, and no core.hooksPath set by -c, git config or GIT_CONFIG_*.'
 
-const ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/
 
 // The words of a command that set environment variables: its leading assignments, those env takes before the program it
 // runs, the arguments of export or cmd's set, or a PowerShell $env: statement. An argument of any other program is text.
@@ -288,7 +572,7 @@ const assignments = words => {
 
 const setsHooksEnv = words => assignments(words).some((word, index, set) => {
   const at = word.indexOf('=')
-  const [name, value] = at > 0 ? [word.slice(0, at), word.slice(at + 1)] : [word, set[index + 1] === '=' ? set[index + 2] : undefined]
+  const [name, value] = at > 0 ? [word.slice(0, at).replace(/\+$/, ''), word.slice(at + 1)] : [word, set[index + 1] === '=' ? set[index + 2] : undefined]
   return /^(\$env:)?GIT_CONFIG_(PARAMETERS|KEY_\d+)$/i.test(name) && /core\.hookspath/i.test(value ?? '')
 })
 
@@ -384,6 +668,9 @@ const LEADS = ['if', 'then', 'else', 'elif', 'do', 'while', 'until', '!', '{', '
 // A git configuration key whose value runs a command: an alias or a *.cmd.
 const RUNS_KEY = /^(?:alias\.|[^=]*\.cmd(?:=|$))/i
 const isRedirect = word => /^(?:\d+|&)?(?:>>?|<>?|>&|<)/.test(word) || word === '!'
+// The words of a command but its redirections: an operator glued to its file (`>out`, `2>/dev/null`), or alone and the
+// word after it.
+const withoutRedirects = words => words.filter((word, at) => !isRedirect(word) && !(at > 0 && /^(?:\d+|&)?(?:>>?\|?|<<<|<<-?|<>?|[<>]&)$/.test(words[at - 1])))
 
 // The line with a shell's line continuation removed, so a command split across lines reads as one.
 const joined = (line, windows) => windows ? line.replace(/[`^]\r?\n/g, '') : line.replace(/\\\r?\n/g, '')
@@ -410,7 +697,7 @@ const namesGit = word => {
 // where it may run: as a command's program word or after a runner or a wrapper.
 const wildcardOnly = word => /^(?:\[[^\]]*\]|[*?])+$/.test(word.split(/[\\/]/).pop())
 const runsGit = words => words.some((word, index) => namesGit(word) && (!wildcardOnly(word)
-  || words.slice(0, index).every(before => /^[A-Za-z_][A-Za-z0-9_]*=/.test(before) || LEADS.includes(before))
+  || words.slice(0, index).every(before => ASSIGNMENT.test(before) || LEADS.includes(before))
   || words.slice(0, index).some(before => runner(before) || WRAPPERS.includes(programName(before)))))
 
 const dynamic = word => word !== '[' && word !== '[[' && (/[$`*?[\]{}%!]/.test(word) || word.startsWith('='))
@@ -429,7 +716,7 @@ const gitReach = args => {
     const option = args[index]
     const value = option === '-c' || option === '--config-env' ? args[index + 1]
       : option.startsWith('--config-env=') ? option.slice('--config-env='.length) : undefined
-    runs ||= value !== undefined && RUNS_KEY.test(value)
+    runs ||= value !== undefined && RUNS_KEY.test(value) && !/^alias\./i.test(value)
     index += VALUE_OPTIONS.includes(option) ? 2 : 1
   }
   const sub = (args[index] ?? '').toLowerCase()
@@ -445,27 +732,363 @@ const runsScript = (sub, args) => sub === 'filter-branch' || (sub === 'submodule
   || (sub === 'config' && args.some(arg => RUNS_KEY.test(arg))) || (['rebase', 'difftool'].includes(sub) && args.some(arg => /^(-[a-z]*x|--exec|--extcmd)/.test(arg)))
 
 // Strings no shell runs: a quoted string's text, read by the reading's own quote rules.
-const quoted = windows => windows ? /'[^']*'|"[^"]*"/g : /'[^']*'|"(?:[^"\\]|\\.)*"/g
-// A here-document whose delimiter is quoted is text: its body runs only when a shell reads it, and a shell is a runner.
-const HEREDOC = /(<<-?[ \t]*(['"])([^'"\s]+)\2[^\n]*)\n[\s\S]*?\n[ \t]*\3[ \t]*(?=\n|$)/g
-// Any here-document, its delimiter quoted or not: its opener and its body.
-const ANY_HEREDOC = /(<<-?[ \t]*(['"]?)([^'"\s]+)\2[^\n]*)\n([\s\S]*?)\n[ \t]*\3[ \t]*(?=\n|$)/g
+const quoted = windows => windows ? /'[^']*'|"[^"]*"/g : /\$'(?:[^'\\]|\\.)*'|'[^']*'|"(?:[^"\\]|\\.)*"/g
 const SUBSTITUTION = /\$\(|`|[<>]\(/
+
+// The words that open a shell construct, each with the word that closes it.
+const OPENS = { if: 'fi', case: 'esac', do: 'done', '{': '}', foreach: 'end' }
+// Words after which a command may start, so a closing word there closes.
+const COMMAND_STARTS = ['then', 'do', 'else', 'elif', 'if', 'while', 'until', '{', '!', 'time']
+
+/**
+ * The statements of a text a POSIX shell runs, each with its here-documents, as bash and zsh both read them; undefined
+ * where the guard cannot be sure they do, which keeps every body. A `<<` or `<<-` outside quotes, a comment, an arithmetic
+ * expression, a parameter expansion and backticks opens a here-document; its delimiter is a word that only a blank, a
+ * newline or an operator ends; its body starts after the next newline that is neither quoted nor a line continuation and
+ * ends at the first line that is exactly its delimiter (leading tabs dropped for `<<-`). A statement ends at a newline
+ * outside every construct, unless |, ||, |& or && comes last before it: then the command it feeds goes on after the bodies
+ * read there. Each statement: `code`, its text but the bodies; whether `substitutes` a command or process substitution
+ * anywhere in it outside single quotes; `docs`, its here-documents, each with the span `from`-`to` of its body and
+ * terminator line, the span `operator` of its `<<` and delimiter, whether its delimiter is `quoted`, whether a command or
+ * process substitution `captured` its output, and its `body`.
+ * @returns {{ code: string, substitutes: boolean, docs: Doc[] }[] | undefined}
+ */
+const hereDocuments = text => {
+  const statements = []
+  let statement = { code: '', substitutes: false, docs: [] }
+  // '"' for a double-quoted string, '(' for a subshell, '$(' for a command or process substitution, or an OPENS word.
+  const stack = []
+  /** @type {{ delimiter: string, tabs: boolean, quoted: boolean, depth: number, captured: boolean, operator: number[] }[]} */
+  let pending = []
+  let codeFrom = 0
+  let word = ''
+  let literal = false
+  let atCommand = true
+  let continued = false
+  let test = false
+  const endWord = () => {
+    if (word === '' && !literal) return
+    if (!literal) {
+      const closes = Object.keys(OPENS).find(open => OPENS[open] === word)
+      if (Object.hasOwn(OPENS, word)) stack.push(word)
+      else if (closes !== undefined && atCommand && stack.at(-1) === closes) stack.pop()
+      if (word === '[[') test = true
+      if (word === ']]') test = false
+    }
+    atCommand = !literal && COMMAND_STARTS.includes(word)
+    continued = false
+    word = ''
+    literal = false
+  }
+  // The end of the span from the `(` or `[` at `from` to its match, an arithmetic expression, holding no quote or newline.
+  // bash and zsh read a `<<` in one as a shift when it holds no substitution and closes with `))` or is a `$[...]`.
+  const arithmetic = from => {
+    const [open, close] = text[from] === '[' ? '[]' : '()'
+    let depth = 0
+    for (let at = from; at < text.length; at += 1) {
+      if (text[at] === open) depth += 1
+      else if (text[at] === close && --depth === 0) {
+        const span = text.slice(from, at + 1)
+        const shifts = (open === '[' || span.endsWith('))')) && !/\$\(|`/.test(span)
+        return /['"`\n]/.test(span) || (span.includes('<<') && !shifts) ? undefined : at + 1
+      }
+    }
+    return undefined
+  }
+  // The end of a `${...}` parameter expansion that holds no quote, newline or `<<`.
+  const parameter = from => {
+    let depth = 0
+    for (let at = from + 1; at < text.length; at += 1) {
+      if (text[at] === '\\') at += 1
+      else if (text[at] === '{') depth += 1
+      else if (text[at] === '}' && --depth === 0) {
+        const body = text.slice(from, at)
+        return /<<|['"\n]/.test(body) ? undefined : at + 1
+      }
+    }
+    return undefined
+  }
+  // The end of a backtick substitution that holds no `<<`, nor a newline while a here-document waits for its body.
+  const backticks = from => {
+    for (let at = from + 1; at < text.length; at += 1) {
+      if (text[at] === '\\') at += 1
+      else if (text[at] === '`') {
+        const body = text.slice(from, at)
+        return body.includes('<<') || (pending.length && body.includes('\n')) ? undefined : at + 1
+      }
+    }
+    return undefined
+  }
+  // The bodies of the waiting here-documents, read from `at`; the index after them, or undefined.
+  const bodies = at => {
+    for (const { delimiter, tabs, quoted, depth, captured, operator } of pending) {
+      const from = at
+      for (;;) {
+        if (at >= text.length) return undefined
+        const start = at
+        const end = text.indexOf('\n', at)
+        const line = text.slice(at, end === -1 ? text.length : end)
+        const bare = tabs ? line.replace(/^\t+/, '') : line
+        at = end === -1 ? text.length : end + 1
+        if (bare === delimiter) {
+          statement.docs.push({ from, to: at, operator, quoted, captured, body: text.slice(from, start) })
+          break
+        }
+        // bash ends a body at `EOF)` inside a substitution and zsh does not; a line continuation joins an unquoted body's lines.
+        if ((!quoted && line.endsWith('\\')) || (depth > 0 && bare.startsWith(delimiter))) return undefined
+      }
+    }
+    pending = []
+    return at
+  }
+  let index = 0
+  while (index < text.length) {
+    const char = text[index]
+    const next = text[index + 1]
+    if (stack.at(-1) === '"') {
+      if (char === '\\') index += 2
+      else if (char === '"') {
+        stack.pop()
+        index += 1
+      } else if (char === '`') {
+        const end = backticks(index)
+        if (end === undefined) return undefined
+        statement.substitutes = true
+        index = end
+      } else if (char === '$' && next === '(' && text[index + 2] === '(') {
+        const end = arithmetic(index + 1)
+        if (end === undefined) return undefined
+        index = end
+      } else if (char === '$' && next === '(') {
+        stack.push('$(')
+        statement.substitutes = true
+        atCommand = true
+        index += 2
+      } else if (char === '$' && next === '{') {
+        const end = parameter(index + 1)
+        if (end === undefined) return undefined
+        index = end
+      } else if (char === '\n' && pending.length) return undefined
+      else index += 1
+      continue
+    }
+    if (char === "'" || (char === '$' && next === "'")) {
+      let at = index + (char === '$' ? 2 : 1)
+      while (at < text.length && text[at] !== "'") at += char === '$' && text[at] === '\\' ? 2 : 1
+      if (at >= text.length || (pending.length && text.slice(index, at).includes('\n'))) return undefined
+      word += 'x'
+      literal = true
+      index = at + 1
+    } else if (char === '"' || (char === '$' && next === '"')) {
+      stack.push('"')
+      literal = true
+      word += 'x'
+      index += char === '$' ? 2 : 1
+    } else if (char === '\\') {
+      // bash joins a line continuation before it reads an operator: `<\⏎<` is `<<`, `$\⏎[` an arithmetic expression.
+      if (next === undefined || (next === '\n' && /[<$]/.test(text[index - 1] ?? ''))) return undefined
+      if (next !== '\n') {
+        word += 'x'
+        literal = true
+      }
+      index += 2
+    } else if (char === '$' && next === '(' && text[index + 2] === '(') {
+      const end = arithmetic(index + 1)
+      if (end === undefined) return undefined
+      word += 'x'
+      literal = true
+      index = end
+    } else if (char === '$' && next === '[') {
+      const end = arithmetic(index + 1)
+      if (end === undefined) return undefined
+      word += 'x'
+      literal = true
+      index = end
+    } else if (char === '$' && next === '(') {
+      stack.push('$(')
+      statement.substitutes = true
+      word += 'x'
+      literal = true
+      atCommand = true
+      index += 2
+    } else if (char === '$' && next === '{') {
+      const end = parameter(index + 1)
+      if (end === undefined) return undefined
+      word += 'x'
+      literal = true
+      index = end
+    } else if (char === '`') {
+      const end = backticks(index)
+      if (end === undefined) return undefined
+      statement.substitutes = true
+      word += 'x'
+      literal = true
+      index = end
+    } else if (char === '#' && word === '' && !literal) {
+      const end = text.indexOf('\n', index)
+      index = end === -1 ? text.length : end
+    } else if (char === '\n') {
+      endWord()
+      index += 1
+      if (pending.length) {
+        statement.code += text.slice(codeFrom, index)
+        const after = bodies(index)
+        if (after === undefined) return undefined
+        index = after
+        codeFrom = index
+      }
+      if (stack.length === 0 && !continued) {
+        statement.code += text.slice(codeFrom, index)
+        statements.push(statement)
+        statement = { code: '', substitutes: false, docs: [] }
+        codeFrom = index
+      }
+      atCommand = true
+    } else if (char === ' ' || char === '\t') {
+      endWord()
+      index += 1
+    } else if (char === '<' && next === '<' && text[index + 2] !== '<') {
+      endWord()
+      if (test) return undefined
+      let at = index + 2
+      const tabs = text[at] === '-'
+      if (tabs) at += 1
+      while (text[at] === ' ' || text[at] === '\t') at += 1
+      let delimiter = ''
+      let quoted = false
+      while (at < text.length && !/[ \t\n;&|()<>]/.test(text[at])) {
+        const part = text[at]
+        if (part === "'" || part === '"') {
+          const close = text.indexOf(part, at + 1)
+          if (close === -1 || /[\\$`\n]/.test(text.slice(at + 1, close))) return undefined
+          delimiter += text.slice(at + 1, close)
+          quoted = true
+          at = close + 1
+        } else if (part === '\\') {
+          if (at + 1 >= text.length || text[at + 1] === '\n') return undefined
+          delimiter += text[at + 1]
+          quoted = true
+          at += 2
+        } else if (part === '$' || part === '`') return undefined
+        else {
+          delimiter += part
+          at += 1
+        }
+      }
+      if (delimiter === '') return undefined
+      pending.push({ delimiter, tabs, quoted, depth: stack.length, captured: stack.includes('$('), operator: [index, at] })
+      atCommand = false
+      index = at
+    } else if ((char === '<' || char === '>') && next === '(') {
+      endWord()
+      stack.push('$(')
+      statement.substitutes = true
+      atCommand = true
+      index += 2
+    } else if (char === '<' || char === '>' || (char === '&' && next === '>')) {
+      endWord()
+      index += (/^(?:<<<|<>|<&|>>|>\||>&|&>>|&>|[<>])/.exec(text.slice(index)) ?? [''])[0].length
+      atCommand = false
+    } else if (char === '(') {
+      endWord()
+      if (next === '(') {
+        const end = arithmetic(index)
+        if (end === undefined) return undefined
+        index = end
+      } else {
+        stack.push('(')
+        index += 1
+      }
+      atCommand = true
+    } else if (char === ')') {
+      endWord()
+      if (stack.at(-1) === '(' || stack.at(-1) === '$(') {
+        if (pending.some(doc => doc.depth >= stack.length)) return undefined
+        stack.pop()
+      }
+      atCommand = true
+      index += 1
+    } else if (char === ';' || char === '&' || char === '|') {
+      endWord()
+      const operator = (/^(?:;;&|;;|;&|&&|\|\||\|&|[;&|])/.exec(text.slice(index)) ?? [char])[0]
+      index += operator.length
+      atCommand = true
+      continued = ['|', '||', '&&', '|&'].includes(operator)
+    } else {
+      word += char
+      index += 1
+    }
+  }
+  endWord()
+  if (pending.length || stack.at(-1) === '"') return undefined
+  statement.code += text.slice(codeFrom)
+  statements.push(statement)
+  return statements
+}
+
+/** @typedef {{ from: number, to: number, operator: number[], quoted: boolean, captured: boolean, body: string }} Doc */
+
+// The text with the bodies of `docs` cut out and each one's operator an empty here-string, so no here-document is left
+// for a later reading to find.
+const cutBodies = (text, /** @type {Doc[]} */ docs) => docs.flatMap(doc => [{ from: doc.operator[0], to: doc.operator[1], put: "<<<''" }, { from: doc.from, to: doc.to, put: '' }])
+  .sort((a, b) => b.from - a.from).reduce((rest, { from, to, put }) => rest.slice(0, from) + put + rest.slice(to), text)
+
+// The text without its here-document bodies (`quotedOnly`: those whose delimiter is quoted), or as it is when the guard
+// cannot read them.
+const withoutBodies = (text, quotedOnly = false) => {
+  const statements = hereDocuments(text)
+  return statements === undefined ? text : cutBodies(text, statements.flatMap(statement => statement.docs).filter(doc => !quotedOnly || doc.quoted))
+}
 
 const interpreter = word => /^(python[\d.]*|node|ruby|perl|deno|bun)$/.test(programName(word))
 const processRunner = (text, program) => /\b(?:subprocess|child_process)\b|\bos\.(?:system|exec\w*|popen)\b|\bpty\.spawn\b|\b(?:execSync|exec|spawn|execFile|spawnSync|system)\s*(?:\(|["'])|\b(?:Bun\.spawn|Deno\.Command)\b/.test(text)
   || (/^(ruby|perl)$/.test(programName(program)) && /`|%x\b/.test(text))
 
+// An interpreter whose whole script is on the line and runs no process: a `-c` or `-e` payload interpreterData() emptied, or
+// a here-document read from stdin, on a line whose here-document bodies bodiesDropped() dropped.
+const inlineData = words => {
+  const [program, ...args] = strip(withoutRedirects(words))
+  if (!interpreter(program ?? '')) return false
+  const payload = args.findIndex(arg => /^-[ce]$/.test(arg))
+  if (payload !== -1) return args[payload + 1] === '' && args.slice(0, payload).every(arg => arg.startsWith('-'))
+  return words.some(word => /^\d*<</.test(word)) && args.every(arg => arg.startsWith('-'))
+}
+
+// Whether a statement may run what its here-documents hold: a substitution in it may read the stdin a here-document gives
+// a loop, a group, a conditional or the command it sits in (`if true; then x=$(cat); fi <<'EOF'`, `x=$(cat) <<'EOF'`), and
+// its output may be run later; or one of its commands may run what it reads (a word `runs` names, as its program or a
+// wrapper's, or a dynamic program word, but an interpreter reading a script that starts no process), or reads it into a
+// variable. Otherwise a loop, a group or a conditional runs only the commands in it.
+const feedsCommand = (statement, runs) => statement.substitutes || commands(joined(statement.code, false)).some(words => {
+  const plainWords = withoutRedirects(words)
+  const head = plainWords.find(word => !ASSIGNMENT.test(word)) ?? ''
+  const [program = '', ...args] = strip(plainWords)
+  const script = interpreter(program) && args.every(arg => arg.startsWith('-')) && statement.docs.every(doc => !processRunner(doc.body, program))
+  const running = word => runs(word) && !(word === program && script)
+  return dynamic(head) || dynamic(program) || ['read', 'mapfile', 'readarray'].includes(programName(program)) || running(head) || running(program)
+    || plainWords.some(word => word !== '.' && running(word))
+})
+
+// A function or an alias the text defines may run what a here-document holds under any name.
+const DEFINES = /\bfunction\s|\w\s*\(\s*\)|(?:^|[;&|\n])\s*alias\s/
+
+// A here-document's body is the input of its command: text, unless its statement may run it (see feedsCommand()), a
+// substitution captures it as words that may go anywhere, or an unquoted body substitutes a command.
+const bodiesDropped = (text, runs) => {
+  const statements = hereDocuments(text)
+  return statements === undefined || statements.some(statement => DEFINES.test(statement.code)) ? text
+    : cutBodies(text, statements.flatMap(statement => feedsCommand(statement, runs) ? []
+    : statement.docs.filter(doc => !doc.captured && (doc.quoted || !SUBSTITUTION.test(doc.body)))))
+}
+
 // Interpreter payloads are data unless they name a process runner. Keep shell substitutions visible and leave
-// shell wrappers alone: their payloads still run as shell commands, even when they contain an interpreter.
+// shell wrappers alone: their payloads still run as shell commands, even when they contain an interpreter. Here-document
+// bodies are read as blanks, so a quote in one pairs with none outside it; when the guard cannot read them, nothing is data.
 const interpreterData = line => {
-  const text = line.replace(ANY_HEREDOC,
-    (whole, opener, quote, _delimiter, body, offset) => {
-      const header = line.slice(line.lastIndexOf('\n', offset - 1) + 1, offset)
-      const words = commands(header).at(-1) ?? []
-      const program = strip(words)[0] ?? ''
-      return interpreter(program) && !processRunner(header + body, program) && (quote || !SUBSTITUTION.test(body)) ? opener : whole
-    })
+  const statements = hereDocuments(line)
+  if (statements === undefined) return line
+  const text = statements.flatMap(statement => statement.docs)
+    .reduce((rest, doc) => rest.slice(0, doc.from) + rest.slice(doc.from, doc.to).replace(/[^\n]/g, ' ') + rest.slice(doc.to), line)
   const words = []
   const payloads = []
   const edits = []
@@ -487,7 +1110,7 @@ const interpreterData = line => {
     words.push(token)
   }
   finish()
-  let result = text
+  let result = line
   for (const { at, length } of edits.reverse()) result = result.slice(0, at) + "''" + result.slice(at + length)
   return result
 }
@@ -503,26 +1126,30 @@ const scope = line => {
   let hit
   let opaque = false
   let dynamicHead = false
+  // A here-document body still on the line is one a command runs (see bodiesDropped()).
+  const scriptless = hereDocuments(line)?.every(statement => statement.docs.length === 0) ?? false
+  const textual = withoutBodies(line, true)
   for (const windows of [false, true]) {
-    const text = joined(line, windows).replace(HEREDOC, '$1')
+    const text = joined(textual, windows)
     opaque ||= SUBSTITUTION.test(text.replace(quoted(windows), ''))
     const live = text.replace(quoted(windows), match => match.startsWith("'") ? '' : match)
     const views = [text, ...[...live.matchAll(new RegExp(SUBSTITUTION, 'g'))].map(match => live.slice(match.index + match[0].length))]
     for (const words of views.flatMap(view => [...commands(view, windows), ...keptCommands(view, windows)])) {
-      const at = words.findIndex(word => !/^[A-Za-z_][A-Za-z0-9_]*=/.test(word) && !LEADS.includes(word))
+      // A group's closing `}` is no program word: the redirections after it apply to the group.
+      const at = words.findIndex(word => !ASSIGNMENT.test(word) && !LEADS.includes(word) && word !== '}')
       if (at === -1) continue
       const [head, ...rest] = words.slice(at)
       if (namesGit(head)) hit ??= gitReach(rest)
       else {
         const run = strip(words.slice(at))[0] ?? ''
-        opaque ||= runner(head) || runner(run)
+        opaque ||= (runner(head) || runner(run)) && !(scriptless && inlineData(words.slice(at)))
         dynamicHead ||= dynamic(head) || dynamic(run)
         rest.forEach((word, index) => { if (namesGit(word)) hit ??= gitReach(rest.slice(index + 1)) })
       }
     }
   }
   if (hit !== undefined || !(opaque || dynamicHead)) return hit
-  const unquoted = [false, true].map(windows => joined(line, windows).replace(HEREDOC, '$1'))
+  const unquoted = [false, true].map(windows => joined(textual, windows))
   const loose = text => text.replace(/\\_/g, ' ').replace(/[\\^`'"]/g, '')
   const readings = [false, true].map(windows => [windows, joined(line, windows)])
   const words = readings.flatMap(([windows, text]) => [loose(text), ...commands(text, windows).flat()].flatMap(tokens))
@@ -546,13 +1173,15 @@ const keptCommands = (text, windows) => commands(text.replace(/[{}&]/g, char => 
 const wordsOf = (text, windows) => keptCommands(text, windows)[0]
 
 // The commands of a simple line, each with the operator after it, or undefined when the guard cannot be sure which words
-// run: a quote that never closes, a `\` escape outside single quotes as a POSIX shell reads it, a cmd `^` before a word
-// character, or a `#` comment.
+// run: a quote that never closes, a `\` escape outside single quotes or a `$'...'` string as a POSIX shell reads it, a cmd
+// `^` before a word character, or a `#` comment.
 const sequence = (text, windows) => {
   const parts = []
   let from = 0
+  let before = ''
   for (let index = 0; index < text.length; index += 1) {
     const char = text[index]
+    if (!windows && char === '$' && text[index + 1] === "'") return undefined
     if (char === "'") {
       index = text.indexOf("'", index + 1)
       if (index === -1) return undefined
@@ -561,12 +1190,13 @@ const sequence = (text, windows) => {
       if (index === text.length) return undefined
     } else if (char === '#' || (windows ? char === '^' && !/^[\d^~\s]?$/.test(text[index + 1] ?? '') : char === '\\')) return undefined
     else if (char === ';' || char === '\n' || (char === '&' && text[index + 1] === '&') || char === '|') {
-      parts.push({ words: wordsOf(text.slice(from, index), windows), goesOn: char !== '&' })
-      if (char === '&' || (char === '|' && text[index + 1] === '|')) index += 1
+      parts.push({ words: wordsOf(text.slice(from, index), windows), goesOn: char !== '&', before })
+      before = char === '&' || (char === '|' && text[index + 1] === '|') ? char + char : char
+      if (before.length === 2) index += 1
       from = index + 1
     }
   }
-  parts.push({ words: wordsOf(text.slice(from), windows) })
+  parts.push({ words: wordsOf(text.slice(from), windows), before })
   return parts.filter(part => part.words)
 }
 
@@ -614,7 +1244,7 @@ const plain = words => {
   }
   if (programName(head) !== 'git') {
     if (scope(words.join(' ')) !== undefined || (runner(head) && rest.some(namesGit))
-      || ['source', '.', 'eval', 'iex', 'invoke-expression'].includes(name) || dynamic(head) || head.includes(':')
+      || ['source', '.', 'eval', 'iex', 'invoke-expression'].includes(name) || dynamic(head) || (head.includes(':') && !ASSIGNMENT.test(head))
       || /^(?:GIT_|CDPATH=|\$env:)/i.test(head)
       || assignments(words).some(word => /^(?:GIT_|CDPATH=)/i.test(word))) return undefined
     return { hops: [], discard: false }
@@ -691,14 +1321,18 @@ const moved = (places, target, path) => {
     : [path.resolve(place, to), ...(path === nodePath && segments(to, path).includes('..') ? [physical(place, to, path)] : [])])
 }
 
+// Each folder a cd or a -C to `target` lands in, as moved() places it, once `lookup` has expanded its variables.
+const reached = (places, target, path, lookup) => expansions(target, lookup).flatMap(at => at === undefined ? [null] : moved(places, at, path))
+
 // A cd to a bare relative name (not ./ ../ absolute or ~) searches CDPATH when it is set, so it may land in any folder
 // CDPATH lists: the guard cannot place it.
 const searched = target => !/^(?:\.{1,2}(?:[\\/]|$)|[\\/]|~|[A-Za-z]:)/.test(target)
 
-const placeRules = (own, path, cdpath) => {
+const placeRules = (own, path, cdpath, env) => {
   const seat = real(path.resolve(own), path)
   return {
     path,
+    env,
     cdpath: Boolean(cdpath),
     seat: seat === null ? null : folded(seat, path),
     refuse: (sub, others) => others
@@ -717,8 +1351,9 @@ const inside = (folders, rules) => folders.length > 0 && folders.every(dir => wi
 // from `start` through the cd-like commands before it. A cd that fails leaves the shell where it was, and after a `;` or
 // newline the line goes on: every folder since the last one stays possible, and a popd may then land wherever a pushd
 // left. After a git command a folder must exist already, since the command may have made it a link.
-const walk = (parts, start, rules, sub) => {
+const walk = (parts, start, rules, sub, line, windows) => {
   const { path } = rules
+  const variables = varScope(environment(rules.env, line, windows), line, windows)
   let places = [...start]
   let since = [...start]
   const stack = []
@@ -726,14 +1361,15 @@ const walk = (parts, start, rules, sub) => {
   let stacked = false
   let unsure = false
   let gitRan = false
-  const hop = (from, to) => {
-    const next = moved(from, to, path)
+  const hop = (from, to, lookup) => expansions(to, lookup).flatMap(at => {
+    const next = at === undefined ? [null] : moved(from, at, path)
     if (!gitRan || next.includes(null)) return next
-    const target = to.replace(/\\/g, path.sep)
+    const target = at.replace(/\\/g, path.sep)
     return from.every(place => existsSync(path.isAbsolute(target) ? target : place + path.sep + target)) ? next : [null]
-  }
+  })
   const last = parts.findLastIndex(({ command }) => command.discard || command.lease)
-  for (const { command, goesOn } of parts.slice(0, last + 1)) {
+  for (const { command, goesOn, words, before } of parts.slice(0, last + 1)) {
+    const lookup = variables.feed(words, before)
     if (command.pop) {
       if (!unsure && stack.length === 0) return rules.refuse(sub)
       places = unsure ? [...places, ...pushed.flat()] : stack.pop()
@@ -746,16 +1382,16 @@ const walk = (parts, start, rules, sub) => {
         pushed.push(places)
         stacked = true
       }
-      places = hop(places, command.target)
+      places = hop(places, command.target, lookup)
       if (places.includes(null)) return rules.refuse(sub)
     } else {
       let dirs = places
       let tree
       for (const [option, to] of command.hops) {
-        if (option === '-C') dirs = hop(dirs, to)
+        if (option === '-C') dirs = hop(dirs, to, lookup)
         else tree = to
       }
-      const folders = tree === undefined ? dirs : hop(dirs, tree)
+      const folders = tree === undefined ? dirs : hop(dirs, tree, lookup)
       if (command.lease && !(inside(folders, rules) && folders.every(dir => start.some(base => samePath(dir, base, path))))) return rules.lease
       if (command.discard && !inside(folders, rules)) return rules.refuse(command.sub)
       gitRan = true
@@ -779,10 +1415,10 @@ const WRAPPER = /^\s*(?:"(?:[^"]*[\\/])?(?:powershell|pwsh)(?:\.exe)?"|(?:[^\s"'
 // `>&` or `<&` redirection ends no command.
 const otherCommands = (text, windows) => {
   const others = []
-  const lines = text.replace(ANY_HEREDOC, '$1').replace(/([<>])&/g, '$1')
+  const lines = withoutBodies(text).replace(/([<>])&/g, '$1')
   for (const words of commands(lines, windows)) {
     const clean = words.filter(word => !isRedirect(word))
-    const first = clean.find(word => !/^[A-Za-z_][A-Za-z0-9_]*=/.test(word))
+    const first = clean.find(word => !ASSIGNMENT.test(word))
     if (!first) continue
     const name = programName(first)
     if (!name || CD_WORDS.includes(name) || /^(?:cd|chdir)[./\\]/i.test(first) || name === 'git') continue
@@ -798,16 +1434,16 @@ const stray = (line, start, rules, bash) => {
   const script = WRAPPER.exec(line)?.slice(1).find(inner => inner !== undefined)
   const sub = scope(script ?? line)
   if (sub === undefined) return undefined
-  for (const windows of script === undefined && (bash || /\\\r?\n/.test(line) || !(rules.path.sep === '\\' && line.includes('\\'))) ? [false, true] : [true]) {
+  for (const windows of script !== undefined || windowsLine(line, rules.path, bash) ? [true] : [false, true]) {
     const text = joined(script ?? line, windows)
-    const parts = notSimpleLine(text) ? undefined : sequence(text, windows)?.map(({ words, goesOn }) => ({ command: plain(words), goesOn }))
+    const parts = notSimpleLine(text) ? undefined : sequence(text, windows)?.map(({ words, goesOn, before }) => ({ command: plain(words), goesOn, words, before }))
     if (parts === undefined || parts.some(({ command }) => command === undefined)) {
       const others = otherCommands(text, windows)
       return rules.refuse(sub, others.length ? others.join(', ') : undefined)
     }
     const runs = parts.find(({ command }) => command.script)
     if (runs) return rules.script(runs.command.script)
-    const reason = walk(parts, start, rules, sub)
+    const reason = walk(parts, start, rules, sub, text, windows)
     if (reason) return reason
   }
   return undefined
@@ -821,12 +1457,16 @@ const stray = (line, start, rules, bash) => {
  * check() alone: a Claude subagent owner's hook input carries the parent session's folder, not the seat's. With `cdpath`
  * set (the hook's CDPATH), a cd to a bare relative name may land anywhere it lists, so the line is refused. `bash` says
  * the line runs in Claude Code's Bash tool, a POSIX shell on every host. `checkedOutBranches`: the branches the worktree
- * checked out, which a push may delete besides `seat/<id>`.
+ * checked out, which a push may delete besides `seat/<id>`. `repo` answers for the git aliases of the repository the line
+ * runs in (see Repo), whose expansion is checked as the line would run it. `env`, the hook's environment, gives the
+ * variables a folder or a delete target expands with and the OS temp folder; without it no variable expands.
  */
-export const guard = (line, branch, cwd = process.cwd(), path = nodePath, own = undefined, cdpath = undefined, bash = false, checkedOutBranches = []) => {
-  line = interpreterData(line)
-  return check(line, branch, cwd, path, own, seatBranches(own, path), cdpath) ?? pushCheck(line, [...seatBranches(own, path), ...checkedOutBranches.filter(name => !DEFAULT_BRANCHES.includes(name))])
-    ?? (own === undefined ? undefined : stray(line, [path.resolve(cwd)], placeRules(own, path, cdpath), bash))
+export const guard = (line, branch, cwd = process.cwd(), path = nodePath, own = undefined, cdpath = undefined, bash = false, checkedOutBranches = [],
+  repo = NO_REPO, env = undefined, depth = 0) => {
+  line = bodiesDropped(interpreterData(line), runner)
+  const ctx = { env, repo, depth, bash, expand: (expanded, at) => guard(expanded, branch, at, path, own, cdpath, bash, checkedOutBranches, repo, env, depth + 1) }
+  return check(line, branch, cwd, path, own, seatBranches(own, path), cdpath, ctx) ?? pushCheck(line, [...seatBranches(own, path), ...checkedOutBranches.filter(name => !DEFAULT_BRANCHES.includes(name))])
+    ?? (own === undefined ? undefined : stray(line, [path.resolve(cwd)], placeRules(own, path, cdpath, env), bash))
 }
 
 // A reviewer seat in a worktree runs outside its vendor's sandbox, as an owner does, but its work is its report: it checks
@@ -944,14 +1584,9 @@ const WRITERS = ['rm', 'rmdir', 'mv', 'touch', 'mkdir', 'tee', 'chmod', 'chown',
   'move-item', 'mi', 'move', 'new-item', 'ni', 'set-content', 'sc', 'add-content', 'ac', 'out-file', 'clear-content']
 // Programs that write only their last argument: what they copy from may be read anywhere.
 const COPIERS = ['cp', 'ln', 'install', 'rsync', 'copy-item', 'cpi', 'copy']
-const GIT_ENV = /^(?:\$env:)?(GIT_DIR|GIT_WORK_TREE|GIT_COMMON_DIR|GIT_INDEX_FILE)=(.*)$/i
+const GIT_ENV = /^(?:\$env:)?(GIT_DIR|GIT_WORK_TREE|GIT_COMMON_DIR|GIT_INDEX_FILE)(\+?)=(.*)$/i
 const MAIN_REASON = main => `Leave the main checkout (${main.join(', ')}) as it is: run git, folder changes and writes only in your own worktree.`
 
-// A here-document's body is the input of its command, which runs it only when that command is a shell.
-const heredocsDropped = line => line.replace(ANY_HEREDOC, (whole, opener, _quote, _delimiter, _body, offset) => {
-  const header = line.slice(line.lastIndexOf('\n', offset - 1) + 1, offset)
-  return SHELLS.includes(programName(strip(commands(header).at(-1) ?? [])[0] ?? '')) ? whole : opener
-})
 
 /** Whether `dir` is in one of the `main` checkouts and not in the seat's own folder. */
 const mainFence = (main, own, path) => {
@@ -960,13 +1595,8 @@ const mainFence = (main, own, path) => {
   return dir => dir !== null && roots.some(root => within(dir, root, path)) && !(seat !== null && within(dir, folded(seat, path), path))
 }
 
-// A word of a command line, quoted so a POSIX shell reads it back as the same word.
-const shellWord = word => /^[\w@%+=:,./-]+$/.test(word) ? word : "'" + word.replaceAll("'", "'\\''") + "'"
-
 const CD_REASON = 'After a cd to a folder the guard cannot place, write or run a git command that writes only at an absolute path, or cd to a '
   + 'literal path or one through environment variables this shell already has, as in cd "$TMPDIR": the guard cannot tell where this cd lands.'
-const ALIAS_DEPTH = 10
-
 const TARGET_REASON = 'Point a git command that writes (-C, --git-dir, --work-tree, GIT_DIR, GIT_WORK_TREE) only at a literal path or one '
   + 'through environment variables this shell already has, as in "$TMPDIR/repo": the guard cannot tell where this one lands.'
 
@@ -984,55 +1614,33 @@ const SUBSTITUTED_CD = /(?:^|[;&|(){}\n])\s*(?:cd|chdir|pushd|sl|set-location|pu
 // and a single-quoted string expands nothing in either shell.
 const quotedParensDropped = line => line.replace(quoted(false), text => text.startsWith("'") ? "''" : text.replace(/(?<!\$)\(|\)/g, ''))
 
-// A target with `~`, `$PWD` and the environment variables it reads expanded from `env`, or undefined when it reads a
-// variable the line assigns or `env` lacks, a command substitution, or `~user`.
-const expandedTarget = (target, env, line, windows) => {
-  const value = name => {
-    const assigned = new RegExp('(?:^|[\\s;&|(]|\\$env:)' + name + '\\s*=|\\b(?:for|read|select|set)\\s+(?:-\\S+\\s+)*' + name + '\\b', 'i')
-    if (assigned.test(line)) return undefined
-    const key = windows ? Object.keys(env).find(each => each.toLowerCase() === name.toLowerCase()) : name
-    return key === undefined ? undefined : env[key]
-  }
-  // A variable it cannot read leaves a `$`, which no folder the guard places has.
-  const expanded = target.replace(/^~(?=$|[\\/])/, () => value('HOME') ?? value('USERPROFILE') ?? '$')
-    .replace(/^\$\{?PWD\}?(?=$|[\\/])/, '.')
-    .replace(/\$env:([A-Za-z_][A-Za-z0-9_]*)|\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)|%([A-Za-z_][A-Za-z0-9_]*)%/g,
-      (_whole, ...names) => value(names.slice(0, 4).find(Boolean)) ?? '$')
-  return /[$`]|^~/.test(expanded) ? undefined : expanded
-}
+// The text a target may be once `lookup` expands it: `~`, `$PWD`, `%NAME%` and variables (see expansions()); a target
+// without them as it is.
+const targetTexts = (target, lookup) => /[$`]|%[A-Za-z_]\w*%|^~(?=$|[\\/])/.test(target) ? expansions(target, lookup) : [target]
 
-// The folder a cd target names once expanded, or undefined when it cannot be expanded or names a folder no other way the
-// guard can place.
-const resolvedTarget = (target, env, line, windows) => {
-  const expanded = expandedTarget(target, env, line, windows)
-  return expanded !== undefined && placeable(expanded) ? expanded : undefined
-}
+// The folders a cd target may name once expanded, undefined for one it cannot expand or names no other way the guard can place.
+const resolvedTargets = (target, lookup) => targetTexts(target, lookup).map(at => at !== undefined && placeable(at) ? at : undefined)
 
 // Each folder `at` lands in from `places`: an absolute path lands where it names, whatever folder a cd left the line in.
 const landing = (places, at, path) => moved(path.isAbsolute(at) ? [path.parse(path.resolve(at)).root] : places, at, path)
 
-// Where a git or write target lands, expanded as a cd's is: a path to place, null when it reads a variable or a command
-// substitution the guard cannot expand, or undefined when it names no path the guard places (`user:group`, a PowerShell
-// drive). A glob lands under the folder before its first wildcard. PowerShell's `$null` names no file.
-const targetPath = (target, ctx, windows) => {
-  if (/^\$null$/i.test(target)) return undefined
-  const expanded = /[$`]|%[A-Za-z_]\w*%|^~(?=$|[\\/])/.test(target) ? expandedTarget(target, ctx.env, ctx.raw, windows) : target
-  if (expanded === undefined) return null
+// Where a git or write target may land, expanded as a cd's is: each path to place, null for an expansion that reads a
+// variable or a command substitution the guard cannot expand, none for one that names no path the guard places
+// (`user:group`, a PowerShell drive). A glob lands under the folder before its first wildcard. PowerShell's `$null` names no file.
+const targetPaths = (target, lookup) => /^\$null$/i.test(target) ? [] : targetTexts(target, lookup).flatMap(expanded => {
+  if (expanded === undefined) return [null]
   const wildcard = expanded.search(/[*?[\]{}]/)
   const fixed = wildcard === -1 ? expanded : expanded.slice(0, wildcard).replace(/[^\\/]*$/, '') || '.'
-  return placeable(fixed) ? fixed : undefined
-}
+  return placeable(fixed) ? [fixed] : []
+})
 
 // The files an apply_patch envelope adds, updates, deletes or moves to: codex's file-edit tool, or its CLI form run in a shell.
 export const patchFiles = text => [...text.matchAll(/^\*\*\* (?:Add File|Update File|Delete File|Move to): (.+?)\s*$/gm)].map(match => match[1])
 
-function reviewerRefusal(words, places, ctx, windows) {
+function reviewerRefusal(words, places, ctx, lookup) {
   const { path, inMain, main } = ctx
   // Where a git or write target lands: [] when the guard cannot expand it, null among them under a folder a cd left unplaced.
-  const lands = target => {
-    const at = targetPath(target, ctx, windows)
-    return at === null || at === undefined ? [] : landing(places, at, path)
-  }
+  const lands = target => targetPaths(target, lookup).flatMap(at => at === null ? [] : landing(places, at, path))
   // Why a write may not go to `target`: it lands in the main checkout, or under a folder a cd left unplaced. A target the
   // guard cannot expand runs, as Claude Code's own worktree isolation lets it.
   const aimed = target => {
@@ -1043,10 +1651,13 @@ function reviewerRefusal(words, places, ctx, windows) {
   // A git target in the main checkout is refused; one the guard cannot expand leaves git unplaced, to run only if it reads.
   let unplaced = false
   const gitAimed = target => {
-    if (targetPath(target, ctx, windows) === null) unplaced = true
+    if (targetPaths(target, lookup).includes(null)) unplaced = true
     return lands(target).some(inMain) ? MAIN_REASON(main) : undefined
   }
-  const gitEnv = assignments(words).flatMap(word => GIT_ENV.test(word) ? [GIT_ENV.exec(word)?.[2] ?? ''] : []).map(gitAimed).find(Boolean)
+  const gitEnv = assignments(words).flatMap(word => {
+    const [, name, append, value] = GIT_ENV.exec(word) ?? []
+    return name === undefined ? [] : [append ? '${' + name + '}' + value : value]
+  }).map(gitAimed).find(Boolean)
   if (gitEnv) return gitEnv
   const redirected = words.flatMap((word, index) => {
     const glued = /^(?:\d+|&)?>>?\|?([^>|].*)$/.exec(word)
@@ -1061,7 +1672,7 @@ function reviewerRefusal(words, places, ctx, windows) {
   if (unplaced && name !== 'git') return TARGET_REASON
   if (SHELLS.includes(name)) {
     const script = shellScript(args)
-    return script === undefined ? undefined : reviewerLine(script, places, ctx)
+    return script === undefined ? undefined : reviewerLine(script, places, { ...ctx, windowsOnly: false }, lookup)
   }
   if (name === 'git') {
     let index = 0
@@ -1072,22 +1683,17 @@ function reviewerRefusal(words, places, ctx, windows) {
         : /^--(git-dir|work-tree)=/.test(option) ? option.slice(option.indexOf('=') + 1) : undefined
       const reason = value === undefined ? undefined : gitAimed(value)
       if (reason) return reason
-      const at = value === undefined ? undefined : targetPath(value, ctx, windows)
-      if (option === '-C' && at) dirs = landing(dirs, at, path)
+      const ats = value === undefined ? [] : targetPaths(value, lookup).filter(at => at !== null)
+      if (option === '-C' && ats.length) dirs = ats.flatMap(at => landing(dirs, at, path))
       index += GIT_VALUE_OPTIONS.includes(option) ? 2 : 1
     }
     if (dirs.some(inMain)) return MAIN_REASON(main)
     const sub = args[index] ?? ''
     const rest = args.slice(index + 1)
-    // git runs an alias in place of a subcommand it does not have: a `!` alias as a shell command with the arguments after it.
-    const given = args.slice(0, index).flatMap((option, at, options) => option === '-c' ? [options[at + 1] ?? ''] : [])
-      .map(setting => new RegExp('^alias\\.' + sub.replace(/[^\w-]/g, '') + '=(.*)$', 'is').exec(setting)?.[1]).findLast(value => value !== undefined)
-    const alias = /^[A-Za-z0-9][\w-]*$/.test(sub) ? given ?? ctx.repo.alias(sub) : undefined
-    if (alias !== undefined) {
-      if (ctx.depth >= ALIAS_DEPTH) return 'Run git commands without nested aliases: this alias expands too deep for the guard to check.'
-      const expansion = alias.startsWith('!') ? [alias.slice(1), ...rest.map(shellWord)].join(' ')
-        : ['git', ...args.slice(0, index).map(shellWord), alias, ...rest.map(shellWord)].join(' ')
-      return ctx.recheck(expansion, places.find(place => place !== null) ?? '.')
+    const aliased = aliasExpansions(args, ctx.repo, gitEnvironment(words, lookup))
+    if (aliased !== undefined) {
+      return aliased.includes(undefined) ? ALIAS_UNREAD_REASON : ctx.depth >= ALIAS_DEPTH ? ALIAS_DEPTH_REASON
+        : aliased.map(expansion => ctx.recheck(expansion, places.find(place => place !== null) ?? '.')).find(Boolean)
     }
     if (reviewerGit(sub, rest, ctx.repo)) return REVIEWER_REASON
     if (GIT_READS.includes(sub)) return undefined
@@ -1111,16 +1717,21 @@ function reviewerRefusal(words, places, ctx, windows) {
   return undefined
 }
 
-// `starts` are the folders the line may start in, null among them for one a cd left unplaced.
-function reviewerLine(line, starts, ctx) {
+// `starts` are the folders the line may start in, null among them for one a cd left unplaced; `outer` the variables of the
+// line that runs this one in a shell, else those of ctx.env.
+function reviewerLine(line, starts, ctx, outer = undefined) {
   const { path, inMain, main } = ctx
   const raw = ctx.raw ?? line
   if (patchFiles(line).some(file => starts.some(start => start !== null && inMain(path.resolve(start, file))))) return MAIN_REASON(main)
   // The shell splits a substituted cd's `$(...)` into commands of their own, leaving the cd without a folder.
   const substituted = SUBSTITUTED_CD.test(quotedParensDropped(line))
-  for (const windows of [false, true]) {
+  for (const windows of ctx.windowsOnly ? [true] : [false, true]) {
     let places = starts
-    for (const words of commands(line, windows)) {
+    const operators = []
+    const found = commands(line, windows, operators)
+    const variables = varScope(outer ?? environment(ctx.env, raw, windows), raw, windows)
+    for (const [at, words] of found.entries()) {
+      const lookup = variables.feed(words, operators[at])
       const [head, ...rest] = words.filter(word => !isRedirect(word))
       if (head !== undefined && (CD_WORDS.includes(head.toLowerCase()) || /^(?:cd|chdir)[./\\]/i.test(head))) {
         if (POP_WORDS.includes(head.toLowerCase())) continue
@@ -1128,12 +1739,12 @@ function reviewerLine(line, starts, ctx) {
         // zsh's `cd old new` swaps old for new in the current folder's path. A cd the guard cannot place adds an unplaced
         // folder (null): what follows runs unless it writes, or runs git that writes, under a relative path.
         if (written === undefined && !substituted && rest.filter(arg => !arg.startsWith('-')).length < 2) continue
-        const target = written === undefined ? undefined : resolvedTarget(written, ctx.env, raw, windows)
-        places = [...new Set([...places, ...(target === undefined ? [null] : landing(places, target, path))])]
+        const targets = written === undefined ? [undefined] : resolvedTargets(written, lookup)
+        places = [...new Set([...places, ...targets.flatMap(target => target === undefined ? [null] : landing(places, target, path))])]
         if (places.some(inMain)) return MAIN_REASON(main)
         continue
       }
-      const reason = reviewerRefusal(words, places, ctx, windows)
+      const reason = reviewerRefusal(words, places, ctx, lookup)
       if (reason) return reason
     }
   }
@@ -1153,11 +1764,11 @@ export const reviewerGuard = (line, branch, cwd = process.cwd(), path = nodePath
   checkedOutBranches = [], repo = NO_REPO, env = process.env, depth = 0) => {
   const inMain = mainFence(main, own, path)
   const recheck = (expanded, at) => reviewerGuard(expanded, branch, at, path, own, main, cdpath, bash, checkedOutBranches, repo, env, depth + 1)
-  const text = heredocsDropped(interpreterData(line))
-  return guard(line, branch, cwd, path, own, cdpath, bash, checkedOutBranches)
+  const text = bodiesDropped(interpreterData(line), program => SHELLS.includes(programName(program)))
+  return guard(line, branch, cwd, path, own, cdpath, bash, checkedOutBranches, repo, env)
     ?? (inMain(path.resolve(cwd)) ? MAIN_REASON(main)
       : patchFiles(line).some(file => inMain(path.resolve(cwd, file))) ? MAIN_REASON(main)
-      : reviewerLine(text, [path.resolve(cwd)], { path, inMain, main, repo, env, recheck, depth, raw: line }))
+      : reviewerLine(text, [path.resolve(cwd)], { path, inMain, main, repo, env, recheck, depth, raw: line, windowsOnly: windowsLine(line, path, bash) }))
 }
 
 /** Why a reviewer's file tool may not write `file`: it is in a `main` checkout. */
@@ -1196,6 +1807,7 @@ const repoAt = cwd => {
   const git = (...args) => spawnSync('git', ['-C', cwd, ...args], { encoding: 'utf8', windowsHide: true })
   /** @type {Set<string> | undefined} */
   let commands
+  const aliases = new Map()
   return {
     kind: name => {
       if (name === '-') {
@@ -1208,10 +1820,12 @@ const repoAt = cwd => {
     },
     // git ignores an alias that has the name of one of its commands.
     alias: name => {
-      const found = git('config', '--get', 'alias.' + name)
-      if (found.status !== 0) return undefined
-      commands ??= new Set((git('--list-cmds=builtins,main,others').stdout ?? '').split('\n'))
-      return commands.has(name) ? undefined : found.stdout.replace(/\r?\n$/, '')
+      if (!aliases.has(name)) {
+        const found = git('config', '--get', 'alias.' + name)
+        commands ??= found.status === 0 ? new Set((git('--list-cmds=builtins,main,others').stdout ?? '').split('\n')) : undefined
+        aliases.set(name, found.status !== 0 || commands?.has(name) ? undefined : found.stdout.replace(/\r?\n$/, ''))
+      }
+      return aliases.get(name)
     },
   }
 }
@@ -1238,7 +1852,7 @@ if (invoked()) {
   const checked = pushes ? checkedOutHere() : []
   const reason = line === undefined ? (reviewer ? writtenFiles(input).map(file => reviewerFileGuard(file, cwd, nodePath, own, main)).find(Boolean) : undefined)
     : reviewer ? reviewerGuard(line, pushed, cwd, nodePath, own, main, process.env.CDPATH, bash, checked, repoAt(cwd))
-    : guard(line, pushed, cwd, nodePath, own, process.env.CDPATH, bash, checked)
+    : guard(line, pushed, cwd, nodePath, own, process.env.CDPATH, bash, checked, repoAt(cwd), process.env)
   const name = 'seat-router ' + (reviewer ? 'reviewer' : 'owner') + ' guard: '
   if (reason && agy) process.stdout.write(JSON.stringify({ decision: 'deny', reason: name + reason }) + '\n')
   else if (reason) {

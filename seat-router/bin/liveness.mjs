@@ -223,10 +223,28 @@ export const outsideRecorder = (folder, append) => {
   }
 }
 
+/** `env` without the variables `names`, matched as Windows matches variable names, whatever their case. */
+export const withoutVariables = (env, names) => {
+  const dropped = new Set(names.map(name => name.toUpperCase()))
+  return Object.fromEntries(Object.entries(env).filter(([name]) => !dropped.has(name.toUpperCase())))
+}
+
+/**
+ * How to run `script` in Windows PowerShell 5.1: its file, arguments and environment. By full path, as a Windows PATH can
+ * put another powershell.exe ahead of System32's. Without PSModulePath, which a PowerShell 7 parent hands down naming its
+ * own modules: 5.1 then fails to autoload Get-Acl and the rest (CouldNotAutoloadMatchingModule), and without the variable
+ * it builds its own.
+ * @param {string} script
+ */
+export const windowsPowerShell = script => ({
+  file: join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'),
+  args: ['-NoProfile', '-NonInteractive', '-Command', script],
+  env: withoutVariables(process.env, ['PSModulePath']),
+})
+
 const powershell = (script, timeout) => new Promise(resolve => {
-  const shell = join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
-  execFile(shell, ['-NoProfile', '-NonInteractive', '-Command', script], { timeout, windowsHide: true, encoding: 'utf8' },
-    (error, stdout) => resolve(error ? undefined : stdout.trim()))
+  const { file, args, env } = windowsPowerShell(script)
+  execFile(file, args, { env, timeout, windowsHide: true, encoding: 'utf8' }, (error, stdout) => resolve(error ? undefined : stdout.trim()))
 })
 
 /** When a Windows process started, as file-time ticks, `none` when no process has the pid, undefined when it could not be read in time. */

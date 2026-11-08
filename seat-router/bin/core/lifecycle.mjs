@@ -29,10 +29,11 @@ export const MAX_NOT_STARTED = 3
 
 /**
  * How one attempt ended. `text` is the answer (done) or the output so far; `resume` a conversation the CLI can continue.
- * `left` marks an attempt that ended while a process of it may still run; `note` says so in the report.
+ * `left` marks an attempt that ended while a process of it may still run; `note` says so in the report. `observed` is
+ * a fact the CLI's judge read in its output, for the report.
  * @typedef {'stopped'|'deadline'|'crashed'} Kill
  * @typedef {{ kind: 'done'|'quota'|'transient'|'failed'|'unclassified'|'died'|'not-started'|Kill,
- *             detail: string, text: string, endedAt: number, until?: number, resume?: string, left?: boolean, note?: string }} Ending
+ *             detail: string, text: string, endedAt: number, until?: number, resume?: string, left?: boolean, note?: string, observed?: string }} Ending
  * An attempt's `state` is how it reads now. `starting`: its launcher has not claimed it yet. `answered` and `silent`:
  * its launcher holds the endpoint and did or did not answer. `left`: the launcher is gone and a process of the CLI may
  * still run. `gone`: nothing of it is left. `not-started`: no launcher of it will ever start a CLI. `unknown`: it
@@ -282,11 +283,25 @@ export const withoutSystemNotices = text => {
   return { text: cleaned, note: 'Removed ' + total + ' system-message block' + (total === 1 ? '' : 's') + ' from the seat\'s output.' }
 }
 
+// The seat's worktree is removed when the seat ends: a path or file:// URI into it becomes the repo-relative part.
+// Only the worktree's own path matches, in either separator, any drive-letter case and with or without file://, and
+// only where it starts a path. The root alone stays, since it names an owner's kept worktree.
+const PATH_CHAR = '[^\\s()\\[\\]<>"\'`,]'
+const literal = text => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+const intoWorktree = root => {
+  const [, drive = '', rest] = /^(?:([A-Za-z]):)?(.*)$/s.exec(root.replace(/[\\/]+$/, '')) ?? []
+  const spelled = rest.split(/[\\/]/).map(literal).join('[\\\\/]')
+  const letter = drive ? '[' + drive.toUpperCase() + drive.toLowerCase() + ']:' : ''
+  return new RegExp('(?<!' + PATH_CHAR + ')(?:file:/*)?' + letter + spelled + '[\\\\/](' + PATH_CHAR + '*)', 'g')
+}
+const repoRelative = (text, root) => root ? text.replace(intoWorktree(root), (_, path) => path.replaceAll('\\', '/') || '.') : text
+
 /**
  * The report. Its header is `Seat <id> ("<description>", <vendor> <model> <effort> <tier>) finished.`
  * @param {Tree} tree
  * @param {Verdict} verdict
- * @param {{ release?: string, kept: string[], keepFailed: string, waits: { quota?: number, slot?: number }, notes: string[] }} extra
+ * `worktree` is the seat's worktree path, absent when it has none.
+ * @param {{ release?: string, kept: string[], keepFailed: string, waits: { quota?: number, slot?: number }, notes: string[], worktree?: string }} extra
  */
 export const reportText = (tree, verdict, extra) => {
   const last = tree.attempts.at(-1)
@@ -302,7 +317,7 @@ export const reportText = (tree, verdict, extra) => {
   if (extra.kept.length) lines.push('Images the seat made, copied out of its CLI\'s home: ' + extra.kept.join(', '))
   if (extra.keepFailed) lines.push('Copying the images the seat made out of its CLI\'s home failed: ' + extra.keepFailed.trim().split(/\r?\n/).join('; '))
   lines.push(...extra.notes)
-  const cleaned = withoutSystemNotices(last?.ending?.text ?? '')
+  const cleaned = withoutSystemNotices(repoRelative(last?.ending?.text ?? '', extra.worktree))
   if (cleaned.note) lines.push(cleaned.note)
   const lead = VERDICT_TEXT[verdict.kind](verdict.detail ?? '', tree.seat.floor)
   lines.push('', lead ? lead + '\n\n' + (cleaned.text.trim() || '(none)') : cleaned.text)

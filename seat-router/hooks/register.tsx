@@ -203,6 +203,7 @@ const seatCard = (seat: SeatDisplay): Card => ({
   tokens: seat.liveTokens ?? seat.lastTokens,
   steps: seat.steps,
   lastAction: seat.lastAction,
+  ...(seat.stalled === undefined ? {} : { stalled: seat.stalled }),
 })
 
 const doneDrawings = new Map<string, unknown>()
@@ -423,6 +424,8 @@ const DELEGATE_QUESTION = 'Delegate mode: when does code work (features, fixes, 
 const DELEGATE_ANSWERS: Record<string, Delegate> = { [AUTO]: 'auto', On: 'on', Off: 'off' }
 
 const queueTotal = (queue: QueueDisplay): number => queue.done + queue.running + queue.pending
+// The session's own queue counts its tasks, not seats: its title keeps the word with the label it passed.
+const sessionQueue = (queue: QueueDisplay): QueueDisplay => queue.label === undefined ? queue : { ...queue, label: 'Queue · ' + queue.label }
 
 export const register: Register = (on, options) => {
   const config = seatConfigFrom(options)
@@ -609,7 +612,7 @@ export const register: Register = (on, options) => {
     const shown: readonly SeatVendor[] = vendors ? ['claude', ...vendors] : VENDORS
     const noun = cards.every(card => card.origin === 'seat') ? 'seat' : 'agent'
     const count = cards.filter(card => card.status === 'running').length
-    const progress = queue ?? batch(cards)
+    const progress = queue ? sessionQueue(queue) : batch(cards)
     const hasRow = progress !== null
     const ui = $.ui.resolve(e)
     const { Box, Text, Button } = ui

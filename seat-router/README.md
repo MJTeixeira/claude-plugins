@@ -283,6 +283,10 @@ the path, home, locale, temp and proxy variables and the CLI's config folder. It
 and no git credentials. An owner, and a reviewer with a worktree, keep the session's environment and
 get your `gh` login's token.
 
+Every seat's CLI runs with `MSBUILDDISABLENODEREUSE=1`, `DOTNET_CLI_USE_MSBUILD_SERVER=false` and
+`UseSharedCompilation=false`, so a `dotnet` build it runs leaves no MSBuild node, MSBuild server or
+VBCSCompiler process running after it. Build servers you started yourself are left alone.
+
 ### codex
 
 - A reviewer without a worktree runs in codex's sandbox. It writes only its folder, and its
@@ -293,6 +297,12 @@ get your `gh` login's token.
   with your codex config, behind the guard. Because codex runs a hook from the command line only
   past its trust check, such a seat runs with `--dangerously-bypass-hook-trust`. For that run codex also runs any hook in your codex config
   or the repository's `.codex/` that you have not trusted.
+- An owner, and a reviewer with a worktree, run their commands without a terminal (`features.unified_exec_tty=false`).
+  codex's `write_stdin` sends text to a command already running and reaches no hook
+  ([`write_stdin.rs`](https://github.com/openai/codex/blob/rust-v0.163.0/codex-rs/core/src/tools/handlers/unified_exec/write_stdin.rs)),
+  so without a terminal it may only poll the command or send it Ctrl-C.
+- A codex reviewer with a worktree keeps the MCP tools of your codex config, and the guard does not see them, as a
+  Claude Code subagent with worktree isolation keeps the session's MCP servers.
 
 ### agy
 
@@ -309,7 +319,11 @@ get your `gh` login's token.
   the refusal. A blank answer or a guard hook that could not run still fails.
 - agy keeps a run open while a background task the seat started still runs. The brief tells the seat
   to wait for or stop each one before its final answer, and to have each subagent it starts report
-  first.
+  first. While agy idles on such a task with nothing written since, the seat's card reads
+  `Stalled · ` and agy's own line (`root agent idle; waiting for 1 background task(s) to finish`).
+  When a run idled on a background task and its last run_command was ended by a signal, such as one
+  killed by hand, the report says both and names the command; it does not say the one caused the
+  other. agy's own verdict stands.
 - A long run can end with `UNAUTHENTICATED (code 401)`, an open agy bug
   ([antigravity-cli#1091](https://github.com/google-antigravity/antigravity-cli/issues/1091)). The
   seat then resumes its agy conversation in a new process, told why, up to three times.
@@ -345,9 +359,12 @@ agy seat, before it runs. It refuses these commands:
   worktree when the seat ends.
 - `git clean -f`, `git checkout`, `git restore` and a forced `git switch` that `-C` or
   `--work-tree` aims at another folder, or that runs outside the seat's folder.
-- A forced recursive delete, such as `rm -rf`, unless every explicit target resolves inside this
-  seat's folder. The seat folder and worktree root themselves, outside paths and unresolved
-  variables or expansions stay protected.
+- A forced recursive delete, such as `rm -rf`, `Remove-Item -Recurse -Force` or cmd's `rd /s /q`,
+  unless every explicit target resolves inside this seat's folder or inside the OS temp folder
+  (`TMPDIR`, `TEMP` or `TMP`, else `/tmp` on Linux and macOS), as in `rm -rf "$TMPDIR/scratch"` or
+  `"${TMPDIR}/scratch"`. A redirection's file, as in `> /dev/null`, is no target. The seat folder and
+  worktree root themselves, the temp folder itself, the home folder, a filesystem root, a git checkout
+  in the temp folder, outside paths and variables or expansions the guard cannot read stay protected.
 - `gh pr merge --admin` and `gh repo delete`.
 - A `git push` that deletes a remote branch other than the seat's own `seat/<id>` or one its
   worktree checked out, `git push --mirror` or `--prune`, and anything that skips the repository's
@@ -356,14 +373,32 @@ agy seat, before it runs. It refuses these commands:
 The commands that discard work (`git clean -f`, `git checkout`, `git restore`, a forced
 `git switch`, `git stash`, `git rm`, `git reset`) may run in combined lines with `&&`, `;`, pipes
 or other commands when they run inside this seat's folder. The guard follows folder changes and
-refuses commands aimed outside it or whose folder cannot be placed. The guard reads the command
-text, so it stops a confused agent's
+refuses commands aimed outside it or whose folder cannot be placed. A variable in a folder or a
+target is read from the environment the CLI gives the hook and from what the line set before it
+(`D=dir; git -C "$D"`, `export D=dir`, `D+=/sub`, PowerShell's `$D = 'dir'` and `$D += '/sub'`). One
+set in a way the guard does not follow cannot be placed: by `read`, `printf -v`, `unset`, an array
+element, `${D:=dir}`, a `declare` or `typeset` attribute that changes the value (`-l`, `-i`), a
+command substitution, again inside a loop or a function, or on a line that runs `eval` or `source`,
+makes a nameref or sets a name an expansion gives. A git alias is checked as the command it runs, as
+for a reviewer below, one a `--config-env=alias.<name>=<variable>` gives among them; such an alias
+whose variable the guard cannot read is refused. A command after `do`, `then` or another shell
+word is checked as the command it is, and a `$'...'` string is read as bash and zsh read it. A
+parameter expansion such as `${f%%/*}` is part of its word, not a brace group, so its glob is never read as a command name. The guard reads the command text, so it stops a confused agent's
 mistake (the wrong folder, a forgotten `cd`, a wrapper around git), not a command built to get
 around it.
 
 An inline Python, Node, Ruby, Perl, Deno or Bun script, or a heredoc fed to it, may mention Git
 commands while editing files. Those mentions are checked as commands only when the script also
-names a process runner. Shell wrappers keep the same checks.
+names a process runner. Shell wrappers keep the same checks. A heredoc's body is text, as for `cat
+> file <<'EOF'`, unless the statement it belongs to may run it: a command in it runs what it reads
+(`bash <<'EOF'`, `cat <<'EOF' | sh`, also when the pipeline goes on after the body or the line goes
+on after a `\`), reads it into a variable (`read`), the statement holds a command or process
+substitution anywhere, which may read it (`{ x=$(cat); } <<'EOF'`, `x=$(cat) <<'EOF'`) or capture
+it, or the line defines a function or an alias. Otherwise a loop, a group or a conditional runs only
+the commands in it. An unquoted body that substitutes a command runs too. The guard finds a `<<` where bash and zsh do,
+never inside quotes, a comment, an arithmetic expression (`$((1<<2))`, `$[1<<2]`) or a parameter
+expansion; a delimiter ends only at a blank, a newline or an operator, so `EOF\r` is not `EOF`. It
+keeps every body where it cannot be sure, as when a line continuation splits `<<`.
 
 ### The reviewer guard
 
@@ -402,10 +437,12 @@ too:
 - A git target (`-C`, `--git-dir`, `--work-tree`, `GIT_DIR`, `GIT_WORK_TREE`) or a write target (a
   redirection, a writer's argument, a copy's target) is expanded as a `cd`'s is: `~`, `$PWD` and the
   variables of the environment the CLI gives the hook (`"$TMPDIR"`, `$env:TEMP`, `%TEMP%`), which
-  the seat's shell starts with too. So `git -C "$MAIN"` and `> "$MAIN/f"` are checked as the main
-  checkout they name, and a glob by the folder before its first wildcard.
+  the seat's shell starts with too, or the values the line set before (`D=dir;`, `export D=dir`,
+  `D=dir cmd`, `D+=/sub`, PowerShell's `$D = 'dir'`, `$D += '/sub'` and `$env:D = 'dir'`). So `git -C "$MAIN"` and
+  `D=main; echo x > "$D/f"` are checked as the main checkout they name, and a glob by the folder
+  before its first wildcard.
 - Git is fenced as Claude Code's own [worktree isolation](https://code.claude.com/docs/en/worktrees#how-claude-code-enforces-isolation)
-  fences it: a git target the guard cannot expand (a variable the line sets, as a `for` loop's, or
+  fences it: a git target the guard cannot expand (a variable the line sets in a way it does not follow, as a `for` loop's, or
   the environment lacks, or a command substitution) is refused only when the git command writes,
   that is anything but a read such as `log`, `show`, `diff`, `status`, `rev-parse`, `cat-file`,
   `ls-files`, `grep` or a fetch into remote-tracking refs. A variable `GIT_DIR` or `GIT_WORK_TREE`
@@ -417,7 +454,9 @@ too:
   `cd old new`, or a variable it cannot expand) runs, but a write or a git command that writes after
   it on the same line under a relative path is refused: that folder could be the main checkout. A
   parenthesis inside a quoted path is part of its name (`cd "dir (1)"`); `$(...)` and PowerShell's
-  `(...)` outside quotes are not.
+  `(...)` outside quotes are not. On Windows, a codex or agy line with a backslash is read as
+  PowerShell and cmd read it, the backslash a separator, so `cd C:\path\to\wt` is placed;
+  Claude Code's Bash tool reads it as bash does.
 
 Inside its worktree it may `git fetch`, check out any commit detached, install, build, and run
 tests and Docker.
@@ -454,7 +493,8 @@ The band above the prompt shows each vendor's quota state, and the time an out v
 Each window is named by its length, such as `5h` or `7d`. For agy the band shows the Gemini
 bucket only, so it keeps to one line.
 While seats or subagents run, it shows a `×N` button that opens the seats pane. When the session reports an
-autopilot queue through the mod's `queue` tool, the band also shows the queue's progress.
+autopilot queue through the mod's `queue` tool, the band also shows the queue's progress, titled
+`Queue · <label>` with the label the session passed, or `Autopilot queue`, so it never reads as a seat count.
 The mod clears the queue when the main turn ends with no seat or subagent still running.
 
 `/seats` opens or closes the pane, with one card per agent working for this conversation: its seats,
@@ -493,8 +533,8 @@ A seat moves along its candidates by these rules:
   and never reruns, whatever ended it, its quota included. Rerunning one that committed would repeat
   its work.
 - After 6 hours the seat starts no new attempts, and a quota wait ends and reports. A CLI still
-  running continues until it finishes or the session stops it with TaskStop. There is no stuck
-  detection or timer that kills a running CLI.
+  running continues until it finishes or the session stops it with TaskStop. No timer kills a
+  running CLI; an agy seat idling on a background task shows as stalled (see [agy](#agy)).
 - A seat whose every candidate failed reports that no CLI could take it, with the floor of its size
   (the size's Claude model) and the last candidate's output.
 
@@ -502,11 +542,20 @@ The report starts with `Seat <id> ("<description>", <vendor> <model> <effort> <t
 The lines after it give the fallback trail, any wait for quota or for the Windows Claude slot, and
 notes about the seat's folder. Then comes the seat's answer, or what ended the seat and its output
 so far.
+A path or `file://` link into the seat's own worktree is given repo-relative, since the worktree is
+gone when the report arrives.
 
 When a seat finishes, the mod removes its worktree. A reviewer's goes whatever is in it, since a
 reviewer's work is its report. An owner's with uncommitted changes, untracked files, unpushed
-commits or submodule changes stays, and the report names it; ignored build output does not keep
-it. A reviewer's `seat/<id>` branch goes with its worktree. An owner's branch stays, and its report names it. The mod keeps a worktree while a
+commits or submodule changes stays, and the report names it, the branch it is on (or its detached
+commit) and the first
+three paths that keep it, with a count of the rest; ignored build output does not keep it. A
+reviewer's `seat/<id>` branch goes with its worktree. An owner's `seat/<id>` branch stays when it
+has commits past the commit the seat started from, and the report names it. Without such commits
+it is deleted from your repository (never from a remote) when another local or remote-tracking
+branch holds its commit, and the report names instead the branch
+the worktree was last on, when that one has commits past the start, or says the seat committed
+nothing past its base. The mod keeps a worktree while a
 process still uses it, and the report names those processes. A seat run again keeps each earlier
 attempt's logs in its folder, numbered (`agy.1.jsonl`, `agy.1.err`, `final.1.md`).
 
@@ -520,6 +569,7 @@ conversation.
   conversation after.
 - After `/clear`, the new conversation takes the reports of seats started before it. Each report's
   first line then ends with "(started before /clear)."
+- A report whose delivery is recorded is never posted again, even when its mailbox claim outlives it.
 - A report the session refuses is tried again after its next turn. After three refusals the mod
   gives it up, and `/seats` lists it with its path. A refusal after you interrupt a turn does not
   count.
