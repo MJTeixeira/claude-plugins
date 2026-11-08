@@ -15,3 +15,13 @@ export const worktreeRemoveFlags = async (git, tree) => {
   if (files.exitCode !== 0) throw new Error('git could not inspect the worktree submodules')
   return /(?:^|\n)160000 /.test(files.stdout) ? ['--force'] : []
 }
+
+/**
+ * How a finished seat's worktree goes: `{ keep }` names why it stays, `{ flags }` the flags git worktree remove takes. A
+ * reviewer's always goes, forced past build output, untracked files and a lock, since a reviewer's work is its report.
+ */
+export const worktreeRelease = async (git, tree, seat) => {
+  if (seat.tier === 'reviewer') return { flags: ['--force', '--force'] }
+  const keep = await worktreeKeepReason(git, tree, seat.baseSha)
+  return keep ? { keep } : { flags: await worktreeRemoveFlags(git, tree) }
+}

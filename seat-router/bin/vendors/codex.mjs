@@ -1,4 +1,4 @@
-import { POWERSHELL_51_NOTE, PYTHON_UTF8, asObject, candidateScopes, durationName, familyOfModel, fileName, join, lastActionWith, numberAt, readJson, scriptUsage, textAt } from './shared.mjs'
+import { POWERSHELL_51_NOTE, PYTHON_UTF8, asObject, candidateScopes, durationName, familyOfModel, fileName, guarded, join, lastActionWith, numberAt, readJson, scriptUsage, textAt } from './shared.mjs'
 
 // codex's unelevated Windows sandbox refuses a process node starts with piped stdio (EPERM,
 // openai/codex#47868); one that inherits or ignores stdio starts, and so do
@@ -28,19 +28,22 @@ const PROBE = { script: 'codex-mxc.mjs', file: 'codex-sandbox' }
 // On Windows codex runs the hook through PowerShell `-Command`, which reports a failed
 // node as exit 1, so the guard answers with a deny decision rather than exit 2
 // (openai/codex#48183).
-// The hook comes from the command line, which codex runs only past its hook trust check.
-const guardFlags = guard =>
-  ['--dangerously-bypass-hook-trust', '-c', 'hooks.PreToolUse=[{matcher="Bash",hooks=[{type="command",command=' + JSON.stringify(guard) + '}]}]']
+// The hook comes from the command line, which codex runs only past its hook trust check. A worktree reviewer's hook also
+// sees apply_patch, codex's file-edit tool, which reaches PreToolUse as `apply_patch` with the patch as tool_input.command
+// (codex-rs/core/src/tools/handlers/apply_patch.rs, pre_tool_use_payload).
+const guardFlags = (guard, reviewer) => ['--dangerously-bypass-hook-trust', '-c',
+  'hooks.PreToolUse=[{matcher="' + (reviewer ? 'Bash|apply_patch' : 'Bash') + '",hooks=[{type="command",command=' + JSON.stringify(guard) + '}]}]']
 
-// A codex or agy owner reaches the network, .git, Docker and the rest of the machine, as
-// a Claude account owner does, and owner-guard.mjs is the fence: a codex owner runs
-// outside codex's sandbox (`danger-full-access`), since an auto-reviewed escalation waits
-// on every commit and push. A codex reviewer stays in the sandbox, writing only its folder,
-// with the network on so a brief can have it fetch an issue or a page.
-const plan = ({ seat, brief, os, guard, facts }) => {
-  const isOwner = seat.tier === 'owner'
+// A codex or agy owner, and a reviewer with a worktree, reach the network, .git, Docker and
+// the rest of the machine, as a Claude account owner does, and owner-guard.mjs is the fence:
+// such a codex seat runs outside codex's sandbox (`danger-full-access`), since an
+// auto-reviewed escalation waits on every commit and push. A reviewer without a worktree stays
+// in the sandbox, writing only its folder, with the network on so a brief can have it fetch an
+// issue or a page.
+const plan = ({ seat, brief, os, guard, facts, main = [] }) => {
+  const outside = guarded(seat)
   const windows = os === 'windows'
-  const windowsReviewer = windows && !isOwner
+  const windowsReviewer = windows && !outside
   const mxc = windowsReviewer && facts.sandbox === 'mxc'
   const temp = join(seat.dir, 'tmp')
   const note = (mxc ? mxcNote(temp) : windowsReviewer ? WINDOWS_NOTE : '') + (windowsReviewer ? POWERSHELL_51_NOTE : '')
@@ -51,13 +54,13 @@ const plan = ({ seat, brief, os, guard, facts }) => {
     spec: {
       argv: [
         'codex', 'exec', '--json', '-m', seat.model, '-c', 'model_reasoning_effort=' + seat.effort,
-        ...(isOwner ? ['-s', 'danger-full-access'] : ['-s', 'workspace-write', '-c', 'sandbox_workspace_write.network_access=true']),
+        ...(outside ? ['-s', 'danger-full-access'] : ['-s', 'workspace-write', '-c', 'sandbox_workspace_write.network_access=true']),
         '--skip-git-repo-check', '-C', seat.workDir,
         // A reviewer is held to its folder: the user's config would start their MCP servers
         // (computer use among them), a user rule that allows a command runs it outside the sandbox
         // (--ignore-rules), and codex's apps, plugins and web search act from the
         // cloud. An owner keeps all of them, as a development session does.
-        ...(isOwner ? [] : [
+        ...(outside ? [] : [
           '--ignore-user-config', '--ignore-rules', '--disable', 'apps', '--disable', 'plugins', '--disable', 'remote_plugin',
           '-c', 'web_search="disabled"',
           // Without a Windows sandbox mode codex refuses every command; the user's config
@@ -65,7 +68,7 @@ const plan = ({ seat, brief, os, guard, facts }) => {
           ...(windows ? ['-c', 'windows.sandbox="' + (mxc ? 'mxc' : 'unelevated') + '"'] : []),
           ...(mxc ? ['--add-dir', temp] : []),
         ]),
-        ...(isOwner ? ['-c', 'shell_environment_policy.ignore_default_excludes=true', ...guardFlags(guard)] : []),
+        ...(outside ? ['-c', 'shell_environment_policy.ignore_default_excludes=true', ...guardFlags(guard, main.length > 0)] : []),
         // PowerShell 5.1 reads a UTF-8 profile as ANSI, so a profile naming a non-ASCII path
         // prints an error ahead of every command; a non-login shell runs with -NoProfile.
         ...(windows ? ['-c', 'allow_login_shell=false'] : []),
@@ -241,7 +244,7 @@ export const codex = {
   usage: { run: { script: 'codex-usage.mjs' }, parse: stdout => scriptUsage(readJson(stdout), SHARED, scopeOfModel) },
   probe: PROBE,
   facts: async (io, { seat, os, seatRoot }) =>
-    os === 'windows' && seat.tier !== 'owner' ? { sandbox: (await io.read(join(seatRoot, PROBE.file))).trim() } : {},
+    os === 'windows' && !guarded(seat) ? { sandbox: (await io.read(join(seatRoot, PROBE.file))).trim() } : {},
   plan,
   judge,
   liveTokens,

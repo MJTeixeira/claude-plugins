@@ -11,7 +11,7 @@
 // ms; `home`, the arguments of agy-seat-home.mjs, whose printed path becomes HOME (and USERPROFILE on Windows);
 // `release`, the arguments of agy-seat-home.mjs that delete that HOME, run by `--release`; `dropWindowsApps`, which
 // takes the folders under WindowsApps off PATH; `claudeLogin`, which drops the variables that would outrank the login
-// of the spec's CLAUDE_CONFIG_DIR; `reviewer`, which passes the CLI only the variables REVIEWER_ENV names, besides the
+// of the spec's CLAUDE_CONFIG_DIR; `reviewer`, set for a reviewer in its vendor's sandbox, which passes the CLI only the variables REVIEWER_ENV names, besides the
 // spec's own, points gh at an empty config folder and clears git's credential helpers; `unset`, variables removed from
 // the environment. A seat run again keeps each earlier attempt's stdout, stderr and outputs as <name>.<n><ext>.
 // `--release SPEC` runs the spec's `release`; one that fails says why in release.err beside the spec.

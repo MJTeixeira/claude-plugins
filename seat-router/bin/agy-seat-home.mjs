@@ -9,10 +9,11 @@
 // operator's gh login nor the macOS keychain gh keeps its token in, but an empty keychain
 // of its own; an owner keeps them all. Nothing under the operator's ~/.gemini is touched.
 // `--home DIR` builds the HOME at DIR instead of the shared one; `--own DIR` names the seat's folder to the guard,
-// and holds in DIR/agy-state the conversation store the operator has none of.
+// and holds in DIR/agy-state the conversation store the operator has none of. Each `--main DIR` makes the guard a
+// worktree reviewer's, which leaves that checkout alone; such a reviewer is built `owner`, with the operator's tools.
 // `release` copies the images the seat generated for the conversation read from `--transcript`
 // to `--keep DIR` (skipping agy view copies and subfolders), prints each copy's path, and deletes HOME even when a copy fails.
-// Usage: node agy-seat-home.mjs [owner] [--home DIR] [--own DIR]
+// Usage: node agy-seat-home.mjs [owner] [--home DIR] [--own DIR] [--main DIR]...
 //        node agy-seat-home.mjs release --home DIR --own DIR --transcript FILE --keep DIR
 import { execFileSync } from 'node:child_process'
 import { closeSync, constants, copyFileSync, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, realpathSync, rmdirSync, statSync, symlinkSync, unlinkSync, writeFileSync, writeSync } from 'node:fs'
@@ -28,6 +29,7 @@ let seatDir = ''
 let release = false
 let transcript = ''
 let keep = ''
+const main = []
 const args = process.argv.slice(2)
 while (args.length) {
   const arg = args.shift()
@@ -37,6 +39,7 @@ while (args.length) {
   else if (arg === '--own') seatDir = args.shift()
   else if (arg === '--transcript') transcript = args.shift()
   else if (arg === '--keep') keep = args.shift()
+  else if (arg === '--main') main.push(args.shift())
   else {
     console.error(`agy-seat-home: unknown argument ${arg}`)
     process.exit(2)
@@ -216,8 +219,10 @@ const guard = join(dirname(fileURLToPath(import.meta.url)), 'owner-guard.mjs').r
 // agy on Windows hands the command to node with its quotes still in the path, so a
 // path is quoted only when it has to be.
 const quoted = path => /\s/.test(path) ? `"${path}"` : path
-const command = `node ${quoted(guard)}${seatDir ? ` --own ${quoted(seatDir)}` : ''}`
-hooks['seat-router-owner-guard'] = { PreToolUse: [{ matcher: 'run_command', hooks: [{ command }] }] }
+const command = `node ${quoted(guard)}${seatDir ? ` --own ${quoted(seatDir)}` : ''}${main.length ? ' --reviewer' + main.map(folder => ` --main ${quoted(folder)}`).join('') : ''}`
+// A worktree reviewer's guard also sees agy's file tools (write_file and edit_file in agy 1.5, write_to_file and
+// replace_file_content in its docs), so every tool reaches it and it picks the writes out.
+hooks['seat-router-owner-guard'] = { PreToolUse: [{ matcher: main.length ? '*' : 'run_command', hooks: [{ command }] }] }
 writeFileSync(join(config, 'hooks.json'), JSON.stringify(hooks, null, 2) + '\n')
 // A seat never spends AI credits past the plan's quota, which the quota check would not count as out:
 // useG1Credits in settings.json and userSettings.useAiCredits in config.json both stay off

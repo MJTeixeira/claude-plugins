@@ -8,7 +8,9 @@
 // PowerShell `-Command`, which reports exit 2 as 1, and a failed hook lets the command
 // run (openai/codex#48183). agy sends `toolCall.args.CommandLine` (with `Cwd`, else
 // its workspace is the cwd) and is refused with its own JSON decision.
-// Usage: node owner-guard.mjs [--own SEAT_FOLDER] < hook-input.json
+// With --reviewer it is a worktree reviewer's hook: the owner's refusals, then reviewerGuard()'s, and a Claude file
+// tool's write into a --main checkout.
+// Usage: node owner-guard.mjs [--own SEAT_FOLDER] [--reviewer [--main CHECKOUT]...] < hook-input.json
 import { spawnSync } from 'node:child_process'
 import { existsSync, readFileSync, realpathSync } from 'node:fs'
 import nodePath from 'node:path'
@@ -827,6 +829,341 @@ export const guard = (line, branch, cwd = process.cwd(), path = nodePath, own = 
     ?? (own === undefined ? undefined : stray(line, [path.resolve(cwd)], placeRules(own, path, cdpath), bash))
 }
 
+// A reviewer seat in a worktree runs outside its vendor's sandbox, as an owner does, but its work is its report: it checks
+// out, builds and tests in its worktree and leaves every branch, remote and the main checkout as they were.
+const REVIEWER_REFUSED = ['commit', 'push', 'pull', 'merge', 'rebase', 'cherry-pick', 'revert', 'am', 'update-ref']
+const REVIEWER_REASON = 'A reviewer seat does not commit, push, merge, rebase, tag or change a branch: check out what you review '
+  + '(git fetch, then git checkout <sha>) in your worktree and report.'
+const PR_REASON = 'A reviewer seat does not open or merge a pull request, nor change a branch or ref through the API: report instead.'
+const LISTS = ['-l', '--list', '-a', '--all', '-r', '--remotes', '-v', '-vv', '--verbose', '-n', '--show-current', '--contains', '--no-contains',
+  '--merged', '--no-merged', '--points-at', '--verify']
+const BRANCH_WRITES = /[dDmMcCfu]/
+const TAG_WRITES = /[dasufmFe]/
+const FETCH_VALUE_OPTIONS = ['--depth', '--deepen', '--shallow-since', '--shallow-exclude', '-j', '--jobs', '--upload-pack', '-o', '--server-option',
+  '--refmap', '--negotiation-tip', '--recurse-submodules-default']
+const API_VALUE_OPTIONS = ['-X', '--method', '-f', '-F', '--field', '--raw-field', '-H', '--header', '--input', '-q', '--jq', '-t', '--template',
+  '--hostname', '--cache', '-p', '--preview']
+// REST endpoints that open or merge a pull request, merge a branch or move a ref, and GraphQL's mutations that do the same.
+const API_WRITES = [/\/pulls\/?$/, /\/pulls\/\d+\/merge\/?$/, /\/merges\/?$/, /\/merge-upstream\/?$/, /\/git\/refs(\/|$)/]
+const GRAPHQL_WRITES = /\b(createPullRequest|mergePullRequest|enablePullRequestAutoMerge|mergeBranch|createRef|updateRef|updateRefs|deleteRef|createCommitOnBranch)\b/
+
+const listsOnly = args => args.some(arg => LISTS.includes(arg.split('=')[0]))
+
+const detached = args => args.some(arg => arg === '-d' || longOption(arg, '--detach'))
+
+const REMOTE_WRITES = ['add', 'set-url', 'remove', 'rm', 'rename', 'set-head', 'set-branches']
+const CONFIG_WRITES = ['--add', '--replace-all', '--unset', '--unset-all', '--remove-section', '--rename-section', '--edit']
+const CONFIG_READ_OPTIONS = ['--get', '--get-all', '--get-regexp', '--get-urlmatch', '--list']
+
+// Whether git config writes a setting in any scope: a write action or subcommand, or a key followed by a value.
+const configWrites = args => {
+  const plainArgs = []
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index]
+    if (arg === '--') {
+      plainArgs.push(...args.slice(index + 1))
+      break
+    }
+    if (arg === '-e' || longOption(arg, ...CONFIG_WRITES)) return true
+    if (arg === '-l' || longOption(arg, ...CONFIG_READ_OPTIONS)) return false
+    if (CONFIG_VALUE_OPTIONS.includes(arg)) index += 1
+    else if (!arg.startsWith('-')) plainArgs.push(arg)
+  }
+  if (['get', 'list'].includes(plainArgs[0] ?? '')) return false
+  return ['set', 'unset', 'rename-section', 'remove-section', 'edit'].includes(plainArgs[0] ?? '') || plainArgs.length > 1
+}
+
+/**
+ * What the reviewer guard asks of the repository a command runs in. `kind(name)`: 'branch' for a local branch (or `-`
+ * naming one), 'commit' for another name of a commit, 'remote' for a name git checkout would make a branch of from a
+ * remote branch, undefined otherwise. `alias(name)`: the alias git would run for `git <name>`, or undefined.
+ * @typedef {{ kind: (name: string) => string | undefined, alias: (name: string) => string | undefined }} Repo
+ */
+/** @type {Repo} */
+const NO_REPO = { kind: () => undefined, alias: () => undefined }
+
+// Whether a git subcommand a reviewer runs changes a branch, a tag, a ref, a remote or a setting the repository's
+// worktrees share, or moves the worktree onto a branch.
+const reviewerGit = (sub, rest, repo) => {
+  if (REVIEWER_REFUSED.includes(sub)) return true
+  const plainArgs = rest.filter(arg => !arg.startsWith('-'))
+  if (sub === 'branch') {
+    return rest.some(arg => BRANCH_WRITES.test(shortFlags(arg)) || longOption(arg, '--delete', '--move', '--copy', '--force', '--set-upstream-to',
+      '--unset-upstream', '--edit-description', '--track', '--no-track', '--create-reflog')) || (plainArgs.length > 0 && !listsOnly(rest))
+  }
+  if (sub === 'tag') {
+    return rest.some(arg => TAG_WRITES.test(shortFlags(arg)) || longOption(arg, '--delete', '--annotate', '--sign', '--local-user', '--force',
+      '--message', '--file', '--edit', '--create-reflog')) || (plainArgs.length > 0 && !listsOnly(rest))
+  }
+  if (sub === 'checkout') {
+    const targets = rest.filter(arg => arg === '-' || !arg.startsWith('-'))
+    if (rest.some(arg => /[bBt]/.test(shortFlags(arg)) || longOption(arg, '--orphan', '--track'))) return true
+    return !detached(rest) && !rest.includes('--') && !rest.some(arg => arg === '-p' || longOption(arg, '--patch', '--pathspec-from-file'))
+      && targets.length === 1 && ['branch', 'remote'].includes(repo.kind(targets[0]) ?? '')
+  }
+  // switch takes a branch unless detached, and makes one from a remote branch of the same name (--guess).
+  if (sub === 'switch') return !detached(rest)
+  if (sub === 'worktree') return rest[0] !== 'list'
+  if (sub === 'config') return configWrites(rest)
+  if (sub === 'remote') return REMOTE_WRITES.includes(plainArgs[0] ?? '')
+  if (sub === 'fetch') {
+    const specs = []
+    for (let index = 0; index < rest.length; index += 1) {
+      if (FETCH_VALUE_OPTIONS.includes(rest[index])) index += 1
+      else if (!rest[index].startsWith('-')) specs.push(rest[index])
+    }
+    // A refspec's destination is a local branch when it is a bare name or under refs/heads/, a tag under refs/tags/.
+    return specs.slice(1).some(spec => {
+      const target = spec.includes(':') ? spec.slice(spec.indexOf(':') + 1) : ''
+      return target !== '' && (!target.startsWith('refs/') || /^refs\/(heads|tags)\//.test(target))
+    })
+  }
+  return false
+}
+
+const reviewerApi = args => {
+  let method
+  let fields = false
+  let endpoint
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index]
+    const [name, glued] = arg.startsWith('--') ? [arg.split('=')[0], arg.includes('=') ? arg.slice(arg.indexOf('=') + 1) : undefined]
+      : /^-[A-Za-z]./.test(arg) ? [arg.slice(0, 2), arg.slice(2)] : [arg, undefined]
+    if (name === '-X' || name === '--method') method = glued ?? args[index + 1]
+    if (['-f', '-F', '--field', '--raw-field', '--input'].includes(name)) fields = true
+    if (API_VALUE_OPTIONS.includes(name)) {
+      if (glued === undefined) index += 1
+    } else if (!arg.startsWith('-')) endpoint ??= arg
+  }
+  if (endpoint === 'graphql') return args.some(arg => GRAPHQL_WRITES.test(arg))
+  const verb = (method ?? (fields ? 'POST' : 'GET')).toUpperCase()
+  return verb !== 'GET' && endpoint !== undefined && API_WRITES.some(pattern => pattern.test(endpoint.split('?')[0]))
+}
+
+const WRITERS = ['rm', 'rmdir', 'mv', 'touch', 'mkdir', 'tee', 'chmod', 'chown', 'truncate', 'remove-item', 'ri', 'del', 'erase', 'rd',
+  'move-item', 'mi', 'move', 'new-item', 'ni', 'set-content', 'sc', 'add-content', 'ac', 'out-file', 'clear-content']
+// Programs that write only their last argument: what they copy from may be read anywhere.
+const COPIERS = ['cp', 'ln', 'install', 'rsync', 'copy-item', 'cpi', 'copy']
+const GIT_ENV = /^(?:\$env:)?(GIT_DIR|GIT_WORK_TREE|GIT_COMMON_DIR|GIT_INDEX_FILE)=(.*)$/i
+const MAIN_REASON = main => `Leave the main checkout (${main.join(', ')}) as it is: run git, folder changes and writes only in your own worktree.`
+
+// A here-document's body is the input of its command, which runs it only when that command is a shell.
+const heredocsDropped = line => line.replace(ANY_HEREDOC, (whole, opener, _quote, _delimiter, _body, offset) => {
+  const header = line.slice(line.lastIndexOf('\n', offset - 1) + 1, offset)
+  return SHELLS.includes(programName(strip(commands(header).at(-1) ?? [])[0] ?? '')) ? whole : opener
+})
+
+/** Whether `dir` is in one of the `main` checkouts and not in the seat's own folder. */
+const mainFence = (main, own, path) => {
+  const roots = main.map(dir => real(path.resolve(dir), path)).filter(dir => dir !== null).map(dir => folded(dir, path))
+  const seat = own === undefined ? null : real(path.resolve(own), path)
+  return dir => dir !== null && roots.some(root => within(dir, root, path)) && !(seat !== null && within(dir, folded(seat, path), path))
+}
+
+// A word of a command line, quoted so a POSIX shell reads it back as the same word.
+const shellWord = word => /^[\w@%+=:,./-]+$/.test(word) ? word : "'" + word.replaceAll("'", "'\\''") + "'"
+
+const CD_REASON = 'After a cd to a folder the guard cannot place, write or run a git command that writes only at an absolute path, or cd to a '
+  + 'literal path or one through environment variables this shell already has, as in cd "$TMPDIR": the guard cannot tell where this cd lands.'
+const ALIAS_DEPTH = 10
+
+const TARGET_REASON = 'Point a git command that writes (-C, --git-dir, --work-tree, GIT_DIR, GIT_WORK_TREE) only at a literal path or one '
+  + 'through environment variables this shell already has, as in "$TMPDIR/repo": the guard cannot tell where this one lands.'
+
+// git subcommands that change no file, ref or setting once reviewerGit has passed them: they run with a target the guard
+// cannot place. A fetch reviewerGit passes writes only remote-tracking refs.
+const GIT_READS = ['', 'log', 'show', 'diff', 'status', 'rev-parse', 'cat-file', 'ls-files', 'ls-tree', 'ls-remote', 'grep', 'fetch', 'blame',
+  'describe', 'shortlog', 'rev-list', 'show-ref', 'for-each-ref', 'merge-base', 'name-rev', 'diff-tree', 'diff-files', 'diff-index', 'show-branch',
+  'whatchanged', 'cherry', 'range-diff', 'check-ignore', 'check-attr', 'count-objects', 'var', 'version', 'help', 'branch', 'tag', 'config',
+  'remote', 'worktree']
+
+// A cd-like command whose folder comes from a command substitution or a PowerShell expression.
+const SUBSTITUTED_CD = /(?:^|[;&|(){}\n])\s*(?:cd|chdir|pushd|sl|set-location|push-location)\s+[^\n;&|]*?(?:\$\(|`|\(|<\()/i
+
+// The line with each quoted string's parentheses dropped but a `$(`'s: a parenthesis in a quoted path is part of its name,
+// and a single-quoted string expands nothing in either shell.
+const quotedParensDropped = line => line.replace(quoted(false), text => text.startsWith("'") ? "''" : text.replace(/(?<!\$)\(|\)/g, ''))
+
+// A target with `~`, `$PWD` and the environment variables it reads expanded from `env`, or undefined when it reads a
+// variable the line assigns or `env` lacks, a command substitution, or `~user`.
+const expandedTarget = (target, env, line, windows) => {
+  const value = name => {
+    const assigned = new RegExp('(?:^|[\\s;&|(]|\\$env:)' + name + '\\s*=|\\b(?:for|read|select|set)\\s+(?:-\\S+\\s+)*' + name + '\\b', 'i')
+    if (assigned.test(line)) return undefined
+    const key = windows ? Object.keys(env).find(each => each.toLowerCase() === name.toLowerCase()) : name
+    return key === undefined ? undefined : env[key]
+  }
+  // A variable it cannot read leaves a `$`, which no folder the guard places has.
+  const expanded = target.replace(/^~(?=$|[\\/])/, () => value('HOME') ?? value('USERPROFILE') ?? '$')
+    .replace(/^\$\{?PWD\}?(?=$|[\\/])/, '.')
+    .replace(/\$env:([A-Za-z_][A-Za-z0-9_]*)|\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)|%([A-Za-z_][A-Za-z0-9_]*)%/g,
+      (_whole, ...names) => value(names.slice(0, 4).find(Boolean)) ?? '$')
+  return /[$`]|^~/.test(expanded) ? undefined : expanded
+}
+
+// The folder a cd target names once expanded, or undefined when it cannot be expanded or names a folder no other way the
+// guard can place.
+const resolvedTarget = (target, env, line, windows) => {
+  const expanded = expandedTarget(target, env, line, windows)
+  return expanded !== undefined && placeable(expanded) ? expanded : undefined
+}
+
+// Each folder `at` lands in from `places`: an absolute path lands where it names, whatever folder a cd left the line in.
+const landing = (places, at, path) => moved(path.isAbsolute(at) ? [path.parse(path.resolve(at)).root] : places, at, path)
+
+// Where a git or write target lands, expanded as a cd's is: a path to place, null when it reads a variable or a command
+// substitution the guard cannot expand, or undefined when it names no path the guard places (`user:group`, a PowerShell
+// drive). A glob lands under the folder before its first wildcard. PowerShell's `$null` names no file.
+const targetPath = (target, ctx, windows) => {
+  if (/^\$null$/i.test(target)) return undefined
+  const expanded = /[$`]|%[A-Za-z_]\w*%|^~(?=$|[\\/])/.test(target) ? expandedTarget(target, ctx.env, ctx.raw, windows) : target
+  if (expanded === undefined) return null
+  const wildcard = expanded.search(/[*?[\]{}]/)
+  const fixed = wildcard === -1 ? expanded : expanded.slice(0, wildcard).replace(/[^\\/]*$/, '') || '.'
+  return placeable(fixed) ? fixed : undefined
+}
+
+// The files an apply_patch envelope adds, updates, deletes or moves to: codex's file-edit tool, or its CLI form run in a shell.
+export const patchFiles = text => [...text.matchAll(/^\*\*\* (?:Add File|Update File|Delete File|Move to): (.+?)\s*$/gm)].map(match => match[1])
+
+function reviewerRefusal(words, places, ctx, windows) {
+  const { path, inMain, main } = ctx
+  // Where a git or write target lands: [] when the guard cannot expand it, null among them under a folder a cd left unplaced.
+  const lands = target => {
+    const at = targetPath(target, ctx, windows)
+    return at === null || at === undefined ? [] : landing(places, at, path)
+  }
+  // Why a write may not go to `target`: it lands in the main checkout, or under a folder a cd left unplaced. A target the
+  // guard cannot expand runs, as Claude Code's own worktree isolation lets it.
+  const aimed = target => {
+    const at = lands(target)
+    return at.some(inMain) ? MAIN_REASON(main) : at.includes(null) ? CD_REASON : undefined
+  }
+  const firstAimed = targets => targets.map(aimed).find(Boolean)
+  // A git target in the main checkout is refused; one the guard cannot expand leaves git unplaced, to run only if it reads.
+  let unplaced = false
+  const gitAimed = target => {
+    if (targetPath(target, ctx, windows) === null) unplaced = true
+    return lands(target).some(inMain) ? MAIN_REASON(main) : undefined
+  }
+  const gitEnv = assignments(words).flatMap(word => GIT_ENV.test(word) ? [GIT_ENV.exec(word)?.[2] ?? ''] : []).map(gitAimed).find(Boolean)
+  if (gitEnv) return gitEnv
+  const redirected = words.flatMap((word, index) => {
+    const glued = /^(?:\d+|&)?>>?\|?([^>|].*)$/.exec(word)
+    return glued ? [glued[1]] : /^(?:\d+|&)?>>?\|?$/.test(word) && words[index + 1] !== undefined ? [words[index + 1]] : []
+  })
+  const redirect = firstAimed(redirected)
+  if (redirect) return redirect
+  const [first, ...args] = strip(words.filter(word => !isRedirect(word)))
+  if (!first) return undefined
+  const name = programName(first)
+  // A program but git may run git that writes, through a GIT_DIR or GIT_WORK_TREE the guard cannot place.
+  if (unplaced && name !== 'git') return TARGET_REASON
+  if (SHELLS.includes(name)) {
+    const script = shellScript(args)
+    return script === undefined ? undefined : reviewerLine(script, places, ctx)
+  }
+  if (name === 'git') {
+    let index = 0
+    let dirs = places
+    while (index < args.length && args[index].startsWith('-')) {
+      const option = args[index]
+      const value = ['-C', '--git-dir', '--work-tree'].includes(option) ? args[index + 1]
+        : /^--(git-dir|work-tree)=/.test(option) ? option.slice(option.indexOf('=') + 1) : undefined
+      const reason = value === undefined ? undefined : gitAimed(value)
+      if (reason) return reason
+      const at = value === undefined ? undefined : targetPath(value, ctx, windows)
+      if (option === '-C' && at) dirs = landing(dirs, at, path)
+      index += GIT_VALUE_OPTIONS.includes(option) ? 2 : 1
+    }
+    if (dirs.some(inMain)) return MAIN_REASON(main)
+    const sub = args[index] ?? ''
+    const rest = args.slice(index + 1)
+    // git runs an alias in place of a subcommand it does not have: a `!` alias as a shell command with the arguments after it.
+    const given = args.slice(0, index).flatMap((option, at, options) => option === '-c' ? [options[at + 1] ?? ''] : [])
+      .map(setting => new RegExp('^alias\\.' + sub.replace(/[^\w-]/g, '') + '=(.*)$', 'is').exec(setting)?.[1]).findLast(value => value !== undefined)
+    const alias = /^[A-Za-z0-9][\w-]*$/.test(sub) ? given ?? ctx.repo.alias(sub) : undefined
+    if (alias !== undefined) {
+      if (ctx.depth >= ALIAS_DEPTH) return 'Run git commands without nested aliases: this alias expands too deep for the guard to check.'
+      const expansion = alias.startsWith('!') ? [alias.slice(1), ...rest.map(shellWord)].join(' ')
+        : ['git', ...args.slice(0, index).map(shellWord), alias, ...rest.map(shellWord)].join(' ')
+      return ctx.recheck(expansion, places.find(place => place !== null) ?? '.')
+    }
+    if (reviewerGit(sub, rest, ctx.repo)) return REVIEWER_REASON
+    if (GIT_READS.includes(sub)) return undefined
+    return unplaced ? TARGET_REASON : dirs.includes(null) ? CD_REASON : undefined
+  }
+  if (name === 'gh') {
+    const plainWords = args.filter(arg => !arg.startsWith('-'))
+    if (plainWords.some((word, at) => word === 'pr' && ['create', 'new', 'merge'].includes(plainWords[at + 1]))) return PR_REASON
+    if (plainWords.some((word, at) => word === 'pr' && ['checkout', 'co'].includes(plainWords[at + 1])) && !args.includes('--detach')) {
+      return 'Check out a pull request detached, without making a branch: gh pr checkout <n> --detach.'
+    }
+    const api = args.indexOf('api')
+    return api !== -1 && reviewerApi(args.slice(api + 1)) ? PR_REASON : undefined
+  }
+  const targets = args.filter(arg => !arg.startsWith('-'))
+  const inPlace = name === 'sed' && args.some(arg => /^-[a-z]*i/.test(arg) || longOption(arg, '--in-place'))
+  // sed's first plain word is its script unless -e, --expression, -f or --file gives one.
+  const scripted = args.some(arg => /^-[a-z]*[ef]/.test(arg) || longOption(arg, '--expression', '--file'))
+  if (WRITERS.includes(name) || inPlace) return firstAimed(inPlace && !scripted ? targets.slice(1) : targets)
+  if (COPIERS.includes(name) && targets.length > 1) return aimed(targets.at(-1) ?? '')
+  return undefined
+}
+
+// `starts` are the folders the line may start in, null among them for one a cd left unplaced.
+function reviewerLine(line, starts, ctx) {
+  const { path, inMain, main } = ctx
+  const raw = ctx.raw ?? line
+  if (patchFiles(line).some(file => starts.some(start => start !== null && inMain(path.resolve(start, file))))) return MAIN_REASON(main)
+  // The shell splits a substituted cd's `$(...)` into commands of their own, leaving the cd without a folder.
+  const substituted = SUBSTITUTED_CD.test(quotedParensDropped(line))
+  for (const windows of [false, true]) {
+    let places = starts
+    for (const words of commands(line, windows)) {
+      const [head, ...rest] = words.filter(word => !isRedirect(word))
+      if (head !== undefined && (CD_WORDS.includes(head.toLowerCase()) || /^(?:cd|chdir)[./\\]/i.test(head))) {
+        if (POP_WORDS.includes(head.toLowerCase())) continue
+        const written = cdTarget(rest, head)
+        // zsh's `cd old new` swaps old for new in the current folder's path. A cd the guard cannot place adds an unplaced
+        // folder (null): what follows runs unless it writes, or runs git that writes, under a relative path.
+        if (written === undefined && !substituted && rest.filter(arg => !arg.startsWith('-')).length < 2) continue
+        const target = written === undefined ? undefined : resolvedTarget(written, ctx.env, raw, windows)
+        places = [...new Set([...places, ...(target === undefined ? [null] : landing(places, target, path))])]
+        if (places.some(inMain)) return MAIN_REASON(main)
+        continue
+      }
+      const reason = reviewerRefusal(words, places, ctx, windows)
+      if (reason) return reason
+    }
+  }
+  return undefined
+}
+
+/**
+ * Why a reviewer seat's command line is refused, or undefined when it may run: whatever guard() refuses an owner, and
+ * then a commit, push, pull, merge, rebase, cherry-pick, revert, am, a tag, a branch or ref change (a fetch into a local
+ * branch or tag among them), a checkout or switch onto a branch, a git config or remote write, git worktree but list,
+ * gh pr create or merge and the API calls that do the same, a git command, a folder change or a write aimed at a `main`
+ * checkout, any command run from one, and a cd whose folder the guard cannot place. A git alias is checked as what it
+ * runs. `own` is the seat's folder; `repo` answers for the repository the line runs in (see Repo); `env` expands a cd's
+ * variables.
+ */
+export const reviewerGuard = (line, branch, cwd = process.cwd(), path = nodePath, own = undefined, main = [], cdpath = undefined, bash = false,
+  checkedOutBranches = [], repo = NO_REPO, env = process.env, depth = 0) => {
+  const inMain = mainFence(main, own, path)
+  const recheck = (expanded, at) => reviewerGuard(expanded, branch, at, path, own, main, cdpath, bash, checkedOutBranches, repo, env, depth + 1)
+  const text = heredocsDropped(interpreterData(line))
+  return guard(line, branch, cwd, path, own, cdpath, bash, checkedOutBranches)
+    ?? (inMain(path.resolve(cwd)) ? MAIN_REASON(main)
+      : patchFiles(line).some(file => inMain(path.resolve(cwd, file))) ? MAIN_REASON(main)
+      : reviewerLine(text, [path.resolve(cwd)], { path, inMain, main, repo, env, recheck, depth, raw: line }))
+}
+
+/** Why a reviewer's file tool may not write `file`: it is in a `main` checkout. */
+export const reviewerFileGuard = (file, cwd = process.cwd(), path = nodePath, own = undefined, main = []) =>
+  mainFence(main, own, path)(path.resolve(cwd, file)) ? MAIN_REASON(main) : undefined
+
 // The hook runs whatever link its path came through (macOS's /var, a linked plugin folder, a Windows junction), where
 // argv[1] and the module's own path differ; a path that cannot be resolved runs it too, since a silent guard allows all.
 const invoked = () => {
@@ -837,14 +1174,57 @@ const invoked = () => {
   }
 }
 
+// agy on Windows hands the hook command to node with its quotes still on a path that has a space.
+const values = flag => process.argv.flatMap((arg, at) => arg === flag && process.argv[at + 1] !== undefined
+  ? [process.argv[at + 1].replace(/^"(.*)"$/s, '$1')] : [])
+
+// codex's apply_patch, agy's file tools and Claude's name the files they write; agy's take the path as Path or TargetFile.
+const AGY_WRITES = /write|edit|replace|create|delete|move|rename/i
+const writtenFiles = input => {
+  if (input.tool_name === 'apply_patch') return patchFiles(String(input.tool_input?.command ?? ''))
+  const call = input.toolCall
+  if (call !== undefined) {
+    if (call.args?.CommandLine !== undefined || !AGY_WRITES.test(String(call.name ?? ''))) return []
+    return Object.entries(call.args ?? {}).filter(([key, value]) => /(path|file)$/i.test(key) && typeof value === 'string').map(([, value]) => value)
+  }
+  const file = input.tool_input?.file_path ?? input.tool_input?.notebook_path
+  return typeof file === 'string' ? [file] : []
+}
+
+/** The repository at `cwd` as reviewerGuard asks of it. @returns {Repo} */
+const repoAt = cwd => {
+  const git = (...args) => spawnSync('git', ['-C', cwd, ...args], { encoding: 'utf8', windowsHide: true })
+  /** @type {Set<string> | undefined} */
+  let commands
+  return {
+    kind: name => {
+      if (name === '-') {
+        const full = git('rev-parse', '--symbolic-full-name', '@{-1}').stdout?.trim() ?? ''
+        return full.startsWith('refs/heads/') ? 'branch' : full ? 'commit' : undefined
+      }
+      if (git('show-ref', '--verify', '--quiet', 'refs/heads/' + name).status === 0) return 'branch'
+      if (git('rev-parse', '--verify', '--quiet', name + '^{commit}').status === 0) return 'commit'
+      return git('for-each-ref', '--count=1', '--format=%(refname)', 'refs/remotes/*/' + name).stdout?.trim() ? 'remote' : undefined
+    },
+    // git ignores an alias that has the name of one of its commands.
+    alias: name => {
+      const found = git('config', '--get', 'alias.' + name)
+      if (found.status !== 0) return undefined
+      commands ??= new Set((git('--list-cmds=builtins,main,others').stdout ?? '').split('\n'))
+      return commands.has(name) ? undefined : found.stdout.replace(/\r?\n$/, '')
+    },
+  }
+}
+
 if (invoked()) {
   const input = JSON.parse(readFileSync(0, 'utf8') || '{}')
-  const agy = input.toolCall?.args?.CommandLine
-  const line = agy ?? input.tool_input?.command
+  const agy = input.toolCall !== undefined
+  const command = agy ? input.toolCall.args?.CommandLine : input.tool_name === 'apply_patch' ? undefined : input.tool_input?.command
+  const line = typeof command === 'string' ? command : undefined
   const cwd = input.toolCall?.args?.Cwd ?? input.workspacePaths?.[0] ?? input.cwd ?? process.cwd()
-  const ownAt = process.argv.indexOf('--own')
-  // agy on Windows hands the hook command to node with its quotes still on a path that has a space.
-  const own = ownAt === -1 ? undefined : process.argv[ownAt + 1]?.replace(/^"(.*)"$/s, '$1')
+  const own = values('--own')[0]
+  const reviewer = process.argv.includes('--reviewer')
+  const main = values('--main')
   const branch = () => spawnSync('git', ['-C', cwd, 'branch', '--show-current'], { encoding: 'utf8', windowsHide: true }).stdout?.trim()
   // codex names its shell tool Bash too, though on Windows it runs PowerShell; only Claude's hook passes --claude.
   const bash = process.argv.includes('--claude') && input.tool_name === 'Bash'
@@ -853,14 +1233,17 @@ if (invoked()) {
     const reflog = gitDir ? nodePath.join(gitDir, 'logs', 'HEAD') : undefined
     return reflog && existsSync(reflog) ? checkedOut(readFileSync(reflog, 'utf8')) : []
   }
-  const pushes = typeof line === 'string' && /\b(push|branch)\b/.test(line)
-  const reason = typeof line === 'string'
-    ? guard(line, pushes ? branch() : undefined, cwd, nodePath, own, process.env.CDPATH, bash, pushes ? checkedOutHere() : [])
-    : undefined
-  if (reason && agy !== undefined) process.stdout.write(JSON.stringify({ decision: 'deny', reason: 'seat-router owner guard: ' + reason }) + '\n')
+  const pushes = line !== undefined && /\b(push|branch)\b/.test(line)
+  const pushed = pushes ? branch() : undefined
+  const checked = pushes ? checkedOutHere() : []
+  const reason = line === undefined ? (reviewer ? writtenFiles(input).map(file => reviewerFileGuard(file, cwd, nodePath, own, main)).find(Boolean) : undefined)
+    : reviewer ? reviewerGuard(line, pushed, cwd, nodePath, own, main, process.env.CDPATH, bash, checked, repoAt(cwd))
+    : guard(line, pushed, cwd, nodePath, own, process.env.CDPATH, bash, checked)
+  const name = 'seat-router ' + (reviewer ? 'reviewer' : 'owner') + ' guard: '
+  if (reason && agy) process.stdout.write(JSON.stringify({ decision: 'deny', reason: name + reason }) + '\n')
   else if (reason) {
     // codex shows the reason followed by ". Command: <line>".
-    const hookSpecificOutput = { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: 'seat-router owner guard: ' + reason.replace(/\.$/, '') }
+    const hookSpecificOutput = { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: name + reason.replace(/\.$/, '') }
     process.stdout.write(JSON.stringify({ hookSpecificOutput }) + '\n')
   }
 }
