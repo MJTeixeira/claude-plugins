@@ -16,7 +16,7 @@ import { createInterface } from 'node:readline'
 import { command } from './command.mjs'
 import { claimOf, takeName, takeOf } from './core/layout.mjs'
 import { lines, readJson } from './io-node.mjs'
-import { claimFile } from './liveness.mjs'
+import { claimFile, windowsPowerShell } from './liveness.mjs'
 
 const [tool, ...args] = process.argv.slice(2)
 
@@ -29,10 +29,11 @@ const alive = pid => {
   }
 }
 
-const listing = () => process.platform === 'win32'
-  ? execFileSync(join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'), ['-NoProfile', '-NonInteractive', '-Command',
-    'Get-CimInstance Win32_Process | ForEach-Object { "$($_.ProcessId) $($_.ParentProcessId)" }'], { encoding: 'utf8', windowsHide: true, timeout: 20_000 })
-  : execFileSync('ps', ['-A', '-o', 'pid=,ppid='], { encoding: 'utf8', maxBuffer: 64 << 20 })
+const listing = () => {
+  if (process.platform !== 'win32') return execFileSync('ps', ['-A', '-o', 'pid=,ppid='], { encoding: 'utf8', maxBuffer: 64 << 20 })
+  const { file, args, env } = windowsPowerShell('Get-CimInstance Win32_Process | ForEach-Object { "$($_.ProcessId) $($_.ParentProcessId)" }')
+  return execFileSync(file, args, { env, encoding: 'utf8', windowsHide: true, timeout: 20_000 })
+}
 
 function ancestors() {
   const found = [process.ppid]

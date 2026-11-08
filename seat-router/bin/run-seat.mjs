@@ -13,7 +13,7 @@
 // takes the folders under WindowsApps off PATH; `claudeLogin`, which drops the variables that would outrank the login
 // of the spec's CLAUDE_CONFIG_DIR; `reviewer`, set for a reviewer in its vendor's sandbox, which passes the CLI only the variables REVIEWER_ENV names, besides the
 // spec's own, points gh at an empty config folder and clears git's credential helpers; `unset`, variables removed from
-// the environment. A seat run again keeps each earlier attempt's stdout, stderr and outputs as <name>.<n><ext>.
+// the environment, whatever their case. A seat run again keeps each earlier attempt's stdout, stderr and outputs as <name>.<n><ext>.
 // `--release SPEC` runs the spec's `release`; one that fails says why in release.err beside the spec.
 // Usage: node run-seat.mjs ATTEMPT_DIR | node run-seat.mjs --release SPEC
 import { execFileSync, spawn } from 'node:child_process'
@@ -23,7 +23,7 @@ import { delimiter, dirname, join, parse } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { claudeConfigEnv, withoutClaudeAuth } from './claude-auth.mjs'
 import { command } from './command.mjs'
-import { LAUNCHER_CHECK_MS, LAUNCHER_GRACE_MS, claimFile, createdAt, outsideRecorder, taskkillTree } from './liveness.mjs'
+import { LAUNCHER_CHECK_MS, LAUNCHER_GRACE_MS, claimFile, createdAt, outsideRecorder, taskkillTree, withoutVariables } from './liveness.mjs'
 
 const WIN = process.platform === 'win32'
 const self = fileURLToPath(import.meta.url)
@@ -145,8 +145,7 @@ const startCli = () => {
     renameSync(path, join(folder, `${name}.${n}${ext}`))
   }
   const inherited = spec.reviewer ? reviewerEnv(process.env, dir) : process.env
-  const env = claudeConfigEnv(spec.claudeLogin ? withoutClaudeAuth({ ...inherited, ...spec.env }) : { ...inherited, ...spec.env })
-  for (const name of spec.unset ?? []) delete env[name]
+  const env = withoutVariables(claudeConfigEnv(spec.claudeLogin ? withoutClaudeAuth({ ...inherited, ...spec.env }) : { ...inherited, ...spec.env }), spec.unset ?? [])
   if (spec.home) {
     const home = execFileSync(process.execPath, [join(dirname(self), 'agy-seat-home.mjs'), ...spec.home], { encoding: 'utf8', windowsHide: true, timeout: 120_000 }).trim()
     env.HOME = home

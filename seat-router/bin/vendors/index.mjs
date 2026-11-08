@@ -11,7 +11,7 @@ import { codex } from './codex.mjs'
  * @typedef {{ allowed?: boolean, windows: Window[] }} Usage
  * @typedef {import('../core/ledger.mjs').Window} LedgerWindow
  * @typedef {{ script: string } | { exec: string[] }} Run  a bin/ helper run with node, or a CLI run through seat-io's exec
- * @typedef {{ text: string, failed: boolean, quota: boolean, detail: string, refused?: string[] }} Check
+ * @typedef {{ text: string, failed: boolean, quota: boolean, detail: string, refused?: string[], note?: string }} Check
  * @typedef {{ id: string, dir: string, workDir: string, tier: 'reviewer'|'owner', model: string, effort: string,
  *             isolation?: 'worktree'|'folder', account?: string, resumeConversation?: string }} PlanSeat
  * @typedef {{ seat: PlanSeat, brief: string, os: 'windows'|'posix', guard: string, seatRoot: string, configDir?: string, main?: string[] }} PlanContext
@@ -53,6 +53,8 @@ import { codex } from './codex.mjs'
  * @property {(view: AttemptView, dir: string, exitCode: number|undefined) => Promise<Check>} judge
  * @property {(view: AttemptView, dir: string, memo: Record<string, unknown>) => Promise<{ tokens?: number, memo?: Record<string, unknown> }>} liveTokens
  * @property {(text: string) => string|undefined} lastAction
+ * @property {{ file: string, line: RegExp }} [idle]   the CLI waits on nothing of its own while the seat folder's `file` ends
+ *   with a line `line` matches, written no earlier than the transcript's last write
  * @typedef {VendorAdapter & {
  *   account: { args: string[], env: (dir: string) => Record<string, string> },
  *   accountKey: (realPath: string) => string,
@@ -64,7 +66,7 @@ import { codex } from './codex.mjs'
 /** @type {{ codex: VendorAdapter, agy: VendorAdapter, claude: ClaudeAdapter }} */
 export const ADAPTERS = { codex, agy, claude }
 
-export { durationName, guarded } from './shared.mjs'
+export { NO_BUILD_SERVERS, durationName, guarded } from './shared.mjs'
 
 // A native agent's card counts and names its work the way a Claude seat's does.
 export { toolAction, usageTokens } from './claude.mjs'

@@ -1,9 +1,9 @@
 import { execFile, execFileSync } from 'node:child_process'
-import { closeSync, createReadStream, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, readlinkSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import { closeSync, createReadStream, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, readlinkSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join, sep } from 'node:path'
 import { createInterface } from 'node:readline'
-import { claimFile, cliState, group, holdEndpoint, probe } from './liveness.mjs'
+import { claimFile, cliState, group, holdEndpoint, probe, windowsPowerShell } from './liveness.mjs'
 
 const WIN = process.platform === 'win32'
 /** How long accept.mjs and prune-seats.mjs give each command they run; one that runs out was not done. */
@@ -12,7 +12,10 @@ export const COMMAND_MS = Number(process.env.SEAT_ROUTER_COMMAND_MS) || 60_000
 const hidden = { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true, timeout: COMMAND_MS }
 // By full path: a Windows PATH can put Git's POSIX tools (whoami among them) ahead of System32's.
 const system32 = (...parts) => join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', ...parts)
-const powershell = command => execFileSync(system32('WindowsPowerShell', 'v1.0', 'powershell.exe'), ['-NoProfile', '-NonInteractive', '-Command', command], hidden).trim()
+const powershell = command => {
+  const { file, args, env } = windowsPowerShell(command)
+  return execFileSync(file, args, { ...hidden, env }).trim()
+}
 
 export const readJson = path => {
   try { return JSON.parse(readFileSync(path, 'utf8')) } catch { return undefined }
@@ -267,6 +270,20 @@ export const lines = (path, n, fromEnd) => {
   const all = (text.endsWith('\n') ? text.slice(0, -1) : text).split('\n')
   const kept = fromEnd ? all.slice(-n) : all.slice(0, n)
   return text ? kept.map(line => line + '\n').join('') : ''
+}
+
+/**
+ * The idle line a seat's CLI printed last (VendorAdapter.idle), when its transcript in seat folder `dir` has had no write
+ * since; undefined otherwise.
+ */
+export const idleLine = (dir, adapter) => {
+  if (!adapter.idle) return undefined
+  const file = join(dir, adapter.idle.file)
+  const line = lines(file, 1, true).trim()
+  if (!adapter.idle.line.test(line)) return undefined
+  const waited = statSync(file, { throwIfNoEntry: false })?.mtimeMs ?? 0
+  const wrote = statSync(join(dir, adapter.transcript), { throwIfNoEntry: false })?.mtimeMs ?? 0
+  return waited >= wrote ? line : undefined
 }
 
 const grepWith = async (source, path, { parts = false, first = false } = {}) => {

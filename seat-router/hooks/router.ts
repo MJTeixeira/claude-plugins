@@ -180,6 +180,8 @@ type Shown = {
   status: SeatStatus
   startedAt: number
   endedAt?: number
+  // The idle line a running seat's CLI printed, with nothing written since (VendorAdapter.idle).
+  stalled?: string
 }
 
 type Read = { kind: 'marker', marker: Marker } | { kind: 'not-job', word: string } | { kind: 'not-a-line' }
@@ -432,6 +434,7 @@ function display(seat: Shown, liveTokens: number | undefined, activity: Activity
     startedAt: seat.startedAt, ...(seat.endedAt === undefined ? {} : { endedAt: seat.endedAt }),
     ...(liveTokens === undefined ? {} : { liveTokens }),
     ...(activity.lastAction === undefined ? {} : { lastAction: activity.lastAction }),
+    ...(seat.stalled === undefined ? {} : { stalled: seat.stalled }),
   }
 }
 
@@ -548,6 +551,7 @@ type LiveEntry = {
   effort: string
   account?: string
   solo?: boolean
+  stalled?: string
 }
 
 async function listNames($: EngineInterface, dir: string): Promise<string[]> {

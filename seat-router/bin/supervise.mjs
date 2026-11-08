@@ -10,14 +10,14 @@ import { closeSync, openSync, readdirSync, realpathSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { command } from './command.mjs'
-import { ADAPTERS, familyOf, guarded as runsGuarded } from './vendors/index.mjs'
+import { ADAPTERS, NO_BUILD_SERVERS, familyOf, guarded as runsGuarded } from './vendors/index.mjs'
 import { claimOf, deliveryFile, liveFile, mailDir, outcomeFile } from './core/layout.mjs'
 import { RULES, merge, stateOf, withObservations } from './core/ledger.mjs'
 import { DEADLINE_MS, KILL_DETAIL, SEAT_SCHEMA, outcomeOf, reportText, step } from './core/lifecycle.mjs'
 import * as io from './io-node.mjs'
 import { worktreeRelease } from './worktree.mjs'
 import {
-  attemptQuiet, attemptView, claimLock, claimSolo, endSolo, exists, held, holders, lines, liveEntries, outsideOf, quotaFiles, readJson, readText, seatHolders, soloHolder,
+  attemptQuiet, attemptView, claimLock, claimSolo, endSolo, exists, held, holders, idleLine, lines, liveEntries, outsideOf, quotaFiles, readJson, readText, seatHolders, soloHolder,
 } from './io-node.mjs'
 import { LAUNCHER_CHECK_MS, LAUNCHER_GRACE_MS, MAX_ATTEMPT, claimFile, outsideRecorder, pipeName, reader, startLauncher, taskkillTree } from './liveness.mjs'
 import { removeTree as removeTreeNow } from './remove-tree.mjs'
@@ -358,14 +358,14 @@ const endAttempt = async (n, ending) => {
   await releaseAttempt(n)
   const outside = outsideOf(folder)
   const running = [...new Map([...(found === 'unknown' ? [] : found), ...outside.running].map(row => [row.pid, row])).values()]
-  const notes = [left ? ending.note ?? 'Its CLI may still be running: a process of it was left after it ended.' : '',
+  const notes = [ending.observed ?? '', left ? ending.note ?? 'Its CLI may still be running: a process of it was left after it ended.' : '',
     running.length ? runningNote(running) : '', found === 'unknown' ? UNREAD_NOTE : '', outside.unlisted ? UNLISTED_NOTE : ''].filter(Boolean)
-  const { left: _left, note: _note, ...rest } = ending
+  const { left: _left, note: _note, observed: _observed, ...rest } = ending
   writeAtomic(join(folder, 'ending.json'), JSON.stringify({
     ...rest, text: ending.text || (ending.kind === 'not-started' ? '' : partialOutput(candidate)), ...(left || held(found) ? { left: true } : {}),
     ...(notes.length ? { note: notes.join(' ') } : {}),
   }))
-  updateLive({ solo: false })
+  updateLive({ solo: false, stalled: undefined })
 }
 
 // A guarded seat reaches GitHub through the operator's gh token, passed in the environment only: the seat's HOME cannot
@@ -432,7 +432,7 @@ const launch = async ({ n, index, resume, rerun }, tree) => {
   for (const [name, text] of Object.entries(plan.files)) writeFileSync(join(dir, name), text)
   // A sandboxed reviewer's launcher passes the CLI only allowlisted variables besides the spec's own, so the plan's go in the spec.
   const spec = {
-    ...plan.spec, argv: [cli(plan.spec.argv[0]), ...plan.spec.argv.slice(1)], env: { ...plan.spec.env, ...plan.env, GIT_CEILING_DIRECTORIES: home + '/seats' },
+    ...plan.spec, argv: [cli(plan.spec.argv[0]), ...plan.spec.argv.slice(1)], env: { ...NO_BUILD_SERVERS, ...plan.spec.env, ...plan.env, GIT_CEILING_DIRECTORIES: home + '/seats' },
     stop: join(dir, 'stop'), deadline: seat.createdAt + DEADLINE_MS, ...(guarded ? {} : { reviewer: true }),
   }
   const launcherEnv = { ...env, ...(guarded ? await ownerEnv() : {}) }
@@ -475,6 +475,7 @@ const judge = async n => {
       const conversation = await adapter.resume.conversation(view, dir) ?? attempt.resume
       ending = { kind: 'transient', detail: checked.detail, text, ...(conversation ? { resume: conversation } : {}) }
     } else ending = { kind: 'failed', detail: checked.detail, text }
+    if (checked.note) ending = { ...ending, observed: checked.note }
   } catch (error) {
     ending = { kind: 'unclassified', detail: 'its output could not be read (' + error.message + ')', text: partialOutput(candidate) }
   }
@@ -536,6 +537,9 @@ const kill = async ({ n, why }) => {
 
 let quotaCheckedAt = 0
 const watch = async n => {
+  const stalled = idleLine(dir, ADAPTERS[seat.candidates[readJson(join(attemptDir(n), 'attempt.json')).index].vendor])
+  // Decided from the live entry, not this supervisor's memory: one that died while the entry read stalled left it so.
+  if (stalled !== readJson(liveFile(home, seat.id))?.stalled) updateLive({ stalled })
   await sleep(TICK_MS)
   if (Date.now() - quotaCheckedAt < QUOTA_CHECK_MS) return
   quotaCheckedAt = Date.now()
@@ -568,26 +572,70 @@ const probeOwner = async n => {
   writeAtomic(join(attemptDir(n), 'owner.json'), JSON.stringify({ unchanged }))
 }
 
+const hasBranch = async name => (await git(['rev-parse', '--verify', '--quiet', 'refs/heads/' + name])).exitCode === 0
+
+/** How many commits local branch `name` has past the seat's base, undefined when git cannot count them. */
+const pastBase = async name => {
+  const counted = await git(['rev-list', '--count', seat.baseSha + '..refs/heads/' + name, '--'])
+  return counted.exitCode === 0 ? Number(counted.stdout.trim()) : undefined
+}
+
+/** Whether another local or a remote-tracking branch reaches local branch `name`'s tip, so deleting `name` loses no commit. */
+const reachedElsewhere = async name => {
+  const refs = await git(['for-each-ref', '--format=%(refname)', '--contains', 'refs/heads/' + name, 'refs/heads/', 'refs/remotes/'])
+  return refs.exitCode === 0 && refs.stdout.split('\n').some(ref => ref.trim() && ref.trim() !== 'refs/heads/' + name)
+}
+
+/**
+ * Where an owner's committed work is once its worktree, last on branch `head`, is settled (`kept` when it stays): its own
+ * `seat/<id>` when that has commits past the base (or git cannot tell) or the kept worktree is on it, else `head` when
+ * that has commits past the base, else nowhere. An own branch with nothing past the base is deleted locally when another
+ * ref reaches its tip; no remote branch is touched.
+ */
+const ownerBranch = async (head, kept) => {
+  const branch = 'seat/' + seat.id
+  const has = await hasBranch(branch)
+  if ((has ? await pastBase(branch) : 0) !== 0 || (kept && head === branch)) return branch
+  if (has && await reachedElsewhere(branch)) await git(['branch', '-D', branch])
+  return head !== undefined && (await pastBase(head) ?? 0) > 0 ? head : undefined
+}
+
+const NO_WORK_BRANCH = 'Branch: none, the seat committed nothing past its base'
+
 const releaseWorktree = async () => {
   if (seat.isolation !== 'worktree') return undefined
   const tree = join(dir, 'wt')
   const branch = 'seat/' + seat.id
   if (exists(join(tree, '.git')) && !ready()) await git(['worktree', 'remove', '--force', '--force', tree])
   else if (exists(join(tree, '.git'))) {
+    const symbolic = seat.tier === 'owner' ? await git(['-C', tree, 'symbolic-ref', '--quiet', '--short', 'HEAD']) : undefined
+    const head = symbolic?.exitCode === 0 ? symbolic.stdout.trim() : undefined
     const release = await worktreeRelease(git, tree, seat)
-    if (release.keep) return 'Worktree: ' + branch + ' at ' + tree + ' (kept: ' + release.keep + ')'
-    if ((await git(['worktree', 'remove', ...release.flags, tree])).exitCode !== 0) {
-      if (seat.tier !== 'reviewer') return 'Worktree: ' + branch + ' at ' + tree + ' (kept: git could not remove it)'
-      removeTree(tree)
-      await git(['worktree', 'prune'])
+    let keep = release.keep
+    if (!keep && (await git(['worktree', 'remove', ...release.flags, tree])).exitCode !== 0) {
+      if (seat.tier !== 'reviewer') keep = 'git could not remove it'
+      else {
+        removeTree(tree)
+        await git(['worktree', 'prune'])
+      }
     }
-    if (seat.tier === 'owner') return 'Branch: ' + branch + ' (its worktree was removed)'
+    if (keep) {
+      await ownerBranch(head, true)
+      const commit = head === undefined ? await git(['-C', tree, 'rev-parse', '--short', 'HEAD']) : undefined
+      const on = head ?? 'detached HEAD' + (commit?.exitCode === 0 ? ' ' + commit.stdout.trim() : '')
+      return 'Worktree: ' + on + ' at ' + tree + ' (kept: ' + keep + ')'
+    }
+    if (seat.tier === 'owner') {
+      const work = await ownerBranch(head, false)
+      return (work === undefined ? NO_WORK_BRANCH : 'Branch: ' + work) + ' (its worktree was removed)'
+    }
   }
   if (seat.tier === 'reviewer') {
-    if ((await git(['rev-parse', '--verify', '--quiet', 'refs/heads/' + branch])).exitCode === 0) await git(['branch', '-D', branch])
+    if (await hasBranch(branch)) await git(['branch', '-D', branch])
     return undefined
   }
-  return 'Branch: ' + branch
+  const work = await ownerBranch(undefined, false)
+  return work === undefined ? NO_WORK_BRANCH : 'Branch: ' + work
 }
 
 const HELD_LINE = 'A process of this seat\'s CLI may still be running, so its worktree and HOME were kept until it ends.'
@@ -671,7 +719,7 @@ const apply = async (next, tree) => {
       const notes = exists(join(dir, 'gh-missing')) ? [GH_MISSING] : []
       return writeAtomic(join(dir, 'report.md'), reportText(tree, tree.verdict, {
         release: readJson(join(dir, 'release.json'))?.line, kept: kept(), keepFailed: releaseErrors(),
-        waits: readJson(join(dir, 'waits.json')) ?? {}, notes,
+        waits: readJson(join(dir, 'waits.json')) ?? {}, notes, ...seat.isolation === 'worktree' ? { worktree: workDir() } : {},
       }))
     }
     case 'worktree': return worktree()

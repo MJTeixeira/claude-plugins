@@ -1,4 +1,4 @@
-import { POWERSHELL_51_NOTE, PYTHON_UTF8, asObject, candidateScopes, defined, familyOfModel, fileName, guarded, join, lastActionWith, numberAt, readJson, resetTime, textAt } from './shared.mjs'
+import { POWERSHELL_51_NOTE, POWERSHELL_51_UNSET, PYTHON_UTF8, asObject, candidateScopes, defined, familyOfModel, fileName, guarded, join, lastActionWith, numberAt, oneLine, readJson, resetTime, textAt } from './shared.mjs'
 
 // In -p mode agy keeps a run open while a background task (a long run_command, a schedule
 // timer) runs and wakes the agent when it ends, so an answer given early is not the run's
@@ -41,7 +41,7 @@ const plan = ({ seat, brief, os, main = [] }) => {
         // The headless docs give -p a five-minute default where the reference and --help give none.
         '--dangerously-skip-permissions', '--print-timeout', '0', '-p', seat.resumeConversation ? RESUME : { file: join(seat.dir, 'brief.md') },
       ],
-      cwd: seat.workDir, env: { ...(windows ? PYTHON_UTF8 : {}), ...NO_UPDATER },
+      cwd: seat.workDir, env: { ...(windows ? PYTHON_UTF8 : {}), ...NO_UPDATER }, ...(windows ? { unset: POWERSHELL_51_UNSET } : {}),
       home: [...(guarded(seat) ? ['owner'] : []), '--home', home, '--own', seat.dir, ...main.flatMap(folder => ['--main', folder])],
       release: ['release', '--home', home, '--own', seat.dir, '--transcript', join(seat.dir, 'agy.jsonl'), '--keep', join(seat.dir, 'artifacts')],
       stdout: join(seat.dir, 'agy.jsonl'), stderr: join(seat.dir, 'agy.err'),
@@ -54,6 +54,12 @@ const plan = ({ seat, brief, os, main = [] }) => {
 const GUARD_CRASH = /^JSON hook "jsonhook__seat-router-owner-guard_[^"]*" failed:/
 const GUARD_CRASH_LINE = 'jsonhook__seat-router-owner-guard_[^ ]* failed:'
 const TEXT_LINE = '"text_delta":'
+// agy prints this on stderr in -p mode when its agent has stopped and the run waits only for background tasks.
+const IDLE = /^root agent idle; waiting for \d+ background task\(s\) to finish$/
+const IDLE_LINE = '^root agent idle; waiting for [0-9]+ background task'
+const TOOL_DONE_LINE = '"state":"DONE","step_type":"tool"'
+// What a run_command step's output starts with when a signal ended its command.
+const SIGNALLED = 'Command was terminated by signal or canceled.'
 
 // agy's result response joins the text of every agent_response step, so a seat that
 // narrated while it worked would report the narration; its answer is the last step's text.
@@ -63,6 +69,7 @@ const resultOf = jsonl => {
   let answerStep
   let answer
   let all = ''
+  let signalled
   for (const line of jsonl.split('\n')) {
     const parsed = asObject(readJson(line))
     if (!parsed) continue
@@ -70,6 +77,10 @@ const resultOf = jsonl => {
     const step = asObject(parsed.step_update)
     const error = asObject(asObject(step?.tool_info)?.error)
     if (GUARD_CRASH.test(textAt(error?.message) ?? '')) guardCrashed = true
+    if (step?.state === 'DONE' && step.step_type === 'tool' && step.tool_name === 'run_command') {
+      const info = asObject(step.tool_info)
+      signalled = textAt(info?.output)?.startsWith(SIGNALLED) ? textAt(asObject(info?.parameters)?.CommandLine) ?? '?' : undefined
+    }
     const delta = step?.step_type === 'agent_response' ? textAt(step.text_delta) : undefined
     if (delta === undefined) continue
     if (answer === undefined || step?.step_index !== answerStep) answer = ''
@@ -77,14 +88,14 @@ const resultOf = jsonl => {
     answer += delta
     all += delta
   }
-  if (last?.event !== 'result' && last?.type !== 'result') return { text: '', valid: false, error: '', denied: [], guardCrashed }
+  if (last?.event !== 'result' && last?.type !== 'result') return { text: '', valid: false, error: '', denied: [], guardCrashed, signalled }
   const result = asObject(last?.result)
   // agy leaves denied_actions out when nothing was refused.
   const denied = result?.denied_actions
   const names = Array.isArray(denied) ? denied.map(action => textAt(asObject(action)?.action) ?? '?') : []
   const valid = result?.status === 'SUCCESS'
   const response = textAt(result?.response) ?? ''
-  return { text: valid ? answer ?? response : response || all, valid, error: textAt(result?.error) ?? '', denied: names, guardCrashed }
+  return { text: valid ? answer ?? response : response || all, valid, error: textAt(result?.error) ?? '', denied: names, guardCrashed, signalled }
 }
 
 // A failed agy -p run ends with `AGY_ERROR: {"status", "error_code", …}` on stderr and exit 3
@@ -98,7 +109,11 @@ const isQuota = errors => {
   return error?.status === 'RESOURCE_EXHAUSTED' || error?.error_code === 429 || CREDITS.test(errors)
 }
 
-export const failedAgy = (exitCode, jsonl, stderr) => {
+/**
+ * How an agy run ended. `idled`: agy printed that its agent idled on background tasks. When it did and a signal ended
+ * its last run_command, `note` says so; agy's own verdict stands.
+ */
+export const failedAgy = (exitCode, jsonl, stderr, idled = false) => {
   const result = resultOf(jsonl)
   // agy's last error is its word on the run: a 401 there is not a quota failure, whatever ran before it.
   const quota = isQuota(result.valid || UNAUTHENTICATED.test(result.error) ? '' : result.error + '\n' + stderr)
@@ -112,15 +127,18 @@ export const failedAgy = (exitCode, jsonl, stderr) => {
   const text = !result.valid && result.text.trim()
     ? 'agy\'s error: ' + (error || '(none given)') + '\nThe text the seat produced before agy\'s error:\n\n' + result.text
     : [refused, result.text].filter(Boolean).join('\n\n')
-  return { text, failed, quota, detail, ...(result.denied.length ? { refused: result.denied } : {}) }
+  const note = idled && result.signalled !== undefined
+    ? 'agy idled waiting for a background task; its last run_command was ended by a signal: ' + oneLine(result.signalled) : undefined
+  return { text, failed, quota, detail, ...(result.denied.length ? { refused: result.denied } : {}), ...(note ? { note } : {}) }
 }
 
 const judge = async (view, dir, exitCode) => {
   const transcript = join(dir, 'agy.jsonl')
   // agy.err ends each error with its message (`error: …`) and then its `AGY_ERROR: {"status", "error_code", …}` line.
   const lastError = (await view.grep('^(AGY_ERROR|error):', join(dir, 'agy.err'))).trim().split('\n').slice(-2).join('\n')
-  const steps = await view.grep(GUARD_CRASH_LINE + '|' + TEXT_LINE, transcript)
-  return failedAgy(exitCode, steps + await view.tail(transcript, 1), lastError)
+  const steps = await view.grep(GUARD_CRASH_LINE + '|' + TEXT_LINE + '|' + TOOL_DONE_LINE, transcript)
+  const idled = await view.has(IDLE_LINE, join(dir, 'agy.err'))
+  return failedAgy(exitCode, steps + await view.tail(transcript, 1), lastError, idled)
 }
 
 export const agyTokens = text => {
@@ -231,6 +249,7 @@ export const agy = {
   exhaustedScopes: candidateScopes,
   version: ['agy', '--version'],
   execEnv: NO_UPDATER,
+  idle: { file: 'agy.err', line: IDLE },
   models: { run: { exec: ['agy', 'models'] }, parse: parseAgyModels },
   usage: { run: { exec: ['agy', '-p', '/usage', '--output-format', 'json'] }, parse: stdout => usage(readJson(stdout)) },
   resume: {

@@ -76,9 +76,21 @@ export const POWERSHELL_51_NOTE = 'Your shell may be Windows PowerShell 5.1, whe
   + 'character and && does not separate commands (use ; and check $LASTEXITCODE). Write files with your file tools, or with '
   + 'python using encoding=\'utf-8\', never by piping text through the shell.\n'
 
+// A PowerShell 7 parent hands its PSModulePath down, and Windows PowerShell 5.1 started with it fails to autoload its own
+// modules (Get-Acl, CouldNotAutoloadMatchingModule); without the variable 5.1 builds its own. A seat whose shell is 5.1
+// runs without it.
+export const POWERSHELL_51_UNSET = ['PSModulePath']
+
 // Python on Windows reads and writes files in the ANSI code page (cp1252) unless told
 // otherwise, so a seat's python script turns UTF-8 text into mojibake (PEP 686).
 export const PYTHON_UTF8 = { PYTHONUTF8: '1' }
+
+// dotnet leaves its MSBuild worker nodes, its MSBuild server and the VBCSCompiler compiler server running after a build
+// for later builds of the same user, so a seat's builds would outlive the seat. MSBuild reads an environment variable
+// as the property of the same name (UseSharedCompilation). https://github.com/dotnet/msbuild/blob/main/documentation/wiki/MSBuild-Environment-Variables.md,
+// https://learn.microsoft.com/en-us/visualstudio/msbuild/msbuild-server,
+// https://learn.microsoft.com/en-us/visualstudio/msbuild/how-to-use-environment-variables-in-a-build
+export const NO_BUILD_SERVERS = { MSBUILDDISABLENODEREUSE: '1', DOTNET_CLI_USE_MSBUILD_SERVER: 'false', UseSharedCompilation: 'false' }
 
 export const lastActionWith = actionOf => text => {
   let action

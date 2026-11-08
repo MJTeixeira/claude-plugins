@@ -4,7 +4,9 @@ import type { SeatDisplay } from '../types/index'
 import { claimName, claimOf, deliveryFile, isSeatId, lineageFile, mailDir, seatDir } from '../bin/core/layout.mjs'
 import { join, seatHome } from './layout'
 
-type SeatDelivery = { claim: string, claimedBy: string, seatSession: string, tries: number, failures: number, state: 'submitted' | 'retry' | 'dropped', sendRefused?: string }
+// `text` is the report as last submitted: only a row holding all of it is that report entering the conversation.
+type SeatDelivery = { claim: string, claimedBy: string, seatSession: string, tries: number, failures: number, state: 'submitted' | 'retry' | 'dropped', text: string,
+  sendRefused?: string }
 
 // The host keeps $.state for one session, which /clear ends, and all of this must outlive a /clear: module state lasts
 // as long as the hooks' process (measured: its timers tick on under the new id, while an atom reads its initial again).
@@ -140,7 +142,7 @@ async function submit($: EngineInterface, home: string, claimed: Claimed, text: 
   const prior = delivering.get(claimed.id)
   const tries = (prior?.tries ?? 0) + 1
   const { id: _id, ...where } = claimed
-  delivering.set(claimed.id, { ...where, tries, failures: prior?.failures ?? 0, state: 'submitted' })
+  delivering.set(claimed.id, { ...where, tries, failures: prior?.failures ?? 0, state: 'submitted', text })
   // Never awaited: a submit settles once its prompt enters, which can wait behind a long turn.
   void $.prompt.submit({ text })
     .then(result => result.drop === undefined ? undefined : failed($, home, claimed.id, tries), () => failed($, home, claimed.id, tries))
@@ -152,7 +154,17 @@ async function listening($: EngineInterface, agentId: string): Promise<boolean> 
   return (await $.agent.list()).some(agent => agent.id === agentId && LISTENING.has(agent.status))
 }
 
+// A delivery is recorded before its claim is deleted, so a claim can outlive the delivery it names.
+async function deliveredBefore($: EngineInterface, home: string, claimed: Claimed): Promise<boolean> {
+  const result = asObject(readJson(await readText($, deliveryFile(home, claimed.id))))?.result
+  if (result !== 'entered' && result !== 'sent') return false
+  await seatIo($, ['delivered', claimed.claim])
+  await markReported($, claimed.id)
+  return true
+}
+
 async function deliver($: EngineInterface, home: string, ids: readonly string[], claimed: Claimed): Promise<void> {
+  if (await deliveredBefore($, home, claimed)) return
   const text = await reportOf($, home, ids, claimed)
   if (!text) return
   const agentId = (await seatOf($, seatDir(home, claimed.id)))?.agentId
@@ -217,7 +229,7 @@ export async function turnEnded($: EngineInterface, e: { agentId?: string, isAbo
 export async function sighted($: EngineInterface, e: SessionAppendInput): Promise<void> {
   if (e.door === 'queue' || e.agentId !== undefined || e.origin.kind !== 'plugin' || e.origin.name !== $.plugin.name) return
   const text = rowText(e.message.content)
-  const seen = [...delivering].filter(([id]) => text.includes('Seat ' + id + ' ('))
+  const seen = [...delivering].filter(([, entry]) => text.includes(entry.text.trim()))
   if (!seen.length) return
   const home = await seatHome($)
   for (const [id, entry] of seen) {

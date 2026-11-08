@@ -15,6 +15,8 @@ export type SeatDisplay = {
   startedAt: number
   steps: number
   lastAction?: string
+  // Why a running seat's CLI waits on nothing of its own, in the CLI's words.
+  stalled?: string
   endedAt?: number
   liveTokens?: number
   lastTokens?: number

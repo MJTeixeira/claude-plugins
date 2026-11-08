@@ -16,6 +16,7 @@ export type Card = {
   tokens?: number
   steps: number
   lastAction?: string
+  stalled?: string
 }
 
 export type Totals = { agents: number, seats: number, subagents: number, workflows: number, tokens: number, time: number }
@@ -120,7 +121,8 @@ export const metaLine = (card: Card): string =>
 export const progress = (card: Card): number => card.status === 'done' ? 1 : card.steps / (card.steps + 6)
 
 export const stepLine = (card: Card): string =>
-  card.status === 'done' ? 'Done · ' + plural(card.steps, 'step') : 'Step ' + card.steps + (card.lastAction ? ' · ' + card.lastAction : '')
+  card.status === 'done' ? 'Done · ' + plural(card.steps, 'step')
+    : card.stalled ? 'Stalled · ' + card.stalled : 'Step ' + card.steps + (card.lastAction ? ' · ' + card.lastAction : '')
 
 const THEME = '<style>'
   + '.t{fill:#1f1e1d}.s{fill:#6b6a66}.k{fill:#8a8984;fill-opacity:.22}.tk{fill:#8a8984;fill-opacity:.6}'
