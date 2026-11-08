@@ -59,6 +59,9 @@ export const candidateScopes = async (_view, _dir, scopes) => ({ scopes })
 /** codex's windows carry no name of their own, so they are named by their length. */
 export const durationName = minutes => minutes % 1440 === 0 ? minutes / 1440 + 'd' : minutes % 60 === 0 ? minutes / 60 + 'h' : minutes + 'm'
 
+/** Whether a seat runs outside its vendor's sandbox behind the guard: an owner, and a reviewer with a worktree of its own. */
+export const guarded = seat => seat.tier === 'owner' || seat.isolation === 'worktree'
+
 export const familyOfModel = model => {
   if (model.startsWith('claude')) return 'claude'
   if (model.startsWith('gpt')) return 'gpt'

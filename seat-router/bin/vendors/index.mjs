@@ -13,9 +13,10 @@ import { codex } from './codex.mjs'
  * @typedef {{ script: string } | { exec: string[] }} Run  a bin/ helper run with node, or a CLI run through seat-io's exec
  * @typedef {{ text: string, failed: boolean, quota: boolean, detail: string, refused?: string[] }} Check
  * @typedef {{ id: string, dir: string, workDir: string, tier: 'reviewer'|'owner', model: string, effort: string,
- *             account?: string, resumeConversation?: string }} PlanSeat
- * @typedef {{ seat: PlanSeat, brief: string, os: 'windows'|'posix', guard: string, seatRoot: string, configDir?: string }} PlanContext
- *   `guard` is the owner-guard command for this seat; `configDir` the Claude config folder of the seat's account.
+ *             isolation?: 'worktree'|'folder', account?: string, resumeConversation?: string }} PlanSeat
+ * @typedef {{ seat: PlanSeat, brief: string, os: 'windows'|'posix', guard: string, seatRoot: string, configDir?: string, main?: string[] }} PlanContext
+ *   `guard` is the owner-guard command for this seat; `configDir` the Claude config folder of the seat's account; `main` the
+ *   checkouts a worktree reviewer's guard fences off.
  * @typedef {{ dirs: string[], files: Record<string, string>, env: Record<string, string>, spec: Record<string, unknown> }} Plan
  *   `files` are written in the seat's folder, `dirs` made first; `spec` is what run-seat.mjs starts.
  * @typedef {{ read: (path: string) => Promise<string>, list: (path: string) => Promise<{ name: string, kind: string }[]>,
@@ -63,7 +64,7 @@ import { codex } from './codex.mjs'
 /** @type {{ codex: VendorAdapter, agy: VendorAdapter, claude: ClaudeAdapter }} */
 export const ADAPTERS = { codex, agy, claude }
 
-export { durationName } from './shared.mjs'
+export { durationName, guarded } from './shared.mjs'
 
 // A native agent's card counts and names its work the way a Claude seat's does.
 export { toolAction, usageTokens } from './claude.mjs'

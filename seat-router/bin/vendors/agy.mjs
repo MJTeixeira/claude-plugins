@@ -1,4 +1,4 @@
-import { POWERSHELL_51_NOTE, PYTHON_UTF8, asObject, candidateScopes, defined, familyOfModel, fileName, join, lastActionWith, numberAt, readJson, resetTime, textAt } from './shared.mjs'
+import { POWERSHELL_51_NOTE, PYTHON_UTF8, asObject, candidateScopes, defined, familyOfModel, fileName, guarded, join, lastActionWith, numberAt, readJson, resetTime, textAt } from './shared.mjs'
 
 // In -p mode agy keeps a run open while a background task (a long run_command, a schedule
 // timer) runs and wakes the agent when it ends, so an answer given early is not the run's
@@ -23,8 +23,10 @@ const effortOf = effort => ['low', 'medium', 'high'].includes(effort) ? effort :
 
 // `agy --mode auto -p` prints "--mode auto is not available for this account", and agy's
 // sandbox refuses the tools a seat needs (on Windows node cannot even stat %APPDATA%, so no
-// npm-installed CLI starts), so every agy seat runs outside it behind the guard.
-const plan = ({ seat, brief, os }) => {
+// npm-installed CLI starts), so every agy seat runs outside it behind the guard. An owner, and a
+// reviewer with a worktree, get the operator's gh, keychain and MCP servers; that reviewer's guard
+// fences off the `main` checkouts.
+const plan = ({ seat, brief, os, main = [] }) => {
   const windows = os === 'windows'
   const home = join(seat.dir, 'home')
   const note = TASKS_NOTE + (windows ? POWERSHELL_51_NOTE : '')
@@ -40,7 +42,7 @@ const plan = ({ seat, brief, os }) => {
         '--dangerously-skip-permissions', '--print-timeout', '0', '-p', seat.resumeConversation ? RESUME : { file: join(seat.dir, 'brief.md') },
       ],
       cwd: seat.workDir, env: { ...(windows ? PYTHON_UTF8 : {}), ...NO_UPDATER },
-      home: [...(seat.tier === 'owner' ? ['owner'] : []), '--home', home, '--own', seat.dir],
+      home: [...(guarded(seat) ? ['owner'] : []), '--home', home, '--own', seat.dir, ...main.flatMap(folder => ['--main', folder])],
       release: ['release', '--home', home, '--own', seat.dir, '--transcript', join(seat.dir, 'agy.jsonl'), '--keep', join(seat.dir, 'artifacts')],
       stdout: join(seat.dir, 'agy.jsonl'), stderr: join(seat.dir, 'agy.err'),
     },

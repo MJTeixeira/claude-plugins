@@ -1,9 +1,10 @@
 import { fnv } from '../core/layout.mjs'
-import { PYTHON_UTF8, asObject, defined, fileName, join, lastActionWith, numberAt, oneLine, readJson, resetTime, scriptUsage, slashed, textAt } from './shared.mjs'
+import { PYTHON_UTF8, asObject, defined, fileName, guarded, join, lastActionWith, numberAt, oneLine, readJson, resetTime, scriptUsage, slashed, textAt } from './shared.mjs'
 
 const CONFIG_ENV = 'CLAUDE_CONFIG_DIR'
 const SHELL_TOOLS = ['Bash', 'PowerShell']
-const REVIEWER_TOOLS = ['Read', 'Grep', 'Glob', 'Edit', 'Write', 'NotebookEdit', 'Skill']
+const FILE_TOOLS = ['Edit', 'Write', 'NotebookEdit']
+const REVIEWER_TOOLS = ['Read', 'Grep', 'Glob', ...FILE_TOOLS, 'Skill']
 const NO_SHELL_NOTE = 'This seat has no shell: Bash and PowerShell are refused here. Read, search and edit files with your file tools, and say in your report what you could not run.\n'
 // Concurrent Claude processes on one config folder can replace its .claude.json on Windows
 // (anthropics/claude-code#78439), so there a seat on the session's account runs one at a time.
@@ -38,7 +39,7 @@ const facts = async (io, { seat, configDir }) => {
     asObject(asObject(readJson(await io.read(join(seatConfigDir, 'settings.json'))))?.enabledPlugins),
   ].flatMap(plugins => Object.entries(plugins ?? {}).filter(([, on]) => on !== false).map(([id]) => id))
   return {
-    gitDirs: seat.tier === 'reviewer' ? await gitDirs(io, seat.workDir) : [],
+    gitDirs: guarded(seat) ? [] : await gitDirs(io, seat.workDir),
     plugins: [...enabled, ...await syncedPlugins(io, seatConfigDir)],
   }
 }
@@ -51,17 +52,19 @@ const facts = async (io, { seat, configDir }) => {
 // stay held to its folder by acceptEdits. A reviewer's file tools read anywhere, as its sandboxed
 // shell already can (`Read(//**)`): a headless seat cannot answer a read prompt. A reviewer gets only the tools that read and edit
 // files (`--tools`), none that publishes, schedules or messages.
-// An owner runs without prompts, its shell commands past owner-guard.mjs, which sees no MCP
-// tool: so no seat gets an MCP server or a claude.ai connector (`--strict-mcp-config`).
+// An owner, and a reviewer with a worktree, run without prompts, their shell commands past owner-guard.mjs, which sees no
+// MCP tool: so no seat gets an MCP server or a claude.ai connector (`--strict-mcp-config`). A worktree reviewer's file
+// tools pass the guard too, which keeps them off the main checkout.
 /** @type {import('./index.mjs').VendorAdapter['plan']} */
 const plan = ({ seat, brief, os, guard, configDir, facts }) => {
   const isReviewer = seat.tier === 'reviewer'
+  const sandboxed = !guarded(seat)
   const windows = os === 'windows'
-  const noShell = isReviewer && windows
+  const noShell = sandboxed && windows
   const gitDenied = /** @type {string[]} */ (facts.gitDirs).map(dir => 'Edit(/' + (dir.startsWith('/') ? '' : '/') + slashed(dir) + '/**)')
-  const tiered = !isReviewer ? {
+  const tiered = !sandboxed ? {
     // --claude: the hook's tool_name names the shell, and Claude Code's Bash tool is a POSIX shell on Windows too.
-    hooks: { PreToolUse: [{ matcher: SHELL_TOOLS.join('|'), hooks: [{ type: 'command', command: guard + ' --claude' }] }] },
+    hooks: { PreToolUse: [{ matcher: [...SHELL_TOOLS, ...(isReviewer ? FILE_TOOLS : [])].join('|'), hooks: [{ type: 'command', command: guard + ' --claude' }] }] },
   } : noShell ? {
     permissions: { allow: ['Read(//**)'], deny: [...SHELL_TOOLS, 'Edit(.git/**)', ...gitDenied, 'WebFetch', 'WebSearch'] },
   } : {
@@ -83,13 +86,13 @@ const plan = ({ seat, brief, os, guard, configDir, facts }) => {
     env: {
       ...(configDir === undefined ? {} : { [CONFIG_ENV]: configDir }),
       CLAUDE_CODE_PLUGIN_DIRS: '', CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1', SEAT_ROUTER_SEAT: seat.id,
-      ...(!isReviewer && windows ? PYTHON_UTF8 : {}),
+      ...(!sandboxed && windows ? PYTHON_UTF8 : {}),
     },
     spec: {
       argv: [
         'claude', '-p', '--model', seat.model, ...(seat.effort ? ['--effort', seat.effort] : []),
         '--output-format', 'stream-json', '--verbose', '--settings', join(seat.dir, 'settings.json'),
-        ...(isReviewer
+        ...(sandboxed
           ? ['--tools=' + [...(noShell ? [] : ['Bash']), ...REVIEWER_TOOLS].join(','), '--strict-mcp-config', '--permission-mode', 'acceptEdits']
           : ['--strict-mcp-config', '--permission-mode', 'bypassPermissions']),
       ],

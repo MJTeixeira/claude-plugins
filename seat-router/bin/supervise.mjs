@@ -10,12 +10,12 @@ import { closeSync, openSync, readdirSync, realpathSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { command } from './command.mjs'
-import { ADAPTERS, familyOf } from './vendors/index.mjs'
+import { ADAPTERS, familyOf, guarded as runsGuarded } from './vendors/index.mjs'
 import { claimOf, deliveryFile, liveFile, mailDir, outcomeFile } from './core/layout.mjs'
 import { RULES, merge, stateOf, withObservations } from './core/ledger.mjs'
 import { DEADLINE_MS, KILL_DETAIL, SEAT_SCHEMA, outcomeOf, reportText, step } from './core/lifecycle.mjs'
 import * as io from './io-node.mjs'
-import { worktreeKeepReason, worktreeRemoveFlags } from './worktree.mjs'
+import { worktreeRelease } from './worktree.mjs'
 import {
   attemptQuiet, attemptView, claimLock, claimSolo, endSolo, exists, held, holders, lines, liveEntries, outsideOf, quotaFiles, readJson, readText, seatHolders, soloHolder,
 } from './io-node.mjs'
@@ -28,7 +28,24 @@ const OWNER_GUARD_NOTE = 'An owner guard refuses force pushes, git reset --hard,
   + 'Forced recursive deletes are allowed only for explicit paths inside this seat\'s folder, excluding the seat and worktree roots. '
   + 'gh pr merge --admin and gh repo delete are refused. Never reach a refused result through another shell, interpreter or script. '
   + 'Say in your report what was refused and why you needed it.\n'
-const GH_MISSING = 'gh gave no GitHub token here, so this owner ran without GitHub credentials: a push or a pull request over HTTPS may have failed.'
+// A worktree reviewer runs outside its vendor's sandbox behind the reviewer guard (owner-guard.mjs --reviewer).
+const reviewerNote = (tree, main, baseSha) => 'This reviewer seat works in its own worktree, ' + tree + ', with the network, gh and Docker. '
+  + 'Your worktree starts at commit ' + baseSha + ', the commit the session\'s folder was on, which may not be the commit you review: check it out first. '
+  + 'You may check out the commit you review there (git fetch, then git checkout <sha>, detached), install dependencies and run builds and tests there. '
+  + 'You must not commit, push or edit the main checkout (' + main.join(', ') + '). '
+  + 'A reviewer guard refuses git commit, push, pull, merge, rebase, cherry-pick, revert, am and tag, making, deleting or moving a branch, '
+  + 'a fetch into a local branch, a checkout or switch onto a branch (git checkout of a branch name, git switch without --detach), '
+  + 'git config and git remote writes, git worktree but list, gh pr checkout without --detach, gh pr create and gh pr merge and the API calls that do the same, '
+  + 'and git commands, folder changes and writes aimed at the main checkout, file-tool edits there among them. '
+  + 'Git is fenced: a git command that writes, pointed (-C, --git-dir, --work-tree, GIT_DIR, GIT_WORK_TREE) at a path it cannot tell '
+  + '(a command substitution, or a variable the line sets), is refused; one that reads runs. File writes are fenced only by targets known to be '
+  + 'in the main checkout, as in Claude Code\'s own worktree isolation, but after a cd whose folder it cannot tell, a write or a git write under '
+  + 'a relative path is refused. It checks a git alias as the command it runs. '
+  + 'It also refuses force pushes, git reset --hard, and work-discarding git commands aimed outside this seat\'s folder. '
+  + 'Forced recursive deletes are allowed only for explicit paths inside this seat\'s folder, excluding the seat and worktree roots. '
+  + 'seat-router deletes this worktree when the seat ends, whatever is in it: your report is your work. '
+  + 'Never reach a refused result through another shell, interpreter or script. Say in your report what was refused and why you needed it.\n'
+const GH_MISSING = 'gh gave no GitHub token here, so this seat ran without GitHub credentials: a push or a pull request over HTTPS may have failed.'
 const WIN = process.platform === 'win32'
 const TICK_MS = Number(process.env.SEAT_ROUTER_TICK_MS) || (WIN ? 5_000 : 2_000)
 const QUOTA_CHECK_MS = 60_000
@@ -76,6 +93,7 @@ const cli = name => seat.launch.clis?.[name] ?? name
 const solo = candidate => candidate.vendor === 'claude' && candidate.account === undefined && Boolean(ADAPTERS.claude.soloOn(os))
 const budgets = seat.candidates.map(candidate => ADAPTERS[candidate.vendor].resume?.budget ?? 0)
 const workDir = () => seat.isolation === 'worktree' ? join(dir, 'wt') : dir
+const guarded = runsGuarded(seat)
 
 // On a timeout the command's group is ended while the command is still an unreaped child, so its id cannot be reused.
 const run = (argv, cwd) => {
@@ -350,8 +368,8 @@ const endAttempt = async (n, ending) => {
   updateLive({ solo: false })
 }
 
-// An owner reaches GitHub through the operator's gh token, passed in the environment only: the seat's sandbox or HOME
-// cannot reach the keychain. A machine without gh, or without a login, runs the owner without it.
+// A guarded seat reaches GitHub through the operator's gh token, passed in the environment only: the seat's HOME cannot
+// reach the keychain. A machine without gh, or without a login, runs the seat without it.
 const ownerEnv = async () => {
   const token = await run(['gh', 'auth', 'token'], dir)
   if (token.exitCode !== 0 || !token.stdout.trim()) {
@@ -367,6 +385,14 @@ const factsIo = {
   settings: async key => seat.launch.settings[key],
   run: async (argv, init) => run(argv, init?.cwd ?? dir),
   home: env.HOME ?? env.USERPROFILE ?? '',
+}
+
+/** The checkouts a worktree reviewer leaves alone: the one the seat was asked from, and the one holding its repository. */
+const mainCheckouts = async () => {
+  const found = await git(['rev-parse', '--path-format=absolute', '--show-toplevel', '--git-common-dir'])
+  if (found.exitCode !== 0) throw new Error('git could not name the main checkout: ' + found.stderr.trim())
+  const [top, common] = found.stdout.trim().split('\n')
+  return [...new Set([top, common.replace(/[\\/]\.git$/, '')])]
 }
 
 const launch = async ({ n, index, resume, rerun }, tree) => {
@@ -390,23 +416,26 @@ const launch = async ({ n, index, resume, rerun }, tree) => {
   updateLive({ status: 'running', vendor: candidate.vendor, model: candidate.model, effort: candidate.effort, account: candidate.account, solo: solo(candidate), attemptAt: Date.now() })
   const adapter = ADAPTERS[candidate.vendor]
   const isOwner = seat.tier === 'owner'
+  const main = !isOwner && guarded ? await mainCheckouts() : []
+  const guard = 'node "' + join(runtime, 'owner-guard.mjs').replaceAll('\\', '/') + '" --own "' + dir + '"'
+    + (main.length ? ' --reviewer' + main.map(folder => ' --main "' + folder + '"').join('') : '')
   const configDir = candidate.account === undefined ? env.CLAUDE_CONFIG_DIR : seat.launch.accounts[candidate.account]
   const context = {
     seat: { id: seat.id, dir, workDir: workDir(), tier: seat.tier, model: candidate.model, effort: candidate.effort,
-      ...(candidate.account === undefined ? {} : { account: candidate.account }), ...(resume === undefined ? {} : { resumeConversation: resume }) },
-    brief: isOwner ? seat.brief + '\n' + OWNER_GUARD_NOTE : seat.brief,
-    os, guard: 'node "' + join(runtime, 'owner-guard.mjs').replaceAll('\\', '/') + '" --own "' + dir + '"', seatRoot: home,
+      isolation: seat.isolation, ...(candidate.account === undefined ? {} : { account: candidate.account }), ...(resume === undefined ? {} : { resumeConversation: resume }) },
+    brief: isOwner ? seat.brief + '\n' + OWNER_GUARD_NOTE : main.length ? seat.brief + '\n' + reviewerNote(workDir(), main, seat.baseSha) : seat.brief,
+    os, guard, seatRoot: home, ...(main.length ? { main } : {}),
     ...(configDir ? { configDir } : {}),
   }
   const plan = adapter.plan({ ...context, facts: adapter.facts ? await adapter.facts(factsIo, context) : {} })
   for (const made of plan.dirs) mkdirSync(made, { recursive: true })
   for (const [name, text] of Object.entries(plan.files)) writeFileSync(join(dir, name), text)
-  // A reviewer's launcher passes the CLI only allowlisted variables besides the spec's own, so the plan's go in the spec.
+  // A sandboxed reviewer's launcher passes the CLI only allowlisted variables besides the spec's own, so the plan's go in the spec.
   const spec = {
     ...plan.spec, argv: [cli(plan.spec.argv[0]), ...plan.spec.argv.slice(1)], env: { ...plan.spec.env, ...plan.env, GIT_CEILING_DIRECTORIES: home + '/seats' },
-    stop: join(dir, 'stop'), deadline: seat.createdAt + DEADLINE_MS, ...(isOwner ? {} : { reviewer: true }),
+    stop: join(dir, 'stop'), deadline: seat.createdAt + DEADLINE_MS, ...(guarded ? {} : { reviewer: true }),
   }
-  const launcherEnv = { ...env, ...(isOwner ? await ownerEnv() : {}) }
+  const launcherEnv = { ...env, ...(guarded ? await ownerEnv() : {}) }
   // Preparation can take long (facts, gh): the deadline holds for the launch itself, not only for the step that chose it.
   if (Date.now() >= spec.deadline) return fence(folder, 'deadline')
   writeAtomic(join(folder, 'spec.json'), JSON.stringify(spec, null, 2))
@@ -545,9 +574,13 @@ const releaseWorktree = async () => {
   const branch = 'seat/' + seat.id
   if (exists(join(tree, '.git')) && !ready()) await git(['worktree', 'remove', '--force', '--force', tree])
   else if (exists(join(tree, '.git'))) {
-    const reason = await worktreeKeepReason(git, tree, seat.baseSha)
-    if (reason) return 'Worktree: ' + branch + ' at ' + tree + ' (kept: ' + reason + ')'
-    if ((await git(['worktree', 'remove', ...await worktreeRemoveFlags(git, tree), tree])).exitCode !== 0) return 'Worktree: ' + branch + ' at ' + tree + ' (kept: git could not remove it)'
+    const release = await worktreeRelease(git, tree, seat)
+    if (release.keep) return 'Worktree: ' + branch + ' at ' + tree + ' (kept: ' + release.keep + ')'
+    if ((await git(['worktree', 'remove', ...release.flags, tree])).exitCode !== 0) {
+      if (seat.tier !== 'reviewer') return 'Worktree: ' + branch + ' at ' + tree + ' (kept: git could not remove it)'
+      removeTree(tree)
+      await git(['worktree', 'prune'])
+    }
     if (seat.tier === 'owner') return 'Branch: ' + branch + ' (its worktree was removed)'
   }
   if (seat.tier === 'reviewer') {

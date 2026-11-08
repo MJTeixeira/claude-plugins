@@ -8,7 +8,7 @@ import { COMMAND_MS, held, seatHolders } from './io-node.mjs'
 import { claimFile } from './liveness.mjs'
 import { removeTree } from './remove-tree.mjs'
 import { claimOf, isSeatId } from './core/layout.mjs'
-import { worktreeKeepReason, worktreeRemoveFlags } from './worktree.mjs'
+import { worktreeRelease } from './worktree.mjs'
 
 const DAY_MS = 1 * 24 * 60 * 60 * 1000
 const SEAT_MS = 7 * 24 * 60 * 60 * 1000
@@ -66,8 +66,9 @@ for (const entry of entries) {
     const repo = common.status === 0 ? common.stdout.trim() : ''
     const unfinished = seat?.schema !== undefined && !existsSync(join(dir, 'wt-ready'))
     const readGit = args => { const result = git(args); return { ...result, exitCode: result.status } }
-    if (!unfinished && await worktreeKeepReason(readGit, tree, seat.baseSha)) continue
-    const force = unfinished ? ['--force', '--force'] : await worktreeRemoveFlags(readGit, tree)
+    const release = unfinished ? { flags: ['--force', '--force'] } : await worktreeRelease(readGit, tree, seat)
+    if (release.keep) continue
+    const force = release.flags ?? []
     // Windows cannot delete a process's current folder, so git runs from the repository, not inside the worktree it removes.
     if (!repo || git(['--git-dir', repo, 'worktree', 'remove', ...force, tree], { stdio: 'ignore' }).status !== 0) continue
     if (seat.tier === 'reviewer' && branch && !deleteBranch(['--git-dir', repo], branch)) continue

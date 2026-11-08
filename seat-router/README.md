@@ -68,8 +68,9 @@ push and open pull requests. See [What a seat may do](#what-a-seat-may-do).
 
 Pass `isolation: "worktree"` on the Agent call whenever the seat reads or changes your repository,
 a review included. The seat then works in a new worktree on the branch `seat/<id>`, made from the
-commit the session's folder is on. Without it, the seat starts in an empty folder of its own and
-knows only the absolute paths its brief names.
+commit the session's folder is on. A reviewer there may check out the commit it reviews, install
+dependencies and run builds and tests, and must not commit, push or edit the main checkout. Without
+it, the seat starts in an empty folder of its own and knows only the absolute paths its brief names.
 
 A seat cannot be continued. Give follow-up work to a new seat with the whole scope.
 
@@ -273,19 +274,24 @@ read the quota, code work stays on Claude.
 
 ## What a seat may do
 
-A reviewer of any CLI starts with only a few environment variables, such as the path, home, locale,
-temp and proxy variables and the CLI's config folder. It gets no `gh` login and no git credentials.
-An owner keeps the session's environment and gets your `gh` login's token.
+A reviewer with `isolation: "worktree"` launches as an owner does: outside its CLI's sandbox, in its
+own worktree, with the network, `gh`, Docker and the rest of the session's environment, behind the
+[reviewer guard](#the-reviewer-guard). Every other reviewer runs in its CLI's sandbox, as below.
+
+A reviewer without a worktree, of any CLI, starts with only a few environment variables, such as
+the path, home, locale, temp and proxy variables and the CLI's config folder. It gets no `gh` login
+and no git credentials. An owner, and a reviewer with a worktree, keep the session's environment and
+get your `gh` login's token.
 
 ### codex
 
-- A reviewer runs in codex's sandbox. It writes only its folder, and its commands reach the
-  network, so a brief can have it run `gh issue view` or fetch a page. It runs without your
-  `~/.codex/config.toml` (so none of your codex MCP servers start) and without your codex rules,
-  with codex's apps, plugins and web search off.
-- An owner runs outside codex's sandbox (`danger-full-access`), with your codex config, behind the
-  guard. Because codex runs a hook from the command line only past its trust check, an owner runs
-  with `--dangerously-bypass-hook-trust`. For that run codex also runs any hook in your codex config
+- A reviewer without a worktree runs in codex's sandbox. It writes only its folder, and its
+  commands reach the network, so a brief can have it run `gh issue view` or fetch a page. It runs
+  without your `~/.codex/config.toml` (so none of your codex MCP servers start) and without your
+  codex rules, with codex's apps, plugins and web search off.
+- An owner, and a reviewer with a worktree, run outside codex's sandbox (`danger-full-access`),
+  with your codex config, behind the guard. Because codex runs a hook from the command line only
+  past its trust check, such a seat runs with `--dangerously-bypass-hook-trust`. For that run codex also runs any hook in your codex config
   or the repository's `.codex/` that you have not trusted.
 
 ### agy
@@ -294,8 +300,8 @@ An owner keeps the session's environment and gets your `gh` login's token.
   agy's sandbox refuses what a seat needs. On Windows, node cannot even read the attributes of
   `%APPDATA%` there, so no npm-installed CLI starts.
 - A seat's agy settings are yours with the guard's deny list added, and a seat never spends AI
-  credits once the plan's quota runs out. A reviewer starts none of your agy MCP servers and gets no
-  `gh` login or keychain. An owner keeps them.
+  credits once the plan's quota runs out. A reviewer without a worktree starts none of your agy MCP
+  servers and gets no `gh` login or keychain. An owner, and a reviewer with a worktree, keep them.
 - Each agy seat runs under a home folder of its own whose links reach your agy sign-in. The mod
   deletes that folder when each attempt ends. agy saves the images it makes there, so the mod first
   copies them to the seat's `artifacts` folder, and the report names each copy.
@@ -318,17 +324,18 @@ in the seat, and so is every plugin claude.ai synced into the account's folder. 
 loads through `--plugin-dir` or `CLAUDE_CODE_PLUGIN_DIRS` stay out too, and so does auto memory. A
 copy of seat-router that loads anyway does nothing, so a seat never starts seats.
 
-- A reviewer runs in Claude Code's sandbox. Its shell writes only its folder and has no network,
-  and its file tools stay off `.git`. It gets Bash, Read, Grep, Glob, Edit, Write, NotebookEdit and
-  Skill, and no MCP server. If the sandbox cannot start, the seat fails and moves on rather than run
-  unsandboxed.
-- An owner runs without permission prompts and without MCP servers or claude.ai connectors. Its
-  Bash and PowerShell commands pass the guard.
+- A reviewer without a worktree runs in Claude Code's sandbox. Its shell writes only its folder and
+  has no network, and its file tools stay off `.git`. It gets Bash, Read, Grep, Glob, Edit, Write,
+  NotebookEdit and Skill, and no MCP server. If the sandbox cannot start, the seat fails and moves on
+  rather than run unsandboxed.
+- An owner, and a reviewer with a worktree, run without permission prompts and without MCP servers
+  or claude.ai connectors. Their Bash and PowerShell commands pass the guard, and so do a worktree
+  reviewer's Edit, Write and NotebookEdit.
 
 ### The guard
 
-The guard checks each shell command of an owner seat, and of every agy seat, before it runs. It
-refuses these commands:
+The guard checks each shell command of an owner seat, of a reviewer with a worktree, and of every
+agy seat, before it runs. It refuses these commands:
 
 - A force push, except `--force-with-lease=<branch>:<sha>` onto the branch checked out where the
   command runs, inside the seat's folder, when that branch is not `main`, `master`, `dev`,
@@ -358,25 +365,82 @@ An inline Python, Node, Ruby, Perl, Deno or Bun script, or a heredoc fed to it, 
 commands while editing files. Those mentions are checked as commands only when the script also
 names a process runner. Shell wrappers keep the same checks.
 
+### The reviewer guard
+
+A reviewer with a worktree runs the guard above and, since its work is its report, these refusals
+too:
+
+- `git commit`, `push`, `pull`, `merge`, `rebase`, `cherry-pick`, `revert`, `am` and
+  `update-ref`, making a tag, and making, deleting, renaming or moving a branch (`git branch <name>`,
+  `-d`, `-m`, `checkout -b`, `switch -c`), a fetch into a local branch or tag (`git fetch origin
+  main:main`), and `git worktree` but `list`.
+- A checkout or switch onto a branch: `git checkout <name>` of a local branch, or of a name that
+  exists only as a remote branch, which git would make a local branch of, and `git switch` without
+  `--detach`. `git checkout <sha>`, `<tag>`, `origin/main`, `--detach <name>` and
+  `git checkout [<commit>] -- <path>` run.
+- A `git config` write in any scope (`key value`, `set`, `--add`, `--replace-all`, `--unset`,
+  `--remove-section`, `--rename-section`, `--edit`), and `git remote add`, `set-url`, `remove`,
+  `rename`, `set-head` and `set-branches`. Reads run: `git config --get`, `--list`, `git config
+  <key>`, `git remote -v`.
+- A git alias is checked as the command it runs: `git config --get alias.<name>` in the worktree,
+  or a `-c alias.<name>=` on the line, then the expansion, or a `!` alias's shell command.
+- `gh pr checkout` without `--detach`, which makes a branch.
+- `gh pr create` and `gh pr merge`, and the API calls that do the same: a REST write to
+  `/pulls`, `/pulls/<n>/merge`, `/merges`, `/merge-upstream` or `/git/refs`, and a GraphQL
+  mutation that opens or merges a pull request or moves a ref.
+- Anything aimed at the main checkout (the session's folder and the checkout that holds the
+  repository): a git command whose `-C`, `--git-dir`, `--work-tree`, `GIT_DIR` or `GIT_WORK_TREE`
+  lands there, a `cd` into it, a redirection, `rm`, `mv`, `touch`, `sed -i` or other write into it,
+  a copy whose target is in it, any command run from it, and a file tool's write into it: Claude's
+  Edit, Write and NotebookEdit, codex's `apply_patch` (as a tool or run in a shell), and agy's
+  `write_file`, `edit_file` and the other tools its name says write. Both CLIs hand those tools to
+  the PreToolUse hook: codex as `apply_patch` with the patch as `tool_input.command`
+  ([openai/codex `apply_patch.rs`](https://github.com/openai/codex/blob/rust-v0.163.0/codex-rs/core/src/tools/handlers/apply_patch.rs),
+  [hooks](https://developers.openai.com/codex/hooks)), agy with the path in `Path` or `TargetFile`
+  ([hooks](https://antigravity.google/docs/hooks/)), so a worktree reviewer's hook matches
+  `Bash|apply_patch` in codex and every tool in agy.
+- A git target (`-C`, `--git-dir`, `--work-tree`, `GIT_DIR`, `GIT_WORK_TREE`) or a write target (a
+  redirection, a writer's argument, a copy's target) is expanded as a `cd`'s is: `~`, `$PWD` and the
+  variables of the environment the CLI gives the hook (`"$TMPDIR"`, `$env:TEMP`, `%TEMP%`), which
+  the seat's shell starts with too. So `git -C "$MAIN"` and `> "$MAIN/f"` are checked as the main
+  checkout they name, and a glob by the folder before its first wildcard.
+- Git is fenced as Claude Code's own [worktree isolation](https://code.claude.com/docs/en/worktrees#how-claude-code-enforces-isolation)
+  fences it: a git target the guard cannot expand (a variable the line sets, as a `for` loop's, or
+  the environment lacks, or a command substitution) is refused only when the git command writes,
+  that is anything but a read such as `log`, `show`, `diff`, `status`, `rev-parse`, `cat-file`,
+  `ls-files`, `grep` or a fetch into remote-tracking refs. A variable `GIT_DIR` or `GIT_WORK_TREE`
+  the guard cannot expand is refused before any program but git.
+- File writes are fenced only by targets known to be in the main checkout, as in Claude Code's
+  isolation: a write target the guard cannot expand runs (`for f in *.log; do rm "$f"; done`,
+  `T=$(mktemp); echo x > "$T"`).
+- A `cd` whose folder the guard cannot place (a command substitution, a glob, `~user`, zsh's
+  `cd old new`, or a variable it cannot expand) runs, but a write or a git command that writes after
+  it on the same line under a relative path is refused: that folder could be the main checkout. A
+  parenthesis inside a quoted path is part of its name (`cd "dir (1)"`); `$(...)` and PowerShell's
+  `(...)` outside quotes are not.
+
+Inside its worktree it may `git fetch`, check out any commit detached, install, build, and run
+tests and Docker.
+
 ### Windows
 
-- A codex reviewer runs codex's mxc sandbox on Windows 11 24H2 26100.9278 or 25H2 26200.9278 and
+- A codex reviewer without a worktree runs codex's mxc sandbox on Windows 11 24H2 26100.9278 or 25H2 26200.9278 and
   later. Each session start checks for it, and a seat that starts before the first check runs the
   unelevated sandbox. Elsewhere it runs the unelevated sandbox, where node cannot read the output of
   a program it starts, so npm scripts and node tools that capture git's output fail. The brief says
   so.
-- A codex reviewer starts without the `WindowsApps` folders on the `PATH`, because the Store's
+- A codex reviewer without a worktree starts without the `WindowsApps` folders on the `PATH`, because the Store's
   `pwsh.exe` cannot start in its sandbox. Where PowerShell 7 came from the Store, the reviewer runs
   Windows PowerShell 5.1, which turns each non-ASCII character piped into a program into `?`.
   PowerShell 7 from its MSI installer runs there.
 - agy runs its commands in Windows PowerShell 5.1, whatever is installed. The brief of every agy
-  seat and every codex reviewer says the shell may be 5.1 and tells it to write files with its file
+  seat and every sandboxed codex reviewer says the shell may be 5.1 and tells it to write files with its file
   tools or Python, never through a pipe.
-- A codex owner keeps the `WindowsApps` folders and runs PowerShell 7. On a machine without
+- A codex owner, and a codex reviewer with a worktree, keep the `WindowsApps` folders and run PowerShell 7. On a machine without
   PowerShell 7 it runs 5.1 with no such note, so install PowerShell 7 there.
-- codex seats run PowerShell without your profile. codex seats, agy seats and Claude owners run
-  Python in UTF-8 mode (`PYTHONUTF8=1`).
-- A Claude reviewer has no shell, since Claude Code's sandbox does not run on Windows. It reads,
+- codex seats run PowerShell without your profile. codex seats, agy seats, Claude owners and Claude
+  reviewers with a worktree run Python in UTF-8 mode (`PYTHONUTF8=1`).
+- A Claude reviewer without a worktree has no shell, since Claude Code's sandbox does not run on Windows. It reads,
   searches and edits with its file tools, and its brief says so.
 - One Claude seat on the session's account runs at a time on the machine, because concurrent
   Claude processes on one config folder can replace its `.claude.json`
@@ -439,10 +503,10 @@ The lines after it give the fallback trail, any wait for quota or for the Window
 notes about the seat's folder. Then comes the seat's answer, or what ended the seat and its output
 so far.
 
-When a seat finishes, the mod removes its worktree. A worktree with uncommitted changes, untracked
-files, unpushed commits or submodule changes stays, and the report names it. Ignored build output
-does not keep a worktree. A reviewer's `seat/<id>` branch goes with
-its worktree. An owner's branch stays, and its report names it. The mod keeps a worktree while a
+When a seat finishes, the mod removes its worktree. A reviewer's goes whatever is in it, since a
+reviewer's work is its report. An owner's with uncommitted changes, untracked files, unpushed
+commits or submodule changes stays, and the report names it; ignored build output does not keep
+it. A reviewer's `seat/<id>` branch goes with its worktree. An owner's branch stays, and its report names it. The mod keeps a worktree while a
 process still uses it, and the report names those processes. A seat run again keeps each earlier
 attempt's logs in its folder, numbered (`agy.1.jsonl`, `agy.1.err`, `final.1.md`).
 
