@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Sweeps finished worktrees after one day, seat folders after seven days, and records after 60 days. A CLI or folder holder keeps its seat.
+// Sweeps finished worktrees and seat scratch (tmp) after one day, seat folders after seven days, and records after 60 days. A CLI or folder holder keeps its seat.
 import { spawnSync } from 'node:child_process'
 import { existsSync, lstatSync, readFileSync, readdirSync, rmSync, rmdirSync } from 'node:fs'
 import { basename, dirname, join } from 'node:path'
@@ -60,6 +60,7 @@ for (const entry of entries) {
   const tree = seat?.schema !== undefined ? join(dir, 'wt') : undefined
   const branch = seat?.schema !== undefined ? 'seat/' + seat.id : undefined
   if (held(await seatHolders(dir, [dir, ...(tree ? [tree] : [])], claimFile))) continue
+  removeTree(join(dir, 'tmp'))
   if (tree && existsSync(join(tree, '.git'))) {
     const common = git(['-C', tree, 'rev-parse', '--path-format=absolute', '--git-common-dir'])
     const repo = common.status === 0 ? common.stdout.trim() : ''

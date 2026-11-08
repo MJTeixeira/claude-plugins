@@ -385,25 +385,44 @@ export const notTheUsers = paths => {
 }
 
 /**
+ * The user's SID and the owner, protection and access-entry SIDs of each of `paths` (by name), read in one PowerShell.
+ * @typedef {{ owner: string, protected: boolean, sids: string[] }} Acl
+ * @param {{ parent?: string, leaf?: string, path?: string }} paths
+ * @returns {{ sid?: string, parent?: Acl, leaf?: Acl, path?: Acl }}
+ */
+const locksOf = paths => {
+  const read = JSON.parse(powershell("$ErrorActionPreference = 'Stop'\n$id = [System.Security.Principal.SecurityIdentifier]\n"
+    + '$acl = { param($path) $a = Get-Acl -LiteralPath $path; @{ owner = $a.GetOwner($id).Value; protected = $a.AreAccessRulesProtected; '
+    + 'sids = @($a.Access | ForEach-Object { $_.IdentityReference.Translate($id).Value }) } }\n'
+    + '@{ sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value'
+    + Object.entries(paths).map(([name, path]) => '; ' + name + " = & $acl '" + path.replaceAll("'", "''") + "'").join('')
+    + ' } | ConvertTo-Json -Compress -Depth 4'))
+  for (const name of Object.keys(paths)) read[name].sids = [read[name].sids].flat()
+  return read
+}
+
+/** Whether a leaf's ACL is the lock securePublicLeaf sets: owner and only access entry `sid`, inheritance removed. */
+const lockedTo = (acl, sid) => acl.owner === sid && acl.protected === true && acl.sids.length > 0 && acl.sids.every(entry => entry === sid)
+
+/**
  * Locks a %PUBLIC% home leaf to the user before anything is written in it: owner and only access entry the user's
  * SID, inheritance removed, no link or junction on the way. The parent all users' leaves share must be owned by the
  * user, SYSTEM or Administrators (by SID: group names are localized); one this call makes lets other users add a leaf
- * of their own and nothing more. A leaf that exists already is used only when the user owns it and the user, SYSTEM or
- * Administrators own each folder in it, at any depth (foreignInside): another user could have made it, or a folder in it, to edit what seats run.
+ * of their own and nothing more. A leaf that exists already and holds that lock is trusted as it is, as the 0700
+ * POSIX home is: only the user could have written in it since. One that exists without it is used only when the user
+ * owns it and the user, SYSTEM or Administrators own each folder in it, at any depth (foreignInside): another user
+ * could have made it, or a folder in it, to edit what seats run.
  * Returns why it refused, or undefined once it holds.
  */
 export const securePublicLeaf = leaf => {
   if (!WIN) return 'the %PUBLIC% home is a Windows protocol'
   try {
-    const sid = userSid()
+    const parent = dirname(leaf)
+    const found = locksOf({ ...(exists(parent) ? { parent } : {}), ...(exists(leaf) ? { leaf } : {}) })
+    const sid = found.sid
     if (!sid) return 'whoami named no SID'
     const icacls = (...args) => execFileSync(system32('icacls.exe'), args, { stdio: 'ignore', windowsHide: true, timeout: COMMAND_MS })
-    const readAcl = path => {
-      const read = JSON.parse(powershell('$a = Get-Acl -LiteralPath \'' + path.replaceAll("'", "''") + '\'; @{ owner = $a.GetOwner([System.Security.Principal.SecurityIdentifier]).Value; '
-        + 'protected = $a.AreAccessRulesProtected; sids = @($a.Access | ForEach-Object { $_.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value }) } | ConvertTo-Json -Compress'))
-      return { owner: read.owner, protected: read.protected, sids: /** @type {string[]} */ ([read.sids].flat()) }
-    }
-    const parent = dirname(leaf)
+    const readAcl = path => locksOf({ path }).path
     let made = true
     try {
       mkdirSync(parent)
@@ -416,16 +435,22 @@ export const securePublicLeaf = leaf => {
       icacls(parent, '/inheritance:r', '/grant:r', '*' + sid + ':F', '*S-1-5-18:F', '*S-1-5-32-544:F', '*S-1-5-11:(RD,AD,X,RA,REA,RC,S)')
       icacls(parent, '/setowner', '*' + sid)
     }
-    const owner = readAcl(parent).owner
+    const owner = (!made && found.parent ? found.parent : readAcl(parent)).owner
     if (owner !== sid && !TRUSTED_OWNERS.includes(owner)) return parent + ' is owned by ' + owner + ', not by ' + sid + ', SYSTEM or Administrators'
+    const linked = () => {
+      for (let path = leaf; path !== dirname(path); path = dirname(path)) {
+        if (lstatSync(path).isSymbolicLink()) return path + ' is a link or junction'
+      }
+      return undefined
+    }
     if (exists(leaf)) {
+      if (found.leaf && lockedTo(found.leaf, sid)) return linked()
       const theirs = foreign([leaf], [sid]) ?? foreignInside(leaf, [sid, ...TRUSTED_OWNERS])
       if (theirs !== undefined) return theirs
     }
     mkdirSync(leaf, { recursive: true })
-    for (let path = leaf; path !== dirname(path); path = dirname(path)) {
-      if (lstatSync(path).isSymbolicLink()) return path + ' is a link or junction'
-    }
+    const link = linked()
+    if (link !== undefined) return link
     icacls(leaf, '/inheritance:r', '/grant:r', '*' + sid + ':(OI)(CI)F')
     icacls(leaf, '/setowner', '*' + sid)
     // A new folder can carry explicit entries (SYSTEM, Administrators) that removing inheritance keeps.

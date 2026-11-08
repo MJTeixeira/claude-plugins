@@ -61,6 +61,7 @@ const mkdirSync = fenced(fs.mkdirSync)
 const rmSync = fenced(fs.rmSync)
 const appendFileSync = fenced(fs.appendFileSync)
 const renameSync = fenced(fs.renameSync)
+const removeTree = fenced(removeTreeNow)
 const claim = fenced(claimFile)
 const quiet = folder => attemptQuiet(folder, claim)
 const signalGroup = fenced(pgid => process.kill(-pgid, 'SIGKILL'))
@@ -624,7 +625,11 @@ const apply = async (next, tree) => {
       }
       let line
       try { line = await releaseWorktree() } catch (error) { line = 'Worktree: could not be released (' + error.message + ')' }
-      return writeAtomic(join(dir, 'release.json'), JSON.stringify(line === undefined ? {} : { line }))
+      writeAtomic(join(dir, 'release.json'), JSON.stringify(line === undefined ? {} : { line }))
+      // A codex reviewer's scratch (vendors/codex.mjs); one a process still uses is left to prune-seats.
+      const scratch = join(dir, 'tmp')
+      if (!held(await seatHolders(dir, [scratch], claim))) removeTree(scratch)
+      return
     }
     case 'settle':
       if (await releaseAttempt(next.n)) writeFileSync(join(attemptDir(next.n), 'released'), '')
