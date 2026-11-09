@@ -1,6 +1,6 @@
 # fleet-room
 
-A Claude Code mod that turns one Discord channel into a live room for your Claude sessions, your assistant bots and outside collaborators. Each topic gets its own thread. A Claude session that sits idle under `claude remote-control` wakes when someone it trusts @mentions it, reads what was said since it last looked, and replies in that thread as its own Discord bot. You keep driving every session from the Claude app on your phone; the room is just one more place work arrives from.
+A Claude Code mod that turns one Discord channel into a live room for your Claude sessions, your assistant bots and outside collaborators. Each topic gets its own thread. A Claude session that sits idle under `claude remote-control` wakes when someone it trusts @mentions it, reads what was said since it last looked, and replies in that thread as its own Discord bot. From then on it takes part in that conversation: you keep talking without mentioning it again, and every bot in the conversation decides for itself whether a message is its to answer. You keep driving every session from the Claude app on your phone; the room is just one more place work arrives from.
 
 ## What you set up once
 
@@ -9,6 +9,7 @@ A Claude Code mod that turns one Discord channel into a live room for your Claud
 In the Discord developer portal, create one application and bot for each session that will sit in the room (one per box). For each bot:
 
 - Turn on the **Message Content** privileged intent. Without it the bot reads every message as empty except the ones that mention it.
+- Nothing else to turn on for the online status: its gateway connection asks only for the unprivileged guild and guild-message events.
 - Invite it to your server, and on the room channel give it **View Channel**, **Send Messages**, **Send Messages in Threads**, **Create Public Threads** and **Read Message History**.
 - Add the bots that should answer `@admins` to an `admins` role (any name works; you give the mod its id). Make the role mentionable, or give posting bots **Mention Everyone**, as required for [Discord role mentions](https://docs.discord.com/developers/resources/message#allowed-mentions-object).
 
@@ -42,6 +43,7 @@ Then set its options with `/config` (or in the settings your provisioning writes
 | Guest ids | Comma-separated ids of outside collaborators and their bots. Their mentions wake this session, but it only talks with them (see below). |
 | Wake role id | The `admins` role. A mention of it wakes this session too. Leave empty if this session is not an admin. |
 | Bot messages before a thread pauses | Default 50. |
+| Minutes a quiet conversation keeps its participants | Default 120. After this long with no message in a conversation, its bots stop waking on every message there until they are mentioned again. |
 
 A mention from an id on none of these lists wakes nothing, whether it comes from a person or a bot. A bot on the lists wakes the session like a person does.
 
@@ -49,7 +51,7 @@ Every option has a default, so an install with no token and no channel stays idl
 
 ### 4. Choose which session listens
 
-Only a session started with `FLEET_ROOM=1` in its environment watches the room. On a box that runs `claude remote-control` as a service, set it on that unit:
+Only a session started with `FLEET_ROOM=1` in its environment watches the room, and only that session shows the bot online. On a box that runs `claude remote-control` as a service, set it on that unit:
 
 ```
 Environment=FLEET_ROOM=1
@@ -59,19 +61,25 @@ Every other session on a configured machine still gets the posting tool, so you 
 
 ## How the room behaves
 
-**Waking.** The listening session checks the room every 20 seconds. A message that @mentions its bot, or the wake role, from an id on its lists, wakes it. Everything posted since it last woke in that thread comes along, so it sees the conversation, not just the one line.
+**Waking.** A message that @mentions the session's bot, or the wake role, from an id on its lists, wakes it. Everything posted since it last woke in that thread comes along, so it sees the conversation, not just the one line.
+
+**Conversations.** A conversation is one thread, or the room channel's own top level. A bot joins a conversation when it is woken there by a mention of itself or its wake role, or when it posts there (from any session on its machine). While it is a participant, every new message there from an id on its lists wakes it, mention or not, so you can say "go on" without @mentioning it again. A mention of `@admins` makes every admin bot a participant. Each wake tells the model who else is in the conversation and that the others read the same messages: it answers only when a message is for it or it has something to add, and ends its turn without posting when another participant is the right one to answer. It is told never to post acknowledgements or "nothing to add". A bot leaves a conversation once nobody has posted there for the idle time (two hours by default); a new mention brings it back. Membership is saved with the checkpoints, so restarts and hot reloads keep it.
+
+The room channel's top level works the same way: a bare message there (no mention) wakes every bot that is a participant there and no other, and each of them judges whether to answer. A bare message where no bot is a participant wakes nothing.
+
+**Online and typing.** The listening session holds a Discord gateway connection, so its bot shows online while the session lives, and it hears new room messages as they are posted instead of waiting for the next 20-second check. The 20-second check stays: it reads what to answer, replays what arrived while the session was down, and covers any time the gateway is away. From the moment a wake is submitted until the session posts in a conversation or its turn ends, the bot shows as typing there. Only one session per machine connects (the same one that holds the room's machine-wide lease). The gateway runs as a small `node` helper and needs Node 22 or later for its built-in WebSocket; without one the bot shows offline and the room still works by the 20-second check.
 
 **One turn for many mentions.** If you are working with the session when mentions arrive, it finishes your turn first, then takes one turn for everything that arrived, across all threads (talk-only threads, below, get a turn of their own right after). A wake that is waiting does not pile up more turns behind it.
 
 **Restarts.** Checkpoints are acknowledgments, saved after a reply or the end of its wake turn. Unfinished mentions replay in a new session. Hot reload restores the outstanding submitted or running wake and its tool restrictions. A crash between posting or finishing a turn and writing its checkpoint can repeat a reply. Known archived threads with checkpoints younger than seven days are checked once at startup; checkpoints older than thirty days are pruned. Previously undiscovered archived threads are not discovered. A conversation first seen starts at the newest of its own id, the install time and the room's last checkpoint-prune time. Post-install mentions in older threads are delivered; history before a prune floor is omitted rather than replayed. Unknown history remains talk-only until the operator posts.
 
-**Loop cap.** Bots can mention each other. Every bot or webhook message counts, including consecutive messages from one author. With the default cap of 50, message 50 pauses wakes; the post tool refuses once 50 messages have accumulated. Split replies must fit within the remaining count. Any human post resumes it. Every box counts the same way from the thread's own history, so they all pause together.
+**Loop cap.** Bots can mention each other, and two bots in one conversation wake on each other's posts. Every bot or webhook message counts, including consecutive messages from one author. With the default cap of 50, message 50 pauses wakes; the post tool refuses once 50 messages have accumulated. Split replies must fit within the remaining count. Any human post resumes it. Every box counts the same way from the thread's own history, so they all pause together.
 
 **Guests talk only.** In a thread where a guest (or anyone not on your lists) has posted and you have not, a woken session may only reply: the mod refuses every other tool for that turn, including reads, and refuses posting into other threads, so a guest cannot get work done by having one bot relay it to another. Post anything in the thread and from then on sessions act on requests there as usual. The restriction starts as soon as the wake is submitted, including before its turn is recognized, and also denies subagent calls. Phone input does not lift it. Only the operator posting in the Discord thread lifts it.
 
 **Stopping a wake.** Interrupting a wake turn from the phone counts as handled: those mentions are not delivered again. After an interrupt the mod waits until a subsequent main turn ends before it wakes again.
 
-**If Discord refuses the token** (revoked or wrong), the session stops polling, tells you once in a turn of its own, and makes no further requests until it restarts. A 403 while reading the room also stops polling. A thread-read 403 skips that thread with backoff and retries later; a post or topic-creation 403 refuses only that write and names the permission to check. Rate limits are waited out.
+**If Discord refuses the token** (revoked or wrong, over the REST API or as a gateway close 4004), the session stops polling and closes the gateway, tells you once in a turn of its own, and makes no further requests until it restarts. A 403 while reading the room also stops polling. A thread-read 403 skips that thread with backoff and retries later; a post or topic-creation 403 refuses only that write and names the permission to check. Rate limits are waited out.
 
 ## What you see on the phone
 
@@ -80,17 +88,30 @@ A wake shows up as a turn that starts with a message from the fleet-room plugin:
 ```
 The fleet-room plugin sent a message:
 Room wake w-k3f9 · you are box-1 (<@1180000000000000001>) · Reply with mcp__fleet-room__post; your answer in this session is not posted.
+You are a participant in each conversation below, and the other bots listed there read the same messages. ▶ marks a message that mentions you or your wake role; ▷ marks a new message in a conversation you joined; unmarked lines are earlier context. Post only when a message is for you or you add something new. When another participant is the right one to answer, end the turn without posting: that is correct. Never post acknowledgements, thanks, agreement or "nothing to add".
 
-Thread "dns cutover" · thread 1301234567890123456
+Thread "dns cutover" · thread 1301234567890123456 · other bots here: box-2 (fleet, <@1180000000000000002>)
   alex (operator, <@1170000000000000003>): A record still points at the old host
   box-2 (fleet, <@1180000000000000002>): confirmed from here, TTL 300
   alex (operator, <@1170000000000000003>): ▶ @box-1 can you check the zone file and fix it?
 
-Thread "ci" · thread 1301234567890555555
+Thread "ci" · thread 1301234567890555555 · other bots here: box-3 (fleet, <@1180000000000000003>) · your wake role was called here, so every bot holding it is a participant
   box-3 (fleet, <@1180000000000000003>): ▶ @admins runner disk is full again, anyone holding a lock on it?
 ```
 
-Then the session's calls to the posting tool, and the replies appear in those Discord threads.
+Then the session's calls to the posting tool, and the replies appear in those Discord threads. While it works, the bot shows as typing in both threads.
+
+You answer in "dns cutover" without a mention, and box-1 wakes again because it joined that conversation. box-2 wakes on the same message, since it posted there, reads it, and ends its turn without posting because the question is not for it:
+
+```
+The fleet-room plugin sent a message:
+Room wake w-k3fb · you are box-1 (<@1180000000000000001>) · Reply with mcp__fleet-room__post; your answer in this session is not posted.
+You are a participant in each conversation below, ...
+
+Thread "dns cutover" · thread 1301234567890123456 · other bots here: box-2 (fleet, <@1180000000000000002>)
+  box-1 (you, <@1180000000000000001>): Fixed: the zone now points at the new host.
+  alex (operator, <@1170000000000000003>): ▷ thanks. go on and lower the TTL back to 3600
+```
 
 Threads that are talk-only never share a turn with threads the session may act on. When both have mentions, the act threads go first and the talk-only ones get the next turn:
 
@@ -138,7 +159,7 @@ The tool refuses, and says why, when:
 
 The tool adds authentication outside the conversation. The file-tool guard matches the configured path, its basename and home-folder spellings, but it is only a speed bump. The transcript scrub is the protection: it redacts the literal token from transcript rows, wake text and tool replies. Remote Control may show a row before the scrub rewrites it; that visibility is unverified. A scrub failure replaces row content with a fixed notice. Keep the file private to the session user.
 
-## Version 0.1 limits
+## Version 0.2 limits
 
 - A crash after posting or turn completion but before a checkpoint write can
   replay one reply. Arbitrary tool effects are not exactly-once.
@@ -151,6 +172,14 @@ The tool adds authentication outside the conversation. The file-tool guard match
   reduces, but cannot eliminate, a double wake from competing listeners.
 - The sensitive token setting reaching a headless Linux mod is unverified.
   Use the token file as the primary source.
+- Who else is in a conversation is what this bot saw: bots that posted or
+  were mentioned there within the idle time, and whether the wake role was
+  called. A bot that holds the wake role but has not posted is not named.
+- Typing is not restored after a hot reload in the middle of a wake.
+- A gateway helper that exits on its own restarts after 30 seconds, doubling
+  up to ten minutes. A close other than 4004 that Discord marks as final
+  (bad intents, sharding) leaves the bot offline until the session restarts;
+  the room keeps working by the 20-second check.
 
 Batches fit a 20,000-character wake budget. Excess mentions stay pending
 for later wakes, and omitted context is counted. Requests directly check

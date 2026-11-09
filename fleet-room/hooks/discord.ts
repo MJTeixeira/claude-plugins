@@ -3,7 +3,7 @@ import { asSnowflake, isHuman, isNewer } from './room'
 import type { Conversation, Me, Message, Snowflake } from './room'
 
 const API = 'https://discord.com/api/v10'
-const USER_AGENT = 'DiscordBot (https://github.com/MJTeixeira/claude-plugins, 0.1.1)'
+const USER_AGENT = 'DiscordBot (https://github.com/MJTeixeira/claude-plugins, 0.2.0)'
 const PAGE = 100
 export const MAX_PAGES = 10
 const MAX_POST_CHARS = 2_000
@@ -44,10 +44,11 @@ const parseMessage = (value: unknown): Message => {
   const wire = objectOf(value)
   const author = objectOf(wire.author)
   const mentions = arrayOf(wire.mentions).map(meOf)
+  const bots = new Set(arrayOf(wire.mentions).filter(value => objectOf(value).bot === true).map(value => objectOf(value).id))
   const names = new Map(mentions.map(me => [me.id as string, me.name]))
   return { id: idOf(wire.id), author: { ...meOf(author), isBot: author.bot === true || wire.webhook_id !== undefined },
     content: nameOf(wire.content).replace(/<@!?(\d+)>/g, (match, id: string) => names.has(id) ? '@' + names.get(id) : match),
-    mentions: mentions.map(me => me.id), roles: arrayOf(wire.mention_roles).map(idOf),
+    mentions: mentions.map(me => me.id), mentionedBots: mentions.filter(me => bots.has(me.id)), roles: arrayOf(wire.mention_roles).map(idOf),
     attachments: wire.attachments === undefined ? 0 : arrayOf(wire.attachments).length }
 }
 const threadInfo = (value: unknown): ThreadInfo => {
@@ -195,4 +196,14 @@ export async function send($: EngineInterface, link: Link, conversation: Snowfla
 }
 export function startThread($: EngineInterface, link: Link, channel: Snowflake, name: string): Promise<Outcome<Conversation>> {
   return call($, link, 'room', 'POST', '/channels/' + channel + '/threads', value => ({ id: idOf(objectOf(value).id), name, isRoomChannel: false }), { name, type: 11 })
+}
+/** Shows the bot typing in `conversation` for about ten seconds. Best-effort: it never changes the link's health and reports only whether Discord took it. */
+export async function typing($: EngineInterface, link: Link, conversation: Snowflake): Promise<boolean> {
+  if (link.health.kind !== 'ok') return false
+  try {
+    const response = await $.http.fetch(API + '/channels/' + conversation + '/typing', { method: 'POST', headers: { Authorization: 'Bot ' + link.token, 'User-Agent': USER_AGENT } })
+    return response.ok
+  } catch {
+    return false
+  }
 }

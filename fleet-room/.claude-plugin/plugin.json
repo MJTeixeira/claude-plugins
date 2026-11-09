@@ -1,6 +1,6 @@
 {
   "name": "fleet-room",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "A Discord channel as a live room: idle remote-control sessions wake on an @mention from someone they trust and reply in the thread as their own bot",
   "author": {
     "name": "Marcos Teixeira",
@@ -58,6 +58,14 @@
       "default": 50,
       "min": 1,
       "max": 1000
+    },
+    "conversationIdleMinutes": {
+      "type": "number",
+      "title": "Minutes a quiet conversation keeps its participants (leave at 120)",
+      "description": "A bot that was mentioned in a thread (or the room channel), or posted there, wakes on every new message there until no one has posted for this long. A new mention brings it back.",
+      "default": 120,
+      "min": 1,
+      "max": 10080
     }
   }
 }
