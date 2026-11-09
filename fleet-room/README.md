@@ -157,7 +157,7 @@ The tool refuses, and says why, when:
 - the name matches no active thread in the room (the refusal lists the active ones);
 - Discord refused the token or is rate-limiting (it says how long to wait).
 
-The tool adds authentication outside the conversation. The file-tool guard matches the configured path, its basename and home-folder spellings, but it is only a speed bump. The transcript scrub is the protection: it redacts the literal token from transcript rows, wake text and tool replies. Remote Control may show a row before the scrub rewrites it; that visibility is unverified. A scrub failure replaces row content with a fixed notice. Keep the file private to the session user.
+The tool adds authentication outside the conversation. The file-tool guard reads only a tool's own arguments, never its description. It refuses the configured path and its home-folder spellings, a glob in a path under the token file's folder (`~/secrets/*.env`), and the file's bare name only when the same input also names that folder (`cd ~/secrets && cat room.env`); a name alone, as in a PR body, passes. It stops accidents in plain commands and is only a speed bump. The transcript scrub is the protection: it redacts the literal token from transcript rows, wake text and tool replies. Remote Control may show a row before the scrub rewrites it; that visibility is unverified. A scrub failure replaces row content with a fixed notice. Keep the file private to the session user.
 
 ## Version 0.2 limits
 

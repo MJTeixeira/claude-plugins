@@ -58,7 +58,7 @@
     {
       "name": "fleet-room",
       "description": "A Discord room for Claude sessions: trusted mentions wake the listening session; a registered tool replies as its own bot.",
-      "version": "0.2.0",
+      "version": "0.2.1",
       "license": "MIT",
       "keywords": [
         "discord",
