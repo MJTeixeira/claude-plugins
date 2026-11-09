@@ -106,11 +106,26 @@ const plan = ({ seat, brief, os, guard, configDir, facts }) => {
 export const rateLimitRejected = lines => lines.split('\n').map(line => asObject(readJson(line))).some(event =>
   event?.type === 'rate_limit_event' && asObject(event.rate_limit_info)?.status === 'rejected')
 
-// Claude Code can emit events such as a task summary after the result event.
-export const failedClaude = (exitCode, tailText, rejected) => {
-  const event = tailText.split('\n').map(line => asObject(readJson(line.trim()))).filter(found => found?.type === 'result').at(-1)
+/**
+ * A seat's answer from its result events, oldest first. Headless `claude -p` stays up while a background task the seat
+ * armed (a background Bash run, a Monitor) is pending, and each one that fires starts a turn with a result of its own
+ * (Claude Code 2.1.319). A seat ends a turn to wait on such a task and goes on working when it fires, so the answer is
+ * the newest result; but a wake turn that runs no tool (`num_turns` 1) did no work and only remarks on what woke it, so
+ * its text follows the answer before it instead of replacing it.
+ * @param {Record<string, unknown>[]} results
+ * @returns {string}
+ */
+export const claudeAnswer = results => {
+  const worked = results.findLastIndex(event => numberAt(event.num_turns) !== 1)
+  return results.slice(Math.max(worked, 0)).map(event => (textAt(event.result) ?? '').trim()).filter(Boolean).join('\n\n')
+}
+
+// `lines` holds the transcript's result events; Claude Code can emit events such as a task summary after the last one.
+export const failedClaude = (exitCode, lines, rejected) => {
+  const results = /** @type {Record<string, unknown>[]} */ (lines.split('\n').map(line => asObject(readJson(line.trim()))).filter(found => found?.type === 'result'))
+  const event = results.at(-1)
   const isResult = event !== undefined
-  const text = isResult ? textAt(event.result) ?? '' : ''
+  const text = isResult ? claudeAnswer(results) : ''
   const quota = rejected || (isResult && event.api_error_status === 429)
   const ok = isResult && event.subtype === 'success' && event.is_error !== true
   const failed = exitCode !== 0 || !ok || !text.trim()
@@ -125,7 +140,7 @@ export const failedClaude = (exitCode, tailText, rejected) => {
 const judge = async (view, dir, exitCode) => {
   const transcript = join(dir, 'claude.jsonl')
   const rejected = rateLimitRejected(await view.grep('"rate_limit_event"', transcript))
-  const checked = failedClaude(exitCode, await view.tail(transcript, 20), rejected)
+  const checked = failedClaude(exitCode, await view.grep('"type":"result"', transcript), rejected)
   if (!checked.failed || checked.detail.startsWith('usage')) return checked
   // A run that never started a turn (a refused sandbox, a bad flag) says why only on stderr.
   const stderr = oneLine(await view.read(join(dir, 'claude.err')))

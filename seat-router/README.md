@@ -345,15 +345,36 @@ copy of seat-router that loads anyway does nothing, so a seat never starts seats
 - An owner, and a reviewer with a worktree, run without permission prompts and without MCP servers
   or claude.ai connectors. Their Bash and PowerShell commands pass the guard, and so do a worktree
   reviewer's Edit, Write and NotebookEdit.
+- `claude -p` keeps running while a background task the seat started (a background Bash command, a
+  Monitor) is still pending. Each one that fires starts another turn with its own answer. A seat
+  often ends a turn to wait on such a task, so its answer is the newest one. But a turn that runs
+  no tool only remarks on what woke it, so its text goes after the answer before it instead of
+  replacing it. A Monitor that expires after the seat has reported adds its one line under the
+  report; it no longer replaces the report.
 
 ### The guard
 
 The guard checks each shell command of an owner seat, of a reviewer with a worktree, and of every
 agy seat, before it runs. It refuses these commands:
 
-- A force push, except `--force-with-lease=<branch>:<sha>` onto the branch checked out where the
-  command runs, inside the seat's folder, when that branch is not `main`, `master`, `dev`,
-  `develop` or `trunk`.
+- A force push, except a lease (bare `--force-with-lease`, `=<branch>` or `=<branch>:<sha>`) onto
+  the branch checked out where the command runs, inside the seat's folder, when that branch is not
+  `main`, `master`, `dev`, `develop` or `trunk`. Plain `--force`, `-f` and a `+` refspec stay
+  refused. When the line gives no `:<dst>`, the guard works out where git sends the push, as git
+  does: with no refspec, from `push.default`, the branch's upstream and push remote, and
+  `remote.<name>.push`; for a refspec that names the branch alone, through `remote.<name>.push`,
+  then the upstream when `push.default=upstream`; `HEAD` or `@` alone lands on the branch checked
+  out. If every branch the push can update is the one checked out, the push runs. If git would
+  send it elsewhere, as `push.default=matching` or an upstream on `main` does, or the guard cannot
+  tell, it is refused and the message says to name the branch:
+  `git push --force-with-lease <remote> HEAD:<branch>`.
+  The guard reads HEAD and the settings before the line runs. So a lease push with no `:<dst>` is
+  refused when a command before it on the line, or beside it in a pipe, may move HEAD or change an
+  upstream or a setting: a checkout, switch, rebase, reset, `branch -u`, `config`, `remote`,
+  `worktree`, `cd`, a variable set, a redirection into a file, a subshell, a substitution, a loop,
+  a background job, or any program or git subcommand the guard does not know. The message says to
+  run the push as its own call. A lease push that pushes tags (`--tags`, `--follow-tags` or
+  `push.followTags`) is refused too: a bare lease would force the tags.
 - `git reset --hard`, and `git branch -D` of a branch other than this seat's own `seat/<id>`.
 - `git worktree remove` and `git worktree move` of any worktree. The mod removes the seat's own
   worktree when the seat ends.

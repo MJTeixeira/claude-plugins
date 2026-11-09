@@ -145,26 +145,150 @@ const shellScript = args => {
 
 const branchOf = ref => ref.replace(/^refs\/heads\//, '')
 
-// A push whose only force is a lease pinned to a commit, onto `branch` alone.
-function isLeasedPush(args, branch) {
-  if (!branch || DEFAULT_BRANCHES.includes(branch)) return false
+// A lease spelled out in full: bare, naming a ref, or naming a ref and the commit it must hold.
+const LEASE = /^--force-with-lease(?:=([^:]+)(?::([0-9a-f]{7,40}))?)?$/
+// Options that push more than the refspecs name.
+const PUSHES_MORE = ['--all', '--branches', '--mirror']
+const FORCE_REASON = 'Use a non-force push, or --force-with-lease=<branch>:<sha> onto the branch checked out here.'
+// The names git reads as the commit checked out, in a refspec as anywhere.
+const CHECKED_OUT = ['HEAD', '@']
+
+// git's reading of a boolean setting: true, yes, on, a non-zero number, or a key with no value.
+const settingOn = value => value !== undefined && (/^(?:true|yes|on|)$/i.test(value) || (/^-?\d+$/.test(value) && Number(value) !== 0))
+
+// The remote a push with none on its line goes to (branch.<b>.pushRemote, remote.pushDefault), and the one the branch
+// fetches from (branch.<b>.remote, else the only remote, else origin), as git's remote.c picks them.
+const remotesOf = (repo, branch) => {
+  const one = key => repo.config(key).at(-1)
+  const remotes = repo.remotes()
+  const fetch = one(`branch.${branch}.remote`) ?? (remotes.length === 1 ? remotes[0] : 'origin')
+  return { fetch, push: one(`branch.${branch}.pushremote`) ?? one('remote.pushdefault') ?? fetch }
+}
+
+// A branch's upstreams, the refs its branch.<b>.merge names: git's remote.c reads them only when branch.<b>.remote is set.
+const upstreamsOf = (repo, branch) => repo.config(`branch.${branch}.remote`).length ? repo.config(`branch.${branch}.merge`) : []
+const pushDefault = repo => repo.config('push.default').at(-1) ?? 'simple'
+
+// The branch a push with no refspec updates on `remote`, as builtin/push.c's setup_default_push_refspecs() picks it, or why
+// the guard cannot tell. A remote.<name>.push or remote.<name>.mirror setting comes first.
+const defaultLanding = (repo, branch, remote) => {
+  const pushes = repo.config(`remote.${remote}.push`)
+  if (settingOn(repo.config(`remote.${remote}.mirror`).at(-1))) return { unknown: `remote.${remote}.mirror pushes every branch.` }
+  if (pushes.length) {
+    const lands = pushes.filter(spec => !spec.startsWith('^')).map(spec => configLanding(spec, branch))
+    return lands.includes(undefined) ? { unknown: `remote.${remote}.push holds a refspec the guard does not read.` } : { lands: /** @type {string[]} */ (lands) }
+  }
+  const mode = pushDefault(repo)
+  if (mode === 'matching') return { unknown: 'push.default=matching pushes every branch with a namesake on the remote.' }
+  if (!['simple', 'upstream', 'tracking', 'current'].includes(mode)) return { unknown: `push.default=${mode} pushes nothing.` }
+  const same = remote === remotesOf(repo, branch).fetch
+  if (mode === 'current' || (mode === 'simple' && !same)) return { lands: [branch] }
+  if (!same) return { unknown: `push.default=${mode} refuses a push to ${remote}, which ${branch} does not fetch from.` }
+  const upstreams = upstreamsOf(repo, branch)
+  // push.autoSetupRemote makes a branch with no upstream its own.
+  if (upstreams.length === 0 && settingOn(repo.config('push.autosetupremote').at(-1))) return { lands: [branch] }
+  if (upstreams.length !== 1) return { unknown: `${branch} has ${upstreams.length} upstreams, and push.default=${mode} needs one.` }
+  if (mode === 'simple' && upstreams[0] !== `refs/heads/${branch}`) return { unknown: `${branch}'s upstream is ${upstreams[0]}, which push.default=simple refuses.` }
+  return { lands: [branchOf(upstreams[0])] }
+}
+
+// The branch a remote.<name>.push refspec updates when a push names none, read from the branch checked out: only a
+// `<src>` (to its own name) and a plain `<src>:<dst>` are read; a glob, a forced or matching refspec is undefined.
+const configLanding = (spec, branch) => {
+  if (spec.startsWith('+') || spec.includes('*') || spec.startsWith(':') || spec === '') return undefined
+  const colon = spec.lastIndexOf(':')
+  const target = colon === -1 ? spec : spec.slice(colon + 1)
+  if (CHECKED_OUT.includes(target)) return colon === -1 ? branch : undefined
+  return branchOf(target)
+}
+
+// What one side of a refspec, `pattern`, maps `ref` to (refspec.c's match_name_with_pattern()): `to` for an exact match,
+// `to` with its `*` replaced by what the pattern's `*` matched, undefined for no match.
+const refMatch = (pattern, ref, to = '') => {
+  const star = pattern.indexOf('*')
+  if (star === -1) return pattern === ref ? to : undefined
+  const [head, tail] = [pattern.slice(0, star), pattern.slice(star + 1)]
+  if (ref.length < head.length + tail.length || !ref.startsWith(head) || !ref.endsWith(tail)) return undefined
+  return to.replace('*', ref.slice(head.length, ref.length - tail.length))
+}
+
+// The branch a refspec naming `branch` with no `:<dst>` updates on `remote`, as builtin/push.c's refspec_append_mapped()
+// sends it: through the first remote.<name>.push entry whose source matches refs/heads/<branch>; else, with
+// push.default=upstream, to the branch's one upstream; else to its own name. Undefined when a `+` entry maps it, a forced
+// push; null when a negative entry matches it, which git 2.50 still maps through the entries after it and another git may not.
+const mappedLanding = (repo, branch, remote) => {
+  const ref = `refs/heads/${branch}`
+  const entries = repo.config(`remote.${remote}.push`)
+  if (entries.some(entry => entry.startsWith('^') && refMatch(entry.slice(1), ref) !== undefined)) return null
+  for (const entry of entries.filter(spec => !spec.startsWith('^'))) {
+    const forced = entry.startsWith('+')
+    const colon = entry.lastIndexOf(':')
+    if (colon === -1) continue
+    const mapped = refMatch(entry.slice(forced ? 1 : 0, colon), ref, entry.slice(colon + 1))
+    if (mapped === undefined) continue
+    return forced || mapped === '' ? undefined : branchOf(mapped)
+  }
+  const upstreams = upstreamsOf(repo, branch)
+  return ['upstream', 'tracking'].includes(pushDefault(repo)) && upstreams.length === 1 ? branchOf(upstreams[0]) : branch
+}
+
+// A push's words after `push`: its remote (the first plain word, else --repo), its refspecs, its leases, whether it forces
+// more than a lease (--force, -f, a push of --all, --branches or --mirror) and whether it pushes tags (--tags, or the last
+// of --follow-tags and --no-follow-tags; undefined when neither is given).
+const pushWords = args => {
   const plain = []
-  let leased = false
+  const leases = []
+  let named
+  let forced = false
+  let tags
+  let all = false
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index]
-    const lease = /^--force-with-lease=([^:]+):([0-9a-f]{7,40})$/.exec(arg)
-    if (lease) {
-      if (branchOf(lease[1]) !== branch) return false
-      leased = true
-    } else if (longOption(arg, '--force', '--force-with-lease') || shortFlags(arg).includes('f')) return false
+    const lease = LEASE.exec(arg)
+    if (lease) leases.push(lease[1])
+    else if (longOption(arg, '--tags')) all = true
+    else if (longOption(arg, '--follow-tags')) tags = true
+    else if (longOption(arg, '--no-follow-tags')) tags = false
+    else if (longOption(arg, '--force', '--force-with-lease', ...PUSHES_MORE) || shortFlags(arg).includes('f')) forced = true
+    else if (arg === '--repo') named = args[++index]
+    else if (arg.startsWith('--repo=')) named = arg.slice('--repo='.length)
     else if (PUSH_VALUE_OPTIONS.includes(arg)) index += 1
     else if (!arg.startsWith('-')) plain.push(arg)
   }
-  const refspecs = plain.slice(1)
-  return leased && refspecs.length > 0 && refspecs.every(spec => {
-    const [source, target = source] = spec.split(':')
-    return !source.startsWith('+') && (source === 'HEAD' || branchOf(source) === branch) && (target === 'HEAD' || branchOf(target) === branch)
-  })
+  const [remote = named, ...refspecs] = plain
+  return { remote, refspecs, leases, forced, tags: all || tags, plain }
+}
+
+// Whether a push lands where HEAD, an upstream or a setting sends it: it names no refspec, or one with no `:<dst>`.
+const landsByHead = args => {
+  const { refspecs } = pushWords(args)
+  return refspecs.length === 0 || refspecs.some(spec => !spec.includes(':'))
+}
+
+/**
+ * Where a push whose only force is a lease lands: the branches it updates (`lands`), or why the guard refuses it (`unknown`:
+ * it cannot tell where the push lands; `tags`: it pushes tags, which a bare lease forces); undefined when it forces more than
+ * a lease on the branch checked out (--force, -f, a `+` refspec, a lease on another ref, --all) or names a refspec other than
+ * that branch. With no refspec the push lands where git sends it; a `<src>` with no `:<dst>` lands where git maps it.
+ * `local` says repo is the repository and the settings the push reads: no -C, -c, --git-dir or GIT_* variable changes
+ * them. With no repository known (NO_REPO), a refspec reads as it is written and a push with none is refused, as before.
+ */
+function leasedPush(args, branch, repo, local) {
+  const { remote, refspecs, leases, forced, tags, plain } = pushWords(args)
+  if (forced || !leases.length || leases.some(ref => ref !== undefined && branchOf(ref) !== branch)) return undefined
+  // git splits a refspec at its last colon.
+  const split = refspecs.map(spec => spec.includes(':') ? [spec.slice(0, spec.lastIndexOf(':')), spec.slice(spec.lastIndexOf(':') + 1)] : [spec, undefined])
+  if (split.some(([source, target]) => source.startsWith('+') || (!CHECKED_OUT.includes(source) && branchOf(source) !== branch)
+    || (target !== undefined && branchOf(target) !== branch))) return undefined
+  if (tags || (tags === undefined && settingOn(repo.config('push.followtags').at(-1)))) return { tags: true }
+  if (repo === NO_REPO) return refspecs.length ? { lands: [branch] } : undefined
+  if (!local) return { unknown: 'the push reads a repository or settings this line changes (-C, -c, --git-dir, a GIT_ variable or a wrapper).' }
+  if (plain.some(dynamic)) return { unknown: 'a word of it is one the shell expands.' }
+  if (!refspecs.length) return defaultLanding(repo, branch, remote ?? remotesOf(repo, branch).push)
+  // A HEAD with no :<dst> lands on the branch it names; git maps no other ref named alone through HEAD.
+  const lands = split.map(([source, target]) => target !== undefined || CHECKED_OUT.includes(source) ? branch : mappedLanding(repo, branch, remote))
+  if (lands.includes(undefined)) return undefined
+  return lands.includes(null) ? { unknown: `a negative remote.${remote}.push entry names ${branch}.` } : { lands: /** @type {string[]} */ (lands) }
 }
 
 // Where a git command's working tree may be: `cwd` moved by each `-C`, then `--work-tree` or GIT_WORK_TREE, each with its
@@ -401,9 +525,17 @@ function refusal(words, branch, cwd, path, own, allowedBranches = [], cdpath = u
       if (targets.length && targets.every(target => allowedBranches.includes(target))) return undefined
       return 'Delete a branch only with git branch -d, which keeps unmerged commits: another agent may own the branch.'
     }
-    if (sub === 'push' && !isLeasedPush(rest, branch) && rest.some(arg => longOption(arg, '--force', '--force-with-lease', '--force-if-includes')
+    if (sub === 'push' && rest.some(arg => longOption(arg, '--force', '--force-with-lease', '--force-if-includes')
       || shortFlags(arg).includes('f') || (arg.startsWith('+') && arg.length > 1))) {
-      return 'Use a non-force push, or --force-with-lease=<branch>:<sha> onto the branch checked out here.'
+      if (!branch || DEFAULT_BRANCHES.includes(branch)) return FORCE_REASON
+      // A wrapper before git (xargs, env) may add refspecs or settings the guard does not see.
+      const local = bare && args.slice(0, index).every(option => option === '--no-pager' || option === '-P') && !assignments(words).some(word => /^GIT_/i.test(word))
+      const leased = leasedPush(rest, branch, ctx?.repo ?? NO_REPO, local)
+      if (leased === undefined) return FORCE_REASON
+      if ('tags' in leased) return `Push tags without a lease: --tags, --follow-tags and push.followTags push tags, which a bare lease forces. Name the branch alone: git push --force-with-lease --no-follow-tags <remote> HEAD:${branch}.`
+      if ('unknown' in leased) return `The guard cannot tell where this push lands: ${leased.unknown} Name the branch: git push --force-with-lease <remote> HEAD:${branch}.`
+      const others = [...new Set(leased.lands.filter(name => name !== branch))]
+      if (others.length) return `This push would update ${others.join(', ')}, not ${branch}, the branch checked out here. Name the branch: git push --force-with-lease <remote> HEAD:${branch}.`
     }
     return undefined
   }
@@ -1266,7 +1398,7 @@ const plain = words => {
   if (runsScript(sub, args) && args.some(namesCommand)) return { script: sub }
   return {
     sub, hops, discard: args.some(arg => /[$`%]/.test(arg)) || discards(sub, args),
-    lease: sub === 'push' && args.some(arg => arg.startsWith('--force-with-lease=')),
+    lease: sub === 'push' && args.some(arg => /^--force-with-lease(=|$)/.test(arg)),
   }
 }
 
@@ -1449,12 +1581,97 @@ const stray = (line, start, rules, bash) => {
   return undefined
 }
 
+// Programs that change neither HEAD, an upstream, a setting, the folder nor the environment, and run no other program.
+const STILL = ['echo', 'printf', 'true', 'false', 'test', '[', ':', 'pwd', 'cat', 'head', 'tail', 'grep', 'wc', 'sleep', 'date', 'ls']
+// git subcommands that move no HEAD and change no upstream or setting.
+const GIT_STILL = ['status', 'log', 'diff', 'show', 'add', 'commit', 'merge', 'cherry-pick', 'revert', 'am', 'tag', 'rev-parse', 'rev-list',
+  'ls-files', 'ls-remote', 'show-ref', 'for-each-ref', 'describe', 'merge-base', 'blame', 'grep', 'shortlog', 'cat-file']
+
+// Whether a command's redirections write a file: any target but /dev/null, nul or another descriptor.
+const writesFile = words => words.some((word, at) => {
+  const operator = /^(?:\d+|&)?>>?[|&]?/.exec(word)
+  return operator !== null && !/^(?:\/dev\/null|nul|-|\d+)$/i.test(word.slice(operator[0].length) || words[at + 1] || '')
+})
+
+// Whether a command may change what a push with no :<dst> reads to find where it lands: HEAD (checkout, switch, rebase,
+// reset, bisect, symbolic-ref, update-ref, branch), an upstream (branch -u, push, fetch or pull --set-upstream), a setting
+// (config, remote, worktree), the folder (cd) or the environment, or whether it runs what the guard does not know: any
+// other program, git subcommand or alias, an expansion, or a redirection into a file.
+const movesLanding = words => {
+  const run = words.slice(Math.max(0, words.findIndex(word => !LEADS.includes(word))))
+  const [head, ...rest] = withoutRedirects(run)
+  if (head === undefined) return false
+  if (writesFile(run) || ASSIGNMENT.test(head) || dynamic(head) || rest.some(dynamic)) return true
+  if (programName(head) !== 'git') return !STILL.includes(programName(head))
+  let index = 0
+  while (rest[index] === '--no-pager' || rest[index] === '-P') index += 1
+  const [sub = '', ...args] = rest.slice(index)
+  if (sub === 'push') return args.some(arg => longOption(arg, '--set-upstream') || shortFlags(arg).includes('u'))
+  if (sub === 'fetch' || sub === 'pull') return args.some(arg => longOption(arg, '--set-upstream'))
+  return !GIT_STILL.includes(sub) && !(sub === 'branch' && args.every(arg => LISTS.includes(arg.split('=')[0])))
+}
+
+const orderReason = branch => 'A command before this push on the line, or beside it, may move HEAD or change an upstream or a setting that '
+  + `decides where a push with no :<dst> lands. Run the push as its own call, or name the branch: git push --force-with-lease <remote> HEAD:${branch}.`
+
+// The commands of a sequence grouped by pipeline: the commands of one run side by side.
+const pipelines = parts => parts.reduce((groups, part) => {
+  if (part.before === '|' && groups.length) groups.at(-1).push(part.words)
+  else groups.push([part.words])
+  return groups
+}, [])
+
+/**
+ * Why a lease push on `line` is refused for what runs before or beside it, or undefined: one that lands where HEAD, an
+ * upstream or a setting sends it (landsByHead()) after a command that may change them (movesLanding()), since the guard
+ * read them before the line ran. Read as a sequence, a command runs after those before it and beside the others of its
+ * pipeline; on a line with a subshell, a substitution, a here-document, a loop, a function or a background job, every
+ * command may run before any other. A shell's script and a git alias's expansion are read the same way; `moved` says a
+ * command that ran before them may have changed where a push lands.
+ */
+const leaseOrder = (line, branch, repo, moved = false, depth = 0) => {
+  for (const windows of [false, true]) {
+    const text = joined(line, windows)
+    const parts = notSimpleLine(text) ? undefined : sequence(text, windows)
+    let ran = moved
+    for (const group of parts === undefined ? [commands(text, windows)] : pipelines(parts)) {
+      const moves = group.map(movesLanding)
+      for (const [at, words] of group.entries()) {
+        const reason = leaseRun(words, branch, repo, ran || moves.some((move, other) => move && other !== at), depth)
+        if (reason) return reason
+      }
+      ran ||= moves.includes(true)
+    }
+  }
+  return undefined
+}
+
+// Why one command, run after commands that may have changed where a push lands (`moved`), is refused as leaseOrder()
+// reads it: a lease push itself, or one in a shell's script or a git alias's expansion.
+const leaseRun = (words, branch, repo, moved, depth) => {
+  const [first, ...args] = strip(withoutRedirects(words))
+  if (!first) return undefined
+  const name = programName(first)
+  if (SHELLS.includes(name)) {
+    const script = shellScript(args)
+    return script === undefined ? undefined : leaseOrder(script, branch, repo, moved, depth)
+  }
+  if (name !== 'git') return undefined
+  let index = 0
+  while (index < args.length && args[index].startsWith('-')) index += GIT_VALUE_OPTIONS.includes(args[index]) ? 2 : 1
+  const rest = args.slice(index + 1)
+  if (args[index] === 'push') return moved && landsByHead(rest) && rest.some(arg => longOption(arg, '--force-with-lease')) ? orderReason(branch) : undefined
+  const runs = depth < ALIAS_DEPTH ? aliasExpansions(args, repo, () => [undefined]) : undefined
+  return runs?.filter(run => run !== undefined).map(run => leaseOrder(run, branch, repo, moved, depth + 1)).find(Boolean)
+}
+
 /**
  * Why an owner seat's command line is refused, or undefined when it may run: whatever check() refuses, and then, with the
  * seat's folder known (`own`), a line that may reach a discarding git command (clean -f, checkout, restore, a forced switch,
  * stash, rm, reset but --soft, read-tree -u, checkout-index -f, a rebase or merge --abort, --quit or --skip, a leased push)
- * unless the line keeps each such git command inside that folder. With no folder known,
- * check() alone: a Claude subagent owner's hook input carries the parent session's folder, not the seat's. With `cdpath`
+ * unless the line keeps each such git command inside that folder; last, a lease push another command on its line may send
+ * elsewhere (leaseOrder()). With no folder known, check() and leaseOrder() alone: a Claude subagent owner's hook input
+ * carries the parent session's folder, not the seat's. With `cdpath`
  * set (the hook's CDPATH), a cd to a bare relative name may land anywhere it lists, so the line is refused. `bash` says
  * the line runs in Claude Code's Bash tool, a POSIX shell on every host. `checkedOutBranches`: the branches the worktree
  * checked out, which a push may delete besides `seat/<id>`. `repo` answers for the git aliases of the repository the line
@@ -1466,7 +1683,7 @@ export const guard = (line, branch, cwd = process.cwd(), path = nodePath, own = 
   line = bodiesDropped(interpreterData(line), runner)
   const ctx = { env, repo, depth, bash, expand: (expanded, at) => guard(expanded, branch, at, path, own, cdpath, bash, checkedOutBranches, repo, env, depth + 1) }
   return check(line, branch, cwd, path, own, seatBranches(own, path), cdpath, ctx) ?? pushCheck(line, [...seatBranches(own, path), ...checkedOutBranches.filter(name => !DEFAULT_BRANCHES.includes(name))])
-    ?? (own === undefined ? undefined : stray(line, [path.resolve(cwd)], placeRules(own, path, cdpath, env), bash))
+    ?? (own === undefined ? undefined : stray(line, [path.resolve(cwd)], placeRules(own, path, cdpath, env), bash)) ?? leaseOrder(line, branch, repo)
 }
 
 // A reviewer seat in a worktree runs outside its vendor's sandbox, as an owner does, but its work is its report: it checks
@@ -1514,13 +1731,15 @@ const configWrites = args => {
 }
 
 /**
- * What the reviewer guard asks of the repository a command runs in. `kind(name)`: 'branch' for a local branch (or `-`
+ * What the guards ask of the repository a command runs in. `kind(name)`: 'branch' for a local branch (or `-`
  * naming one), 'commit' for another name of a commit, 'remote' for a name git checkout would make a branch of from a
- * remote branch, undefined otherwise. `alias(name)`: the alias git would run for `git <name>`, or undefined.
- * @typedef {{ kind: (name: string) => string | undefined, alias: (name: string) => string | undefined }} Repo
+ * remote branch, undefined otherwise. `alias(name)`: the alias git would run for `git <name>`, or undefined. `config(key)`:
+ * every value git config holds for the key, none when unset. `remotes()`: the remotes' names.
+ * @typedef {{ kind: (name: string) => string | undefined, alias: (name: string) => string | undefined, config: (key: string) => string[],
+ *   remotes: () => string[] }} Repo
  */
 /** @type {Repo} */
-const NO_REPO = { kind: () => undefined, alias: () => undefined }
+const NO_REPO = { kind: () => undefined, alias: () => undefined, config: () => [], remotes: () => [] }
 
 // Whether a git subcommand a reviewer runs changes a branch, a tag, a ref, a remote or a setting the repository's
 // worktrees share, or moves the worktree onto a branch.
@@ -1802,12 +2021,15 @@ const writtenFiles = input => {
   return typeof file === 'string' ? [file] : []
 }
 
-/** The repository at `cwd` as reviewerGuard asks of it. @returns {Repo} */
+/** The repository at `cwd` as the guards ask of it. @returns {Repo} */
 const repoAt = cwd => {
   const git = (...args) => spawnSync('git', ['-C', cwd, ...args], { encoding: 'utf8', windowsHide: true })
   /** @type {Set<string> | undefined} */
   let commands
   const aliases = new Map()
+  /** @type {Map<string, string[]> | undefined} */
+  let settings
+  const settingKey = key => key.slice(0, key.indexOf('.')).toLowerCase() + key.slice(key.indexOf('.'), key.lastIndexOf('.')) + key.slice(key.lastIndexOf('.')).toLowerCase()
   return {
     kind: name => {
       if (name === '-') {
@@ -1827,6 +2049,20 @@ const repoAt = cwd => {
       }
       return aliases.get(name)
     },
+    // Every setting, read once: a key's section and name are case-insensitive, its subsection is not. A key with no value
+    // reads as '', which a boolean setting takes as true.
+    config: key => {
+      if (settings === undefined) {
+        settings = new Map()
+        for (const entry of (git('config', '--list', '-z').stdout ?? '').split('\0').filter(Boolean)) {
+          const end = entry.includes('\n') ? entry.indexOf('\n') : entry.length
+          const name = settingKey(entry.slice(0, end))
+          settings.set(name, [...(settings.get(name) ?? []), entry.slice(end + 1)])
+        }
+      }
+      return settings.get(settingKey(key)) ?? []
+    },
+    remotes: () => (git('remote').stdout ?? '').split(/\r?\n/).filter(Boolean),
   }
 }
 
