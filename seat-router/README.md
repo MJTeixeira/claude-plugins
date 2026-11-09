@@ -355,129 +355,75 @@ copy of seat-router that loads anyway does nothing, so a seat never starts seats
 ### The guard
 
 The guard checks each shell command of an owner seat, of a reviewer with a worktree, and of every
-agy seat, before it runs. It refuses these commands:
+agy seat, before it runs. It stops accidents in plain commands, not a seat trying to get around it
+(owner ruling, 2026-11-08). It reads the commands a line runs, and the script of a shell's `-c`
+(`bash -c`, codex's `/bin/zsh -lc`, `powershell -Command`, `cmd /c`) as commands too. A
+here-document's body, a quoted argument, an interpreter's script (`node -e`, `python3 - <<'EOF'`)
+and a commit message are text: a line is judged by what actually runs. It follows a plain `cd`,
+`git -C` and `--work-tree`, with `~`, the environment the CLI gives the hook (`$HOME`, `$TMPDIR`,
+`%TEMP%`) and the variables the line set before (`D=dir;`, `export D=dir`). A folder, a variable or a
+target it cannot place, such as `cd "$(mktemp -d)"`, runs, but a forced recursive delete through a
+variable nothing sets (below). On Windows a codex or agy line is read
+as PowerShell and cmd read it, a backslash a folder separator; Claude Code's Bash tool reads it as
+bash does. Exotic spellings are out of scope and stay
+that way: `time -p git push --force`, `$'…'` strings, a here-document fed to a shell, a push forced
+through a setting (`-c remote.x.push=+…`), a git alias.
 
-- A force push, except a lease (bare `--force-with-lease`, `=<branch>` or `=<branch>:<sha>`) onto
-  the branch checked out where the command runs, inside the seat's folder, when that branch is not
-  `main`, `master`, `dev`, `develop` or `trunk`. Plain `--force`, `-f` and a `+` refspec stay
-  refused. When the line gives no `:<dst>`, the guard works out where git sends the push, as git
-  does: with no refspec, from `push.default`, the branch's upstream and push remote, and
-  `remote.<name>.push`; for a refspec that names the branch alone, through `remote.<name>.push`,
-  then the upstream when `push.default=upstream`; `HEAD` or `@` alone lands on the branch checked
-  out. If every branch the push can update is the one checked out, the push runs. If git would
-  send it elsewhere, as `push.default=matching` or an upstream on `main` does, or the guard cannot
-  tell, it is refused and the message says to name the branch:
-  `git push --force-with-lease <remote> HEAD:<branch>`.
-  The guard reads HEAD and the settings before the line runs. So a lease push with no `:<dst>` is
-  refused when a command before it on the line, or beside it in a pipe, may move HEAD or change an
-  upstream or a setting: a checkout, switch, rebase, reset, `branch -u`, `config`, `remote`,
-  `worktree`, `cd`, a variable set, a redirection into a file, a subshell, a substitution, a loop,
-  a background job, or any program or git subcommand the guard does not know. The message says to
-  run the push as its own call. A lease push that pushes tags (`--tags`, `--follow-tags` or
-  `push.followTags`) is refused too: a bare lease would force the tags.
-- `git reset --hard`, and `git branch -D` of a branch other than this seat's own `seat/<id>`.
-- `git worktree remove` and `git worktree move` of any worktree. The mod removes the seat's own
-  worktree when the seat ends.
-- `git clean -f`, `git checkout`, `git restore` and a forced `git switch` that `-C` or
-  `--work-tree` aims at another folder, or that runs outside the seat's folder.
-- A forced recursive delete, such as `rm -rf`, `Remove-Item -Recurse -Force` or cmd's `rd /s /q`,
-  unless every explicit target resolves inside this seat's folder or inside the OS temp folder
-  (`TMPDIR`, `TEMP` or `TMP`, else `/tmp` on Linux and macOS), as in `rm -rf "$TMPDIR/scratch"` or
-  `"${TMPDIR}/scratch"`. A redirection's file, as in `> /dev/null`, is no target. The seat folder and
-  worktree root themselves, the temp folder itself, the home folder, a filesystem root, a git checkout
-  in the temp folder, outside paths and variables or expansions the guard cannot read stay protected.
+Why: chasing every bypass a verifier could construct grew the guard to 2,099 lines and ended real
+seats. Measured on the owner's Mac on 2026-11-08, across 204 seats, 98 of them refused at least
+once: 323 rows extracted from their transcripts, 13 of them extraction errors (guard text picked up
+from tool output), so 310 refused commands. Classified row by row, one was a real accident and 309
+were false refusals. `bin/owner-guard.test.mjs` replays the 323 rows, scrubbed, from
+`fixtures/guard-corpus.json` through the hook binary.
+
+An owner seat's guard refuses:
+
+- A force push (`--force`, `-f`, a `+` refspec) onto any branch but the one checked out, and any
+  force push, a `--force-with-lease` among them, onto `main`, `master`, `dev`, `develop` or `trunk`
+  or another seat's `seat/<id>` branch. With no refspec, a push lands on the branch checked out. A
+  lease may update another branch of the seat's, as a fix round's PR branch.
+- A branch delete, `git branch -D` (or `-d -f`) or a push's `--delete`, `-d` or `:<branch>`, of
+  any branch but the seat's own `seat/<id>` and the branches its worktree checked out (its HEAD
+  reflog, or `git branch --show-current`), and of a default branch always. A branch made with
+  `git branch` alone or pushed to from `HEAD` is not one the seat checked out.
+- `git push --mirror` or `--prune`, and `git push --no-verify`.
+- `git reset --hard`, and `git worktree remove` and `move` of any worktree: the mod removes the
+  seat's own worktree when the seat ends.
+- `git clean -f`, `checkout`, `switch`, `restore`, `stash` (but `list` and `show`), `rm` and `reset`
+  run outside this seat's folder: after a `cd`, through `-C` or `--work-tree`, or at an absolute
+  path. Inside the folder they run, combined with anything.
+- A forced recursive delete (`rm -rf`, `Remove-Item -Recurse -Force`, cmd's `rd /s /q`) of the
+  filesystem root, the home folder, the main checkout, the seats folder, the seat's folder or its
+  worktree, or a folder that holds one (`~/Developer`, `..` from the worktree, `*` in it); of
+  another seat's folder or anything in it; and of a git checkout (a folder that holds `.git`) but
+  one in the seat's folder or a temp folder, such as a scratch repository. One whose path starts
+  with a variable that neither the line (`S=$(mktemp -d); rm -rf "$S"`, `for d in …`) nor the
+  hook's environment (`$TMPDIR`) sets is refused: `rm -rf "$X/usr"` with `X` unset deletes `/usr`.
+  A variable nothing sets later in the path reads as empty, as the shell reads it, and the path
+  is judged as above: `rm -rf "$HOME/$PROJECT"` with `PROJECT` unset deletes the home folder. A
+  value the line sets but the guard cannot read (`$(…)`, a loop's) runs. Any other folder may go.
 - `gh pr merge --admin` and `gh repo delete`.
-- A `git push` that deletes a remote branch other than the seat's own `seat/<id>` or one its
-  worktree checked out, `git push --mirror` or `--prune`, and anything that skips the repository's
-  push hooks (`--no-verify`, or `core.hooksPath` set for the command).
-
-The commands that discard work (`git clean -f`, `git checkout`, `git restore`, a forced
-`git switch`, `git stash`, `git rm`, `git reset`) may run in combined lines with `&&`, `;`, pipes
-or other commands when they run inside this seat's folder. The guard follows folder changes and
-refuses commands aimed outside it or whose folder cannot be placed. A variable in a folder or a
-target is read from the environment the CLI gives the hook and from what the line set before it
-(`D=dir; git -C "$D"`, `export D=dir`, `D+=/sub`, PowerShell's `$D = 'dir'` and `$D += '/sub'`). One
-set in a way the guard does not follow cannot be placed: by `read`, `printf -v`, `unset`, an array
-element, `${D:=dir}`, a `declare` or `typeset` attribute that changes the value (`-l`, `-i`), a
-command substitution, again inside a loop or a function, or on a line that runs `eval` or `source`,
-makes a nameref or sets a name an expansion gives. A git alias is checked as the command it runs, as
-for a reviewer below, one a `--config-env=alias.<name>=<variable>` gives among them; such an alias
-whose variable the guard cannot read is refused. A command after `do`, `then` or another shell
-word is checked as the command it is, and a `$'...'` string is read as bash and zsh read it. A
-parameter expansion such as `${f%%/*}` is part of its word, not a brace group, so its glob is never read as a command name. The guard reads the command text, so it stops a confused agent's
-mistake (the wrong folder, a forgotten `cd`, a wrapper around git), not a command built to get
-around it.
-
-An inline Python, Node, Ruby, Perl, Deno or Bun script, or a heredoc fed to it, may mention Git
-commands while editing files. Those mentions are checked as commands only when the script also
-names a process runner. Shell wrappers keep the same checks. A heredoc's body is text, as for `cat
-> file <<'EOF'`, unless the statement it belongs to may run it: a command in it runs what it reads
-(`bash <<'EOF'`, `cat <<'EOF' | sh`, also when the pipeline goes on after the body or the line goes
-on after a `\`), reads it into a variable (`read`), the statement holds a command or process
-substitution anywhere, which may read it (`{ x=$(cat); } <<'EOF'`, `x=$(cat) <<'EOF'`) or capture
-it, or the line defines a function or an alias. Otherwise a loop, a group or a conditional runs only
-the commands in it. An unquoted body that substitutes a command runs too. The guard finds a `<<` where bash and zsh do,
-never inside quotes, a comment, an arithmetic expression (`$((1<<2))`, `$[1<<2]`) or a parameter
-expansion; a delimiter ends only at a blank, a newline or an operator, so `EOF\r` is not `EOF`. It
-keeps every body where it cannot be sure, as when a line continuation splits `<<`.
 
 ### The reviewer guard
 
-A reviewer with a worktree runs the guard above and, since its work is its report, these refusals
-too:
+A reviewer with a worktree runs the guard above and, since its work is its report, refuses too:
 
-- `git commit`, `push`, `pull`, `merge`, `rebase`, `cherry-pick`, `revert`, `am` and
-  `update-ref`, making a tag, and making, deleting, renaming or moving a branch (`git branch <name>`,
-  `-d`, `-m`, `checkout -b`, `switch -c`), a fetch into a local branch or tag (`git fetch origin
-  main:main`), and `git worktree` but `list`.
-- A checkout or switch onto a branch: `git checkout <name>` of a local branch, or of a name that
-  exists only as a remote branch, which git would make a local branch of, and `git switch` without
-  `--detach`. `git checkout <sha>`, `<tag>`, `origin/main`, `--detach <name>` and
-  `git checkout [<commit>] -- <path>` run.
-- A `git config` write in any scope (`key value`, `set`, `--add`, `--replace-all`, `--unset`,
-  `--remove-section`, `--rename-section`, `--edit`), and `git remote add`, `set-url`, `remove`,
-  `rename`, `set-head` and `set-branches`. Reads run: `git config --get`, `--list`, `git config
-  <key>`, `git remote -v`.
-- A git alias is checked as the command it runs: `git config --get alias.<name>` in the worktree,
-  or a `-c alias.<name>=` on the line, then the expansion, or a `!` alias's shell command.
-- `gh pr checkout` without `--detach`, which makes a branch.
-- `gh pr create` and `gh pr merge`, and the API calls that do the same: a REST write to
-  `/pulls`, `/pulls/<n>/merge`, `/merges`, `/merge-upstream` or `/git/refs`, and a GraphQL
-  mutation that opens or merges a pull request or moves a ref.
 - Anything aimed at the main checkout (the session's folder and the checkout that holds the
-  repository): a git command whose `-C`, `--git-dir`, `--work-tree`, `GIT_DIR` or `GIT_WORK_TREE`
-  lands there, a `cd` into it, a redirection, `rm`, `mv`, `touch`, `sed -i` or other write into it,
-  a copy whose target is in it, any command run from it, and a file tool's write into it: Claude's
-  Edit, Write and NotebookEdit, codex's `apply_patch` (as a tool or run in a shell), and agy's
+  repository): a `cd` into it, a write into it (a redirection, `rm`, `mv`, `touch`, `sed -i`, a
+  copy's target, and the other writers, also through a variable the line set:
+  `D=<main>; echo x > "$D/f"`), a git command there but a read (`log`, `show`, `diff`, `status`,
+  `fetch` and the like), any command run from it, and a file tool's write into it: Claude's Edit,
+  Write and NotebookEdit, codex's `apply_patch` (as a tool or run in a shell), and agy's
   `write_file`, `edit_file` and the other tools its name says write. Both CLIs hand those tools to
   the PreToolUse hook: codex as `apply_patch` with the patch as `tool_input.command`
   ([openai/codex `apply_patch.rs`](https://github.com/openai/codex/blob/rust-v0.163.0/codex-rs/core/src/tools/handlers/apply_patch.rs),
   [hooks](https://developers.openai.com/codex/hooks)), agy with the path in `Path` or `TargetFile`
   ([hooks](https://antigravity.google/docs/hooks/)), so a worktree reviewer's hook matches
   `Bash|apply_patch` in codex and every tool in agy.
-- A git target (`-C`, `--git-dir`, `--work-tree`, `GIT_DIR`, `GIT_WORK_TREE`) or a write target (a
-  redirection, a writer's argument, a copy's target) is expanded as a `cd`'s is: `~`, `$PWD` and the
-  variables of the environment the CLI gives the hook (`"$TMPDIR"`, `$env:TEMP`, `%TEMP%`), which
-  the seat's shell starts with too, or the values the line set before (`D=dir;`, `export D=dir`,
-  `D=dir cmd`, `D+=/sub`, PowerShell's `$D = 'dir'`, `$D += '/sub'` and `$env:D = 'dir'`). So `git -C "$MAIN"` and
-  `D=main; echo x > "$D/f"` are checked as the main checkout they name, and a glob by the folder
-  before its first wildcard.
-- Git is fenced as Claude Code's own [worktree isolation](https://code.claude.com/docs/en/worktrees#how-claude-code-enforces-isolation)
-  fences it: a git target the guard cannot expand (a variable the line sets in a way it does not follow, as a `for` loop's, or
-  the environment lacks, or a command substitution) is refused only when the git command writes,
-  that is anything but a read such as `log`, `show`, `diff`, `status`, `rev-parse`, `cat-file`,
-  `ls-files`, `grep` or a fetch into remote-tracking refs. A variable `GIT_DIR` or `GIT_WORK_TREE`
-  the guard cannot expand is refused before any program but git.
-- File writes are fenced only by targets known to be in the main checkout, as in Claude Code's
-  isolation: a write target the guard cannot expand runs (`for f in *.log; do rm "$f"; done`,
-  `T=$(mktemp); echo x > "$T"`).
-- A `cd` whose folder the guard cannot place (a command substitution, a glob, `~user`, zsh's
-  `cd old new`, or a variable it cannot expand) runs, but a write or a git command that writes after
-  it on the same line under a relative path is refused: that folder could be the main checkout. A
-  parenthesis inside a quoted path is part of its name (`cd "dir (1)"`); `$(...)` and PowerShell's
-  `(...)` outside quotes are not. On Windows, a codex or agy line with a backslash is read as
-  PowerShell and cmd read it, the backslash a separator, so `cd C:\path\to\wt` is placed;
-  Claude Code's Bash tool reads it as bash does.
+- `git commit`, `push` (but `--dry-run`), `pull`, `merge`, `rebase`, `cherry-pick`, `revert`, `am`
+  and `update-ref` in its own worktree. A scratch repository of its own, one with its own `.git`
+  inside the worktree or anywhere else, is its own to commit and push in.
+- `gh pr create` and `gh pr merge`.
 
 Inside its worktree it may `git fetch`, check out any commit detached, install, build, and run
 tests and Docker.
