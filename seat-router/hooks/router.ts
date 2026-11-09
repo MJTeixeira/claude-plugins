@@ -247,6 +247,9 @@ export function parseSeatLine(prompt: string): Parsed {
         + [jobs.slice(0, -1).join(', '), jobs.at(-1)].filter(Boolean).join(' and ') + '. ' + grammar,
     }
   }
+  if (read.kind === 'marker' && read.marker.brief.trim() === '') {
+    return { kind: 'refused', reason: 'seat-router refused this seat: the prompt has a seat line but no task after it. Put the task, its grounding and the output format on the lines below the seat line.' }
+  }
   if (read.kind === 'marker') return { kind: 'seat', marker: read.marker }
   const lines = prompt.split('\n')
   const line = lines.find(text => text.trim() !== '') ?? ''

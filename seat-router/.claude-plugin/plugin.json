@@ -1,6 +1,6 @@
 {
   "name": "seat-router",
-  "version": "1.13.19",
+  "version": "1.13.20",
   "description": "Routes marked Agent calls through durable external seats",
   "author": {
     "name": "Marcos Teixeira",
