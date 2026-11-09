@@ -1,6 +1,6 @@
 {
   "name": "fleet-room",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "A Discord channel as a live room: idle remote-control sessions wake on an @mention from someone they trust and reply in the thread as their own bot",
   "author": {
     "name": "Marcos Teixeira",

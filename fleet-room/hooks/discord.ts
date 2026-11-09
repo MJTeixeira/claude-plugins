@@ -3,7 +3,7 @@ import { asSnowflake, isHuman, isNewer } from './room'
 import type { Conversation, Me, Message, Snowflake } from './room'
 
 const API = 'https://discord.com/api/v10'
-const USER_AGENT = 'DiscordBot (https://github.com/MJTeixeira/claude-plugins, 0.2.0)'
+const USER_AGENT = 'DiscordBot (https://github.com/MJTeixeira/claude-plugins, 0.2.1)'
 const PAGE = 100
 export const MAX_PAGES = 10
 const MAX_POST_CHARS = 2_000

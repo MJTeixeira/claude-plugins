@@ -23,7 +23,7 @@ const tokenOf = async ($: EngineInterface, source: TokenSource): Promise<{token?
     const home = await $.env.get('HOME') || await $.env.get('USERPROFILE')
     const expanded = source.file.replace(/^~(?=[/\\]|$)/, home || '~')
     const normalized = expanded.replaceAll('\\', '/')
-    paths.push(source.file, expanded, normalized.split('/').at(-1)!)
+    paths.push(source.file, expanded)
     if (home && normalized.startsWith(home.replaceAll('\\', '/') + '/')) {
       const relative = normalized.slice(home.length)
       paths.push('~' + relative, '$HOME' + relative, '${HOME}' + relative)
@@ -91,13 +91,26 @@ export const scrubbed = (e: SessionAppendInput, token: string): SessionAppendInp
 export const closedRow = (e: SessionAppendInput): SessionAppendInput => ({...e, message: {...e.message,
   content: e.message.content.map(block => block.type === 'tool_result' ? {...block, content: SCRUB_NOTICE} : {type: 'text', text: SCRUB_NOTICE}),
 }})
+const GUARDED_TOOLS = ['Read', 'Bash', 'PowerShell', 'Glob', 'Grep']
+const escaped = (text: string): string => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+const stringsIn = (value: unknown): string[] => typeof value === 'string' ? [value]
+  : Array.isArray(value) ? value.flatMap(stringsIn) : value !== null && typeof value === 'object' ? Object.values(value).flatMap(stringsIn) : []
+/**
+ * Refuses a file tool whose own arguments (not its description) name the token file: one of its path spellings,
+ * a glob in a path under the file's folder, or its basename beside that folder (`cd ~/secrets && cat room.env`).
+ */
 const credentialGuard = (e: ToolCallInput, paths: readonly string[]): string | undefined => {
-  if (!['Read', 'Bash', 'PowerShell', 'Glob', 'Grep'].includes(e.tool)) return undefined
-  const input = JSON.stringify(e).replaceAll('\\\\', '/').replaceAll('\\', '/')
+  if (!GUARDED_TOOLS.includes(e.tool)) return undefined
+  const {tool, tool_use_id, agentId, requestMeta, consent, description, ...args} = e as Record<string, unknown>
+  const input = stringsIn(args).join('\n').replaceAll('\\', '/')
   return paths.some(path => {
     const normalized = path.replaceAll('\\', '/')
-    const directory = normalized.slice(0, normalized.lastIndexOf('/') + 1)
-    return input.includes(normalized) || (directory && /[*?]/.test(input) && input.includes(directory))
+    const cut = normalized.lastIndexOf('/')
+    if (input.includes(normalized)) return true
+    if (cut <= 0) return false
+    const directory = normalized.slice(0, cut)
+    return new RegExp(escaped(directory + '/') + '[^/\\s\'"]*[*?]').test(input)
+      || (input.includes(directory) && input.includes(normalized.slice(cut + 1)))
   }) ? 'fleet-room protects its bot token file from model tools.' : undefined
 }
 export const register: Register = (on, options) => {
