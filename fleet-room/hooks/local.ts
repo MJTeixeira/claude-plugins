@@ -1,5 +1,5 @@
 import type { EngineInterface, Timer } from 'claude-code'
-import { CHECK_TAIL, chatList, codexCommand, codexHome, footer, introText, isPickedUp, isWindowsPath, joined, listChats, peek, rollouts, UUID } from './codex'
+import { chatList, codexCommand, codexHome, footer, introText, isPickedUp, isWindowsPath, joined, linesWith, listChats, powershell, rollouts, UUID } from './codex'
 import { MAX_WAKE_CHARS } from './room'
 import { restore, slot, submitNext } from './wake'
 
@@ -153,10 +153,12 @@ async function checkPickup($: EngineInterface, l: Local): Promise<void> {
   const stat = await $.fs.stat(l.pair.rollout).catch(() => undefined)
   let changed = false
   if (stat && stat.mtimeMs > l.checkedAt && pending.some(sent => stat.mtimeMs >= sent.at)) {
-    l.checkedAt = stat.mtimeMs
-    const tail = (await peek($, [l.pair.rollout], CHECK_TAIL, l.isWindows)).get(l.pair.rollout)?.tail ?? []
-    const taken = new Set(pending.filter(sent => isPickedUp(tail, sent.marker)).map(sent => sent.marker))
-    if (taken.size) { l.sent = l.sent.filter(sent => !taken.has(sent.marker)); changed = true }
+    const found = await linesWith($, l.pair.rollout, pending.map(sent => sent.marker), l.isWindows)
+    if (found) {
+      l.checkedAt = stat.mtimeMs
+      const taken = new Set(pending.filter(sent => isPickedUp(found, sent.marker)).map(sent => sent.marker))
+      if (taken.size) { l.sent = l.sent.filter(sent => !taken.has(sent.marker)); changed = true }
+    }
   }
   for (const sent of l.sent) {
     if (sent.isLate || now - sent.at < PICKUP_MS) continue
@@ -212,8 +214,7 @@ export async function codexSettle($: EngineInterface, wake: CodexWake): Promise<
   }
   if (archived.length) {
     const run = l.isWindows
-      ? await $.process.run(['powershell.exe', '-NoProfile', '-NonInteractive', '-Command',
-        "foreach ($p in ($env:FLEET_ROOM_FILES -split \"`n\")) { Remove-Item -LiteralPath $p -Force }"], {env: {FLEET_ROOM_FILES: archived.join('\n')}})
+      ? await $.process.run(powershell("foreach ($p in ($env:FLEET_ROOM_FILES -split \"`n\")) { Remove-Item -LiteralPath $p -Force }"), {env: {FLEET_ROOM_FILES: archived.join('\n')}})
       : await $.process.run(['rm', '-f', '--', ...archived])
     if (run.exitCode !== 0) throw new Error('could not remove inbox files')
   }

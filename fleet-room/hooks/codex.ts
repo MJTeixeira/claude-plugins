@@ -6,7 +6,9 @@ const PEEKED = 30
 const LISTED = 10
 const SNIPPET = 160
 export const LIST_TAIL = 40
-export const CHECK_TAIL = 200
+/** Opens every PowerShell script fleet-room runs: the console's own code page (ibm850 and the like) turns each non-ASCII character it prints into one Node cannot decode. */
+const PS_UTF8_OUTPUT = '[Console]::OutputEncoding=[Text.Encoding]::UTF8; '
+export const powershell = (script: string): string[] => ['powershell.exe', '-NoProfile', '-NonInteractive', '-Command', PS_UTF8_OUTPUT + script]
 
 export const isWindowsPath = (path: string): boolean => /^[A-Za-z]:[\\/]/.test(path) || path.startsWith('\\\\')
 export const joined = (isWindows: boolean, ...parts: string[]): string => parts.map((part, at) => at === 0 ? part.replace(/[\\/]+$/, '') : part)
@@ -67,13 +69,17 @@ export async function peek($: EngineInterface, files: readonly string[], lines: 
   const peeks = new Map<string, Peek>()
   if (!files.length) return peeks
   if (isWindows) {
-    const script = "foreach ($p in ($env:FLEET_ROOM_FILES -split \"`n\")) { '@@fleet-room-head ' + $p; Get-Content -LiteralPath $p -TotalCount 1 -Encoding UTF8 -ErrorAction SilentlyContinue; '@@fleet-room-tail'; Get-Content -LiteralPath $p -Tail ([int]$env:FLEET_ROOM_LINES) -Encoding UTF8 -ErrorAction SilentlyContinue }"
-    const run = await $.process.run(['powershell.exe', '-NoProfile', '-NonInteractive', '-Command', script],
-      {env: {FLEET_ROOM_FILES: files.join('\n'), FLEET_ROOM_LINES: String(lines)}, timeoutMs: 60_000})
+    // Each block is keyed by its index in `files`, so no path text has to survive the round trip through the console.
+    const script = "$i = 0; foreach ($p in ($env:FLEET_ROOM_FILES -split \"`n\")) { '@@fleet-room-head ' + $i; Get-Content -LiteralPath $p -TotalCount 1 -Encoding UTF8 -ErrorAction SilentlyContinue; '@@fleet-room-tail'; Get-Content -LiteralPath $p -Tail ([int]$env:FLEET_ROOM_LINES) -Encoding UTF8 -ErrorAction SilentlyContinue; $i++ }"
+    const run = await $.process.run(powershell(script), {env: {FLEET_ROOM_FILES: files.join('\n'), FLEET_ROOM_LINES: String(lines)}, timeoutMs: 60_000})
     let current: {path: string, head: string[], tail: string[], inTail: boolean} | undefined
     const flush = (): void => { if (current) peeks.set(current.path, {head: current.head[0], tail: current.tail}) }
     for (const line of run.stdout.split(/\r?\n/)) {
-      if (line.startsWith('@@fleet-room-head ')) { flush(); current = {path: line.slice(18), head: [], tail: [], inTail: false} }
+      if (line.startsWith('@@fleet-room-head ')) {
+        flush()
+        const path = files[Number(line.slice(18))]
+        current = path === undefined ? undefined : {path, head: [], tail: [], inTail: false}
+      }
       else if (line === '@@fleet-room-tail' && current) current.inTail = true
       else if (current && line) (current.inTail ? current.tail : current.head).push(line)
     }
@@ -86,6 +92,19 @@ export async function peek($: EngineInterface, files: readonly string[], lines: 
     peeks.set(file, {head: head.exitCode === 0 ? head.stdout.split('\n')[0] : undefined, tail: tail.exitCode === 0 ? tail.stdout.split('\n') : []})
   }
   return peeks
+}
+/**
+ * The lines of `file` that contain any of `needles`, searched through the whole file so a match is found however much
+ * was written after it; undefined when the search could not run.
+ */
+export async function linesWith($: EngineInterface, file: string, needles: readonly string[], isWindows: boolean): Promise<string[] | undefined> {
+  const run = isWindows
+    ? await $.process.run(powershell("Select-String -LiteralPath $env:FLEET_ROOM_FILE -SimpleMatch -Encoding UTF8 -Pattern ($env:FLEET_ROOM_NEEDLES -split \"`n\") | ForEach-Object { $_.Line }"),
+      {env: {FLEET_ROOM_FILE: file, FLEET_ROOM_NEEDLES: needles.join('\n')}, timeoutMs: 60_000})
+    : await $.process.run(['grep', '-F', ...needles.flatMap(needle => ['-e', needle]), '--', file], {timeoutMs: 60_000})
+  // grep exits 1 when nothing matches; PowerShell exits 0 then, and 1 only when a cmdlet failed.
+  if (run.exitCode !== 0 && (isWindows || run.exitCode !== 1)) return undefined
+  return run.stdout.split(/\r?\n/).filter(Boolean)
 }
 const userText = (entry: Record<string, any> | undefined): string | undefined => {
   const payload = entry?.payload
