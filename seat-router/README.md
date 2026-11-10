@@ -599,6 +599,5 @@ A refused Agent call runs nothing, on Claude or anywhere else. Each refusal star
 
 ## How a release is checked
 
-A seat-router version publishes only after CI passed on its exact content, on Linux, on a hosted
-Windows runner and with the real CLIs on a self-hosted Windows machine, and after the Mac smoke run
-with the real CLIs passed on the same seat-router content.
+A seat-router version publishes only after CI passed on its exact content, on Linux and on a hosted
+Windows runner, and after the Mac smoke run with the real CLIs passed on the same seat-router content.
