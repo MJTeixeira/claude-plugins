@@ -1,7 +1,7 @@
 {
   "name": "fleet-room",
-  "version": "0.2.1",
-  "description": "A Discord channel as a live room: idle remote-control sessions wake on an @mention from someone they trust and reply in the thread as their own bot",
+  "version": "0.3.0",
+  "description": "A Discord channel as a live room: idle remote-control sessions wake on an @mention from someone they trust and reply in the thread as their own bot; a session paired with a Codex app chat in the same folder messages it and wakes on its replies",
   "author": {
     "name": "Marcos Teixeira",
     "url": "https://github.com/MJTeixeira"
@@ -54,7 +54,7 @@
     "loopCap": {
       "type": "number",
       "title": "Bot messages before a thread pauses (leave at 50)",
-      "description": "Counts every bot or webhook message since the last human post. Message N pauses wakes; posting stops at N until a human posts.",
+      "description": "Counts every bot or webhook message since the last human post. Message N pauses wakes; posting stops at N until a human posts. A paired Codex chat pauses after N messages since your last prompt.",
       "default": 50,
       "min": 1,
       "max": 1000

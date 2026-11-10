@@ -18,6 +18,9 @@ export type TokenSource = { file: string | undefined, inline: string | undefined
 export type Setup =
   | { kind: 'ready', room: Room, token: TokenSource, problems: readonly string[] }
   | { kind: 'idle', why: string }
+/** The loop cap both rooms count against: Discord bot messages since a human post, Codex messages since a human prompt. */
+export const capOf = (options: Record<string, unknown>): number => typeof options.loopCap === 'number' && Number.isInteger(options.loopCap)
+  && options.loopCap >= 1 && options.loopCap <= 1000 ? options.loopCap : 50
 const textOf = (value: unknown): string => typeof value === 'string' ? value.trim() : ''
 export const setupOf = (options: Record<string, unknown>): Setup => {
   const channel = asSnowflake(textOf(options.channel))
@@ -36,8 +39,7 @@ export const setupOf = (options: Record<string, unknown>): Setup => {
   const fleet = idsOf(options.fleet, 'Fleet list')
   const guests = idsOf(options.guests, 'Guest list')
   for (const id of guests) if (fleet.delete(id)) problems.push('An id in both lists remains a guest.')
-  const cap = typeof options.loopCap === 'number' && Number.isInteger(options.loopCap)
-    && options.loopCap >= 1 && options.loopCap <= 1000 ? options.loopCap : 50
+  const cap = capOf(options)
   const idle = typeof options.conversationIdleMinutes === 'number' && Number.isInteger(options.conversationIdleMinutes)
     && options.conversationIdleMinutes >= 1 && options.conversationIdleMinutes <= 10_080 ? options.conversationIdleMinutes : 120
   return { kind: 'ready', token: { file, inline }, problems, room: {

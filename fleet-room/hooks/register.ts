@@ -1,11 +1,22 @@
 import type { EngineInterface, Register, SessionAppendInput, ToolCallInput } from 'claude-code'
 import { activeThreads, capHistory, DiscordFailure, need, newest, openLink, roomOf, send, startThread, threadOf, whoAmI } from './discord'
 import type { Link } from './discord'
-import { asSnowflake, capVerdict, setupOf, tailBots, tokenIn } from './room'
-import type { Conversation, Room, TokenSource } from './room'
-import { answered, guard, postScope, startWatch, turnEnded, turnStarted } from './watch'
+import { chatsTool, humanPrompted, isCodexAvailable, pairTool, resumeLocal, sendTool } from './local'
+import { asSnowflake, capOf, capVerdict, setupOf, tailBots, tokenIn } from './room'
+import type { Conversation, Room, Setup, TokenSource } from './room'
+import { answered, guard, postScope, startWatch } from './watch'
+import { turnEnded, turnStarted } from './wake'
 
 const TOOL = 'mcp__fleet-room__post'
+const CODEX_TOOLS = [
+  {name: 'codex_chats', description: 'List the Codex app chats on this machine that work in this session’s project folder (all: true lists every folder): UUID, title, folder, last activity, last user message. Propose one to the owner; pair only after the owner confirms.',
+    inputSchema: {type: 'object', properties: {all: {type: 'boolean', description: 'List chats in every folder, codex exec runs included.'}}, additionalProperties: false}},
+  {name: 'codex_pair', description: 'Pair this session with the Codex app chat the owner confirmed, by UUID, and send it an intro saying how to message this session. Never pair a chat the owner did not confirm.',
+    inputSchema: {type: 'object', properties: {thread: {type: 'string', minLength: 36, maxLength: 36, description: 'The chat UUID from codex_chats.'}}, required: ['thread'], additionalProperties: false}},
+  {name: 'codex_send', description: 'Send a message to the paired Codex app chat: a question, a request, an answer, or a note that something is done.',
+    inputSchema: {type: 'object', properties: {text: {type: 'string', minLength: 1, maxLength: 8_000, description: 'What to say to Codex.'}}, required: ['text'], additionalProperties: false}},
+] as const
+const HUMAN_ORIGINS: readonly string[] = ['composer', 'bridge', 'sdk']
 const SCRUB_NOTICE = '[fleet-room removed an unreadable transcript row to protect credentials]'
 const POST_SCHEMA = {
   type: 'object', properties: {
@@ -113,6 +124,20 @@ const credentialGuard = (e: ToolCallInput, paths: readonly string[]): string | u
       || (input.includes(directory) && input.includes(normalized.slice(cut + 1)))
   }) ? 'fleet-room protects its bot token file from model tools.' : undefined
 }
+async function startRoom($: EngineInterface, setup: Setup): Promise<void> {
+  if (setup.kind === 'idle') { $.ui.log('fleet-room: idle (' + setup.why + ').', {to: 'debug'}); return }
+  const {token, paths} = await tokenOf($, setup.token)
+  if (!token) { $.ui.log('fleet-room: idle (no bot token).', {to: 'debug'}); return }
+  for (const problem of setup.problems) $.ui.log('fleet-room: ' + problem)
+  configured = {link: openLink(token), room: setup.room, tokenPaths: paths}
+  await $.tool.register({name: 'post', description: 'Post in the fleet-room Discord room as this machine\'s bot. Reply in a wake\'s thread, use an existing room thread id or exact name, or start a topic. Only this tool posts your reply.', inputSchema: POST_SCHEMA, isDeferred: false})
+  if (await $.env.get('FLEET_ROOM') === '1') await startWatch($, setup.room, configured.link)
+}
+async function startLocal($: EngineInterface, cap: number): Promise<void> {
+  if (!await isCodexAvailable($)) return
+  for (const tool of CODEX_TOOLS) await $.tool.register({...tool, isDeferred: true})
+  await resumeLocal($, cap)
+}
 export const register: Register = (on, options) => {
   const setup = setupOf(options)
   on('tool.call', async ($, e, next) => {
@@ -125,14 +150,19 @@ export const register: Register = (on, options) => {
 
   on('session.start', async ($, e, next) => {
     const started = await next(e)
-    if (setup.kind === 'idle') { $.ui.log('fleet-room: idle (' + setup.why + ').', {to: 'debug'}); return started }
-    const {token, paths} = await tokenOf($, setup.token)
-    if (!token) { $.ui.log('fleet-room: idle (no bot token).', {to: 'debug'}); return started }
-    for (const problem of setup.problems) $.ui.log('fleet-room: ' + problem)
-    configured = {link: openLink(token), room: setup.room, tokenPaths: paths}
-    await $.tool.register({name: 'post', description: 'Post in the fleet-room Discord room as this machine\'s bot. Reply in a wake\'s thread, use an existing room thread id or exact name, or start a topic. Only this tool posts your reply.', inputSchema: POST_SCHEMA, isDeferred: false})
-    if (await $.env.get('FLEET_ROOM') === '1') await startWatch($, setup.room, configured.link)
+    try { await startLocal($, capOf(options)) } catch { $.ui.log('fleet-room: local Codex mode did not start.') }
+    await startRoom($, setup)
     return started
+  }).catch(($, e, next) => next(e))
+  on('tool.call', {tool: 'mcp__fleet-room__codex_chats'}, async ($, e) => chatsTool($, e))
+    .catch(() => ({deny: 'fleet-room could not list Codex chats.'}))
+  on('tool.call', {tool: 'mcp__fleet-room__codex_pair'}, async ($, e) => pairTool($, capOf(options), e))
+    .catch(() => ({deny: 'fleet-room could not pair the Codex chat.'}))
+  on('tool.call', {tool: 'mcp__fleet-room__codex_send'}, async ($, e) => sendTool($, e))
+    .catch(() => ({deny: 'fleet-room failed while sending to Codex; the message may already be queued. Tell the owner before repeating it.'}))
+  on('prompt.submit', async ($, e, next) => {
+    if (HUMAN_ORIGINS.includes(e.origin.kind)) await humanPrompted($)
+    return next(e)
   }).catch(($, e, next) => next(e))
   on('turn.start', async ($, e, next) => { await turnStarted($, e); return next(e) }).catch(($, e, next) => next(e))
   on('turn.complete', async ($, e, next) => { const ended = await next(e); await turnEnded($, e); return ended }).catch(($, e, next) => next(e))

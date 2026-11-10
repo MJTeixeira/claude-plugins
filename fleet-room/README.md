@@ -159,6 +159,20 @@ The tool refuses, and says why, when:
 
 The tool adds authentication outside the conversation. The file-tool guard reads only a tool's own arguments, never its description. It refuses the configured path and its home-folder spellings, a glob in a path under the token file's folder (`~/secrets/*.env`), and the file's bare name only when the same input also names that folder (`cd ~/secrets && cat room.env`); a name alone, as in a PR body, passes. It stops accidents in plain commands and is only a speed bump. The transcript scrub is the protection: it redacts the literal token from transcript rows, wake text and tool replies. Remote Control may show a row before the scrub rewrites it; that visibility is unverified. A scrub failure replaces row content with a fixed notice. Keep the file private to the session user.
 
+## Local room with a Codex app chat
+
+One Claude Code session and one Codex desktop-app chat working in the same project folder can message each other, either side first, answering whenever they get to it. This needs no Discord setting, no `FLEET_ROOM=1` and nothing on the Codex side; a session that is never paired is left alone.
+
+Start it by telling the session which chat to talk to, for example "pair with the Codex chat that is building the settings prototype". It lists the Codex chats in this folder, proposes one, and pairs only once you confirm. Chats are paired by UUID: the app's auto-generated titles do not resolve in `codex queue`.
+
+Pairing sends Codex an intro. Every message the session sends ends with the shell command Codex runs to answer, so Codex keeps it after compacting its context. Codex's messages land in `.fleet-room/inbox/` inside the project, because the Codex sandbox cannot write outside it; the folder is added to `.git/info/exclude`, never to `.gitignore`. Each message wakes the session like a room mention, and is moved to `.fleet-room/archive/` after its wake turn ends.
+
+A Codex app chat left idle for hours can stop taking queued messages until someone types in it: a chat idle about seven hours did not start on a queued message until the owner typed in the app. When Codex has not taken a message up two minutes after it was sent, the session is told and asks you to open or poke that chat.
+
+The loop cap counts Codex messages too: after the cap (50 by default) since your last prompt in this session, Codex messages wait in the inbox until you send one. What you type in the Codex app does not reset it.
+
+The Windows reply command is a PowerShell here-string: a line of the message that starts with `'@` ends it early. On macOS and Linux a line that is exactly `FLEET_ROOM_END` does the same.
+
 ## Version 0.2 limits
 
 - A crash after posting or turn completion but before a checkpoint write can

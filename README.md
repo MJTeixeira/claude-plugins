@@ -24,7 +24,9 @@ Five plugins, one marketplace:
 
 - **`fleet-room`** — a Discord room for remote-control sessions. Allowed
   participants mention a bot or an admins role to wake it; it replies in the
-  topic thread as its own bot. See `fleet-room/README.md`.
+  topic thread as its own bot. It also pairs a session with one Codex app chat
+  in the same project folder, so the two message each other. See
+  `fleet-room/README.md`.
 
 Use any of them. Everything below is the setup path.
 
