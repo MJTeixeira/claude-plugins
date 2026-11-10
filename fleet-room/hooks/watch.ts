@@ -1,10 +1,11 @@
-import type { EngineInterface, Timer, ToolCallInput, TurnCompleteInput, TurnStartInput } from 'claude-code'
+import type { EngineInterface, Timer, ToolCallInput } from 'claude-code'
 import { activeThreads, capHistory, DiscordFailure, messagesAfter, need, newest, roomOf, threadOf, typing, whoAmI } from './discord'
 import type { Link } from './discord'
 import { asSnowflake, compose, fold, isNewer, isTalkOnly, mintedAt, savedTarget, seed, stoppedText, wakeText } from './room'
 import type { Batch, Checkpoint, Conversation, Me, Message, Pending, Room, Snowflake } from './room'
 import { holdPresence } from './presence'
 import type { GatewayEvent, Presence } from './presence'
+import { restore, slot, submitNext } from './wake'
 
 export const POLL_MS = 20_000
 // Discord shows a typing indicator for about ten seconds.
@@ -13,21 +14,28 @@ const LEASE_MS = 3 * POLL_MS
 const SWEEP_MS = 7 * 24 * 60 * 60 * 1000
 const FORGET_MS = 30 * 24 * 60 * 60 * 1000
 const UNREAD_KEPT = 100
-const MAX_ERROR_ENDS = 3
 const TOOL = 'mcp__fleet-room__post'
 const TALK_DENY = 'fleet-room talk-only wake: only its post tool may run, including in subagents. The operator must post in the Discord thread to unlock other tools; phone input does not unlock them.'
 
 type Conv = { conversation: Conversation, head: Checkpoint, pending: Pending[], unread: Message[] }
-type Slot = { kind: 'free' } | { kind: 'held' } | { kind: 'submitted', batch: Batch } | { kind: 'running', batch: Batch, turnId: string }
+type Slot = { kind: 'submitted', batch: Batch } | { kind: 'running', batch: Batch, turnId: string }
 type Phase = { kind: 'starting' } | { kind: 'watching', me: Me, guild: Snowflake, roomChannel: Conversation, since: Snowflake, isSwept: boolean } | { kind: 'stopped' }
 type Watch = {
-  room: Room, link: Link, timer: Timer | undefined, phase: Phase, convs: Map<Snowflake, Conv>, slot: Slot,
-  main: string | undefined, restoring: boolean, wakeKey: string | undefined, leaseTicks: number, errorEnds: number, sessionId: string,
+  room: Room, link: Link, timer: Timer | undefined, phase: Phase, convs: Map<Snowflake, Conv>,
+  restoring: boolean, wakeKey: string | undefined, leaseTicks: number, sessionId: string,
   typing: Set<Snowflake>, typingTimer: Timer | undefined, presence: Presence | undefined,
 }
 let watch: Watch | undefined
 let ticking: Promise<void> | undefined
 let isNudged = false
+const SOURCE = 'discord'
+/** The Discord wake in the session's slot, if the slot holds one. */
+const roomSlot = (): Slot | undefined => {
+  const current = slot()
+  if (current.kind === 'submitted' && current.source === SOURCE) return {kind: 'submitted', batch: current.wake as Batch}
+  if (current.kind === 'running' && current.source === SOURCE) return {kind: 'running', batch: current.wake as Batch, turnId: current.turnId}
+  return undefined
+}
 const prefix = (w: Watch, me: Snowflake): string => me + '/' + w.room.channel
 const pruneKey = (w: Watch, me: Snowflake): string => 'prune/' + prefix(w, me)
 const timeSnowflake = (now: number): Snowflake => String(BigInt(Math.max(0, now - 1_420_070_400_000)) << 22n) as Snowflake
@@ -47,10 +55,11 @@ export async function startWatch($: EngineInterface, room: Room, link: Link): Pr
   watch?.typingTimer?.cancel()
   watch?.presence?.stop()
   await ticking
-  const w: Watch = { room, link, timer: undefined, phase: {kind: 'starting'}, convs: new Map(), slot: {kind: 'free'},
-    main: undefined, restoring: true, wakeKey: undefined, leaseTicks: 0, errorEnds: 0, sessionId: await $.session.id(),
+  const w: Watch = { room, link, timer: undefined, phase: {kind: 'starting'}, convs: new Map(),
+    restoring: true, wakeKey: undefined, leaseTicks: 0, sessionId: await $.session.id(),
     typing: new Set(), typingTimer: undefined, presence: undefined }
   watch = w
+  if (roomSlot()) restore({kind: 'free'})
   const suffix = '/' + room.channel
   for (const key of await $.store.keys()) {
     if (!key.startsWith('wake/') || !key.endsWith(suffix) || !asSnowflake(key.slice(5, -suffix.length))) continue
@@ -60,13 +69,25 @@ export async function startWatch($: EngineInterface, room: Room, link: Link): Pr
   w.timer = $.clock.every(POLL_MS, () => { void tick($) })
   await tick($)
 }
+export async function roomChanged($: EngineInterface): Promise<void> {
+  if (watch) await saveWake($, watch)
+}
+export async function roomSettle($: EngineInterface, batch: Batch): Promise<void> {
+  if (watch) await settle($, watch, batch)
+}
+export function roomSubmitted($: EngineInterface, batch: Batch): void {
+  if (watch) startTyping($, watch, batch.items.map(item => item.conversation.id))
+}
+export function roomReleased(): void {
+  if (watch) stopTyping(watch)
+}
 const wakeKey = (w: Watch): string | undefined => w.phase.kind === 'watching' ? 'wake/' + prefix(w, w.phase.me.id) : w.wakeKey
 async function saveWake($: EngineInterface, w: Watch): Promise<void> {
   const key = wakeKey(w)
   if (!key || w !== watch) return
-  const slot = w.slot
+  const slot = roomSlot()
   const saved = await $.store.get(key) as {session?: string} | undefined
-  if (slot.kind !== 'submitted' && slot.kind !== 'running') {
+  if (!slot) {
     if (saved?.session === w.sessionId) await $.store.delete(key)
     return
   }
@@ -90,8 +111,8 @@ async function restoreWake($: EngineInterface, w: Watch, key: string): Promise<v
     return {...item, shown: [], omitted: 0, wakes: new Set<Snowflake>(), direct: new Set<Snowflake>(), peers: [], isRoleCalled: false}
   })
   w.wakeKey = key
-  w.slot = {...slot, batch: {...slot.batch, items}}
-  if (slot.kind === 'running') w.main = slot.turnId
+  const batch = {...slot.batch, items}
+  restore(slot.kind === 'running' ? {kind: 'running', source: SOURCE, wake: batch, turnId: slot.turnId} : {kind: 'submitted', source: SOURCE, wake: batch})
 }
 // A scheduled tick counts toward holding the lease; a nudge from the gateway only reads sooner. A nudge during a poll runs one more poll after it.
 function tick($: EngineInterface, isScheduled = true): Promise<void> {
@@ -207,8 +228,9 @@ async function poll($: EngineInterface, isScheduled: boolean): Promise<void> {
     if (w.leaseTicks >= 2 && !w.presence) w.presence = holdPresence($, w.link.token, event => onGateway($, event))
     const active = need(await activeThreads($, w.link, w.phase.guild, w.room.channel))
     const conversations = [...new Map([w.phase.roomChannel, ...active.map(thread => thread.conversation), ...[...w.convs.values()].map(conv => conv.conversation)].map(conv => [conv.id, conv])).values()]
-    if (w.slot.kind === 'submitted' || w.slot.kind === 'running') {
-      for (const item of w.slot.batch.items) if (!conversations.some(conv => conv.id === item.conversation.id)) conversations.push(item.conversation)
+    const held = roomSlot()
+    if (held) {
+      for (const item of held.batch.items) if (!conversations.some(conv => conv.id === item.conversation.id)) conversations.push(item.conversation)
     }
     if (!w.phase.isSwept) {
       const root = 'cp/' + prefix(w, w.phase.me.id) + '/'
@@ -270,7 +292,7 @@ async function poll($: EngineInterface, isScheduled: boolean): Promise<void> {
         if (error.outcome.kind !== 'halt' || error.outcome.scope !== 'conversation') throw error
       }
     }
-    await submitNext($, w)
+    await submitNext($)
   } catch (error) {
     if (error instanceof DiscordFailure) {
       if (error.outcome.kind === 'halt' && error.outcome.scope === 'room') stop($, w, error.outcome.why)
@@ -279,25 +301,11 @@ async function poll($: EngineInterface, isScheduled: boolean): Promise<void> {
     throw error
   }
 }
-async function dropped($: EngineInterface, marker: string): Promise<void> {
+export function roomCompose(): { wake: Batch, text: string } | undefined {
   const w = watch
-  if (w?.slot.kind === 'submitted' && w.slot.batch.marker === marker) {
-    stopTyping(w)
-    w.slot = {kind: 'held'}
-    await saveWake($, w)
-  }
-}
-async function submitNext($: EngineInterface, w: Watch): Promise<void> {
-  if (w.phase.kind !== 'watching' || w.leaseTicks < 2 || w.slot.kind !== 'free' || w.main !== undefined) return
+  if (!w || w.phase.kind !== 'watching' || w.leaseTicks < 2) return undefined
   const batch = compose([...w.convs.values()], 'w-' + crypto.randomUUID())
-  if (!batch) return
-  w.slot = {kind: 'submitted', batch}
-  await saveWake($, w)
-  startTyping($, w, batch.items.map(item => item.conversation.id))
-  // A submit resolves when its turn starts, which may wait behind the operator's turn.
-  void $.prompt.submit({text: wakeText(w.room, w.phase.me, batch).replaceAll(w.link.token, '[redacted]')})
-    .then(result => { if (result.drop !== undefined) return dropped($, batch.marker) }, () => dropped($, batch.marker))
-    .catch(() => { $.ui.log('fleet-room: could not save dropped wake state.') })
+  return batch && {wake: batch, text: wakeText(w.room, w.phase.me, batch).replaceAll(w.link.token, '[redacted]')}
 }
 async function settle($: EngineInterface, w: Watch, batch: Batch, only?: Snowflake): Promise<void> {
   for (const item of batch.items) {
@@ -310,54 +318,20 @@ async function settle($: EngineInterface, w: Watch, batch: Batch, only?: Snowfla
     try { await persist($, w, conv) } catch (error) { conv.pending = prior; throw error }
   }
 }
-export async function turnStarted($: EngineInterface, e: TurnStartInput): Promise<void> {
-  const w = watch
-  if (!w || e.agentId !== undefined) return
-  w.main = e.turnId
-  if (w.slot.kind === 'submitted' && e.text.includes(w.slot.batch.marker)) {
-    w.slot = {kind: 'running', batch: w.slot.batch, turnId: e.turnId}
-    await saveWake($, w)
-  }
-}
-export async function turnEnded($: EngineInterface, e: TurnCompleteInput): Promise<void> {
-  const w = watch
-  if (!w || e.agentId !== undefined) return
-  if (w.main === e.turnId) w.main = undefined
-  let failed = false
-  if (w.slot.kind === 'running' && w.slot.turnId === e.turnId) {
-    stopTyping(w)
-    w.errorEnds = e.reason === 'error' ? w.errorEnds + 1 : 0
-    try {
-      if (e.reason !== 'error' || w.errorEnds >= MAX_ERROR_ENDS) {
-        if (w.errorEnds >= MAX_ERROR_ENDS) $.ui.log('fleet-room: settling mentions after three error endings.')
-        await settle($, w, w.slot.batch)
-        w.errorEnds = 0
-      }
-    } catch {
-      failed = true
-      $.ui.log('fleet-room: could not save wake checkpoints; mentions may replay on a later poll.')
-    } finally {
-      w.slot = e.reason === 'aborted' ? {kind: 'held'} : {kind: 'free'}
-    }
-  } else if (w.slot.kind === 'held') w.slot = {kind: 'free'}
-  try { await saveWake($, w) } catch {
-    failed = true
-    $.ui.log('fleet-room: could not clear saved wake state; the running slot is free.')
-  }
-  if (!failed) await submitNext($, w)
-}
 export async function answered($: EngineInterface, conversation: Snowflake): Promise<void> {
   const w = watch
   if (w) stopTyping(w, conversation)
-  if (w?.slot.kind === 'running') await settle($, w, w.slot.batch, conversation)
+  const held = roomSlot()
+  if (w && held?.kind === 'running') await settle($, w, held.batch, conversation)
 }
 const talkBatch = (): Batch | undefined => {
   const w = watch
-  if (!w || (w.slot.kind !== 'submitted' && w.slot.kind !== 'running') || w.slot.batch.mode !== 'talk') return undefined
-  return w.slot.batch.items.some(item => {
+  const held = roomSlot()
+  if (!w || !held || held.batch.mode !== 'talk') return undefined
+  return held.batch.items.some(item => {
     const conv = w.convs.get(item.conversation.id)
     return !conv?.head.operatorPosted
-  }) ? w.slot.batch : undefined
+  }) ? held.batch : undefined
 }
 export const isTalkTurn = (): boolean => talkBatch() !== undefined
 export const guard = (e: ToolCallInput): string | undefined => (watch?.restoring || isTalkTurn()) && (e.agentId !== undefined || e.tool !== TOOL) ? TALK_DENY : undefined
