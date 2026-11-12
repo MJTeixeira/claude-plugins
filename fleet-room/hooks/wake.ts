@@ -28,13 +28,27 @@ export function restore(next: Slot): void {
   core.slot = next
   if (next.kind === 'running') core.main = next.turnId
 }
+/**
+ * A /clear or an in-process /resume ends the conversation a running turn belonged to, so its wake is let go unsettled and its messages wake the
+ * next conversation. A submitted or held wake stays: its prompt may still enter the next conversation, guarded.
+ */
+export async function conversationEnded($: EngineInterface): Promise<void> {
+  const current = core.slot
+  if (current.kind === 'running') {
+    released(current.source)
+    core.slot = {kind: 'free'}
+  }
+  core.main = undefined
+  core.errorEnds = 0
+  await changed($)
+}
 // The mod scanner refuses `$` passed through a value, so each source's functions are named here.
 async function changed($: EngineInterface): Promise<void> {
   await roomChanged($)
   await codexChanged($)
 }
 async function composeOf($: EngineInterface, source: SourceName): Promise<{ wake: Wake, text: string } | undefined> {
-  return source === 'discord' ? roomCompose() : codexCompose($)
+  return source === 'discord' ? roomCompose($) : codexCompose($)
 }
 async function settleOf($: EngineInterface, source: SourceName, wake: Wake): Promise<void> {
   if (source === 'discord') await roomSettle($, wake as Batch)

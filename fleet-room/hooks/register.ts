@@ -4,8 +4,8 @@ import type { Link } from './discord'
 import { chatsTool, humanPrompted, isCodexAvailable, pairTool, resumeLocal, sendTool } from './local'
 import { asSnowflake, capOf, capVerdict, setupOf, tailBots, tokenIn } from './room'
 import type { Conversation, Room, Setup, TokenSource } from './room'
-import { answered, guard, postScope, startWatch } from './watch'
-import { turnEnded, turnStarted } from './wake'
+import { answered, guard, postScope, registerPost, roomEnded, startWatch } from './watch'
+import { conversationEnded, turnEnded, turnStarted } from './wake'
 
 const TOOL = 'mcp__fleet-room__post'
 const CODEX_TOOLS = [
@@ -18,16 +18,15 @@ const CODEX_TOOLS = [
 ] as const
 const HUMAN_ORIGINS: readonly string[] = ['composer', 'bridge', 'sdk']
 const SCRUB_NOTICE = '[fleet-room removed an unreadable transcript row to protect credentials]'
-const POST_SCHEMA = {
-  type: 'object', properties: {
-    text: {type: 'string', minLength: 1, maxLength: 8_000, description: 'What to say. <@id> mentions a participant; <@&id> mentions a role.'},
-    thread: {type: 'string', minLength: 1, maxLength: 100, description: 'A room thread id, room channel id, or exact active thread name.'},
-    topic: {type: 'string', minLength: 1, maxLength: 100, description: 'Start a public topic thread. Give thread or topic, not both.'},
-  }, required: ['text'], additionalProperties: false,
-} as const
 
 type Configured = {link: Link, room: Room, tokenPaths: readonly string[]}
 let configured: Configured | undefined
+/**
+ * The id of the session a /clear or an in-process /resume ended, until the tools and the watch are up again under the
+ * next one. Both go on under a new session id with no `session.start` (SessionEndInput's `reason` and `sessionId`).
+ */
+let clearedFrom: string | undefined
+let rebinding: Promise<void> | undefined
 const tokenOf = async ($: EngineInterface, source: TokenSource): Promise<{token?: string, paths: string[]}> => {
   const paths: string[] = []
   if (source.file) {
@@ -124,19 +123,34 @@ const credentialGuard = (e: ToolCallInput, paths: readonly string[]): string | u
       || (input.includes(directory) && input.includes(normalized.slice(cut + 1)))
   }) ? 'fleet-room protects its bot token file from model tools.' : undefined
 }
-async function startRoom($: EngineInterface, setup: Setup): Promise<void> {
+async function startRoom($: EngineInterface, setup: Setup, ended?: string): Promise<void> {
   if (setup.kind === 'idle') { $.ui.log('fleet-room: idle (' + setup.why + ').', {to: 'debug'}); return }
   const {token, paths} = await tokenOf($, setup.token)
   if (!token) { $.ui.log('fleet-room: idle (no bot token).', {to: 'debug'}); return }
   for (const problem of setup.problems) $.ui.log('fleet-room: ' + problem)
   configured = {link: openLink(token), room: setup.room, tokenPaths: paths}
-  await $.tool.register({name: 'post', description: 'Post in the fleet-room Discord room as this machine\'s bot. Reply in a wake\'s thread, use an existing room thread id or exact name, or start a topic. Only this tool posts your reply.', inputSchema: POST_SCHEMA, isDeferred: false})
-  if (await $.env.get('FLEET_ROOM') === '1') await startWatch($, setup.room, configured.link)
+  await registerPost($)
+  if (await $.env.get('FLEET_ROOM') === '1') await startWatch($, setup.room, configured.link, ended)
 }
-async function startLocal($: EngineInterface, cap: number): Promise<void> {
+async function startLocal($: EngineInterface, cap: number, ended?: string): Promise<void> {
   if (!await isCodexAvailable($)) return
   for (const tool of CODEX_TOOLS) await $.tool.register({...tool, isDeferred: true})
-  await resumeLocal($, cap)
+  try { await resumeLocal($, cap, ended) } catch { $.ui.log('fleet-room: local Codex mode did not start.') }
+}
+/**
+ * Brings the tools and the watch up again after a /clear or an in-process /resume, which end the session without a
+ * `session.start` for the next one. Waits until the session id has moved on; a rejected registration leaves it for the next turn to retry.
+ */
+function rebind($: EngineInterface, cap: number, setup: Setup): Promise<void> {
+  rebinding ??= (async () => {
+    const from = clearedFrom
+    if (from === undefined || await $.session.id() === from) return
+    await startLocal($, cap, from)
+    await startRoom($, setup, from)
+    clearedFrom = undefined
+  })().catch(() => { $.ui.log('fleet-room: could not start again after the session changed; the next turn retries.', {to: 'debug'}) })
+    .finally(() => { rebinding = undefined })
+  return rebinding
 }
 export const register: Register = (on, options) => {
   const setup = setupOf(options)
@@ -150,9 +164,21 @@ export const register: Register = (on, options) => {
 
   on('session.start', async ($, e, next) => {
     const started = await next(e)
-    try { await startLocal($, capOf(options)) } catch { $.ui.log('fleet-room: local Codex mode did not start.') }
+    clearedFrom = undefined
+    await startLocal($, capOf(options))
     await startRoom($, setup)
     return started
+  }).catch(($, e, next) => next(e))
+  on('session.end', async ($, e, next) => {
+    if (e.reason !== 'clear' && e.reason !== 'resume') return next(e)
+    clearedFrom = e.sessionId
+    try {
+      await roomEnded($)
+      await conversationEnded($)
+    } catch { $.ui.log('fleet-room: could not let go of the ended session cleanly.', {to: 'debug'}) }
+    const result = await next(e)
+    $.clock.after(0, () => { void rebind($, capOf(options), setup) })
+    return result
   }).catch(($, e, next) => next(e))
   on('tool.call', {tool: 'mcp__fleet-room__codex_chats'}, async ($, e) => chatsTool($, e))
     .catch(() => ({deny: 'fleet-room could not list Codex chats.'}))
@@ -164,7 +190,11 @@ export const register: Register = (on, options) => {
     if (HUMAN_ORIGINS.includes(e.origin.kind)) await humanPrompted($)
     return next(e)
   }).catch(($, e, next) => next(e))
-  on('turn.start', async ($, e, next) => { await turnStarted($, e); return next(e) }).catch(($, e, next) => next(e))
+  on('turn.start', async ($, e, next) => {
+    if (clearedFrom !== undefined && e.agentId === undefined) await rebind($, capOf(options), setup)
+    await turnStarted($, e)
+    return next(e)
+  }).catch(($, e, next) => next(e))
   on('turn.complete', async ($, e, next) => { const ended = await next(e); await turnEnded($, e); return ended }).catch(($, e, next) => next(e))
   on('session.append', ($, e, next) => {
     if (!configured) return next(e)
