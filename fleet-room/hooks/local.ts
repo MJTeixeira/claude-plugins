@@ -38,12 +38,22 @@ export async function isCodexAvailable($: EngineInterface): Promise<boolean> {
   const home = await codexHome($)
   return home !== undefined && await $.fs.exists(home).catch(() => false)
 }
-/** Resumes local mode after a reload or restart of a session that has a pair; a session with none is left alone. */
-export async function resumeLocal($: EngineInterface, cap: number): Promise<void> {
+/**
+ * Resumes local mode after a reload or restart of a session that has a pair; a session with none is left alone.
+ * `ended` names the session a /clear or an in-process /resume ended: its pair moves to this one, as the inbox and the process stay the same.
+ */
+export async function resumeLocal($: EngineInterface, cap: number, ended?: string): Promise<void> {
   local?.timer?.cancel()
   local = undefined
   const sessionId = await $.session.id()
-  const saved = savedOf(await $.store.get(keyOf(sessionId)))
+  let saved = savedOf(await $.store.get(keyOf(sessionId)))
+  if (!saved && ended !== undefined) {
+    saved = savedOf(await $.store.get(keyOf(ended)))
+    if (saved) {
+      await $.store.set(keyOf(sessionId), saved)
+      await $.store.delete(keyOf(ended))
+    }
+  }
   if (!saved) return
   const l = await activate($, sessionId, cap, saved.pair)
   l.sent = saved.sent

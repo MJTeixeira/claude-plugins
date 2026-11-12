@@ -15,6 +15,33 @@ const SWEEP_MS = 7 * 24 * 60 * 60 * 1000
 const FORGET_MS = 30 * 24 * 60 * 60 * 1000
 const UNREAD_KEPT = 100
 const TOOL = 'mcp__fleet-room__post'
+const POST_SCHEMA = {
+  type: 'object', properties: {
+    text: {type: 'string', minLength: 1, maxLength: 8_000, description: 'What to say. <@id> mentions a participant; <@&id> mentions a role.'},
+    thread: {type: 'string', minLength: 1, maxLength: 100, description: 'A room thread id, room channel id, or exact active thread name.'},
+    topic: {type: 'string', minLength: 1, maxLength: 100, description: 'Start a public topic thread. Give thread or topic, not both.'},
+  }, required: ['text'], additionalProperties: false,
+} as const
+/** Lists the post tool; a name registered again replaces the tool, so this also brings back one the engine dropped. */
+export async function registerPost($: EngineInterface): Promise<void> {
+  await $.tool.register({name: 'post', description: 'Post in the fleet-room Discord room as this machine\'s bot. Reply in a wake\'s thread, use an existing room thread id or exact name, or start a topic. Only this tool posts your reply.', inputSchema: POST_SCHEMA, isDeferred: false})
+}
+/** Set when the post tool went missing; a wake turn that saw it missing does not settle. Cleared as the next wake goes out. */
+let isPostLost = false
+async function isPostListed($: EngineInterface): Promise<boolean> {
+  return (await $.tool.list()).some(tool => tool.name === TOOL)
+}
+/**
+ * Whether a wake may go out: the session can reply only while the post tool is listed, so a missing one is registered
+ * again first. One that still is not listed holds the wake for a later poll rather than waking a session that cannot reply.
+ */
+async function canReply($: EngineInterface): Promise<boolean> {
+  if (await isPostListed($)) return true
+  isPostLost = true
+  $.ui.log('fleet-room: the post tool was missing; registering it again.', {to: 'debug'})
+  try { await registerPost($) } catch { return false }
+  return isPostListed($)
+}
 const TALK_DENY = 'fleet-room talk-only wake: only its post tool may run, including in subagents. The operator must post in the Discord thread to unlock other tools; phone input does not unlock them.'
 
 type Conv = { conversation: Conversation, head: Checkpoint, pending: Pending[], unread: Message[] }
@@ -22,7 +49,7 @@ type Slot = { kind: 'submitted', batch: Batch } | { kind: 'running', batch: Batc
 type Phase = { kind: 'starting' } | { kind: 'watching', me: Me, guild: Snowflake, roomChannel: Conversation, since: Snowflake, isSwept: boolean } | { kind: 'stopped' }
 type Watch = {
   room: Room, link: Link, timer: Timer | undefined, phase: Phase, convs: Map<Snowflake, Conv>,
-  restoring: boolean, wakeKey: string | undefined, leaseTicks: number, sessionId: string,
+  restoring: boolean, wakeKey: string | undefined, leaseTicks: number, sessionId: string, isEnded: boolean,
   typing: Set<Snowflake>, typingTimer: Timer | undefined, presence: Presence | undefined,
 }
 let watch: Watch | undefined
@@ -50,30 +77,59 @@ const checkpointOf = (value: unknown): (Checkpoint & { name: string }) | undefin
       && typeof peer.id === 'string' && asSnowflake(peer.id) && typeof peer.name === 'string' && typeof peer.at === 'string' && asSnowflake(peer.at))))) return undefined
   return cp as Checkpoint & { name: string }
 }
-export async function startWatch($: EngineInterface, room: Room, link: Link): Promise<void> {
+/** Starts the session's watch; `ended` names the session a /clear or an in-process /resume ended, whose saved wake this one takes over. */
+export async function startWatch($: EngineInterface, room: Room, link: Link, ended?: string): Promise<void> {
   watch?.timer?.cancel()
   watch?.typingTimer?.cancel()
   watch?.presence?.stop()
   await ticking
   const w: Watch = { room, link, timer: undefined, phase: {kind: 'starting'}, convs: new Map(),
-    restoring: true, wakeKey: undefined, leaseTicks: 0, sessionId: await $.session.id(),
+    restoring: true, wakeKey: undefined, leaseTicks: 0, sessionId: await $.session.id(), isEnded: false,
     typing: new Set(), typingTimer: undefined, presence: undefined }
   watch = w
   if (roomSlot()) restore({kind: 'free'})
   const suffix = '/' + room.channel
   for (const key of await $.store.keys()) {
     if (!key.startsWith('wake/') || !key.endsWith(suffix) || !asSnowflake(key.slice(5, -suffix.length))) continue
+    const saved = await $.store.get(key) as {session?: string} | undefined
+    if (ended !== undefined && saved?.session === ended) await $.store.set(key, {...saved, session: w.sessionId})
     await restoreWake($, w, key)
   }
   w.restoring = false
   w.timer = $.clock.every(POLL_MS, () => { void tick($) })
   await tick($)
 }
+/**
+ * Lets go of the room when a /clear or an in-process /resume ends the session: polling stops and the lease is freed, so the next session's
+ * watch holds it at its first poll. The watch stays readable, so a wake's guard and saves hold until that one starts.
+ */
+export async function roomEnded($: EngineInterface): Promise<void> {
+  const w = watch
+  if (!w) return
+  w.isEnded = true
+  w.timer?.cancel()
+  w.presence?.stop()
+  w.presence = undefined
+  stopTyping(w)
+  if (w.phase.kind !== 'watching') return
+  const key = 'lease/' + prefix(w, w.phase.me.id)
+  const lease = await $.store.get(key) as {session?: string} | undefined
+  if (lease?.session === w.sessionId) await $.store.delete(key)
+}
 export async function roomChanged($: EngineInterface): Promise<void> {
   if (watch) await saveWake($, watch)
 }
+/**
+ * Settles a wake whose turn ended. A turn during which the post tool went missing could not reply, so its mentions stay
+ * pending and wake the session again once the tool is back; a reply it did post has already settled its thread.
+ */
 export async function roomSettle($: EngineInterface, batch: Batch): Promise<void> {
-  if (watch) await settle($, watch, batch)
+  if (!watch) return
+  if (isPostLost || !await isPostListed($)) {
+    $.ui.log('fleet-room: the post tool went missing during a wake turn; its unanswered mentions stay pending.')
+    return
+  }
+  await settle($, watch, batch)
 }
 export function roomSubmitted($: EngineInterface, batch: Batch): void {
   if (watch) startTyping($, watch, batch.items.map(item => item.conversation.id))
@@ -169,6 +225,7 @@ async function holdLease($: EngineInterface, w: Watch, me: Me): Promise<boolean>
   const key = 'lease/' + prefix(w, me.id)
   const now = await $.clock.now()
   const value = await $.store.get(key) as {session?: string, until?: number} | undefined
+  if (w.isEnded) return false
   if (value && value.session !== w.sessionId && typeof value.until === 'number' && value.until > now) return false
   await $.store.set(key, {session: w.sessionId, until: now + LEASE_MS})
   const held = await $.store.get(key) as {session?: string} | undefined
@@ -204,7 +261,7 @@ async function persist($: EngineInterface, w: Watch, conv: Conv): Promise<void> 
 }
 async function poll($: EngineInterface, isScheduled: boolean): Promise<void> {
   const w = watch
-  if (!w || w.phase.kind === 'stopped') return
+  if (!w || w.phase.kind === 'stopped' || w.isEnded) return
   try {
     if (w.link.health.kind === 'halt') throw new DiscordFailure(w.link.health)
     if (w.link.health.kind === 'wait' && w.link.health.until > await $.clock.now()) return
@@ -224,7 +281,11 @@ async function poll($: EngineInterface, isScheduled: boolean): Promise<void> {
       w.presence = undefined
       return
     }
-    if (isScheduled) w.leaseTicks++
+    if (isScheduled) {
+      w.leaseTicks++
+      // No event tells a mod its tools were dropped, so each scheduled poll checks that the post tool is still listed.
+      await canReply($)
+    }
     if (w.leaseTicks >= 2 && !w.presence) w.presence = holdPresence($, w.link.token, event => onGateway($, event))
     const active = need(await activeThreads($, w.link, w.phase.guild, w.room.channel))
     const conversations = [...new Map([w.phase.roomChannel, ...active.map(thread => thread.conversation), ...[...w.convs.values()].map(conv => conv.conversation)].map(conv => [conv.id, conv])).values()]
@@ -301,10 +362,12 @@ async function poll($: EngineInterface, isScheduled: boolean): Promise<void> {
     throw error
   }
 }
-export function roomCompose(): { wake: Batch, text: string } | undefined {
+export async function roomCompose($: EngineInterface): Promise<{ wake: Batch, text: string } | undefined> {
   const w = watch
   if (!w || w.phase.kind !== 'watching' || w.leaseTicks < 2) return undefined
+  if (![...w.convs.values()].some(conv => conv.pending.length > 0) || !await canReply($)) return undefined
   const batch = compose([...w.convs.values()], 'w-' + crypto.randomUUID())
+  if (batch) isPostLost = false
   return batch && {wake: batch, text: wakeText(w.room, w.phase.me, batch).replaceAll(w.link.token, '[redacted]')}
 }
 async function settle($: EngineInterface, w: Watch, batch: Batch, only?: Snowflake): Promise<void> {
