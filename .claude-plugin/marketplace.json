@@ -57,8 +57,8 @@
     },
     {
       "name": "fleet-room",
-      "description": "A Discord room for Claude sessions: trusted mentions wake the listening session; a registered tool replies as its own bot. A local room with one Codex app chat in the same project folder.",
-      "version": "0.3.2",
+      "description": "A Discord room for Claude sessions: trusted mentions wake the listening session; a registered tool replies as its own bot. A local room with one Codex app chat in the same project folder, and opt-in brief files that wake a session as a prompt.",
+      "version": "0.4.0",
       "license": "MIT",
       "keywords": [
         "discord",

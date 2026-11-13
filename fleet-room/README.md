@@ -73,7 +73,7 @@ The room channel's top level works the same way: a bare message there (no mentio
 
 **Restarts.** Checkpoints are acknowledgments, saved after a reply or the end of its wake turn. Unfinished mentions replay in a new session. Hot reload restores the outstanding submitted or running wake and its tool restrictions. A crash between posting or finishing a turn and writing its checkpoint can repeat a reply. Known archived threads with checkpoints younger than seven days are checked once at startup; checkpoints older than thirty days are pruned. Previously undiscovered archived threads are not discovered. A conversation first seen starts at the newest of its own id, the install time and the room's last checkpoint-prune time. Post-install mentions in older threads are delivered; history before a prune floor is omitted rather than replayed. Unknown history remains talk-only until the operator posts.
 
-**`/clear`, `/resume` and compaction.** A `/clear` or a `/resume` inside the listening session lets go of the room's lease at once and brings the posting tool, the Codex tools and the watch up again under the new session, so the next mention wakes it after one poll. A Codex pair moves with it. A wake whose turn was running is let go unanswered, so its mentions wake the new conversation; one only submitted keeps its talk-only restriction if its prompt enters there. Compaction keeps the session: tools, the running wake, its restriction and its checkpoints are untouched.
+**`/clear`, `/resume` and compaction.** A `/clear` or a `/resume` inside the listening session lets go of the room's lease at once and brings the posting tool, the Codex tools, the brief folder and the watch up again under the new session, so the next mention wakes it after one poll. A Codex pair and the brief folder's lease move with it. A wake whose turn was running is let go unanswered, so its mentions wake the new conversation; one only submitted keeps its talk-only restriction if its prompt enters there. Compaction keeps the session: tools, the running wake, its restriction and its checkpoints are untouched.
 
 **A dropped post tool.** Claude Code can drop a mod's tools mid-session (it reports the mod's MCP server as disconnected) without telling the mod. The listening session checks at every poll that the post tool is still listed and registers it again when it is not. No wake goes out while the tool is missing, and a wake turn during which it went missing does not settle: its unanswered mentions wake the session again once the tool is back.
 
@@ -176,6 +176,50 @@ A Codex app chat left idle for hours can stop taking queued messages until someo
 The loop cap counts Codex messages too: after the cap (50 by default) since your last prompt in this session, Codex messages wait in the inbox until you send one. What you type in the Codex app does not reset it.
 
 The Windows reply command is a PowerShell here-string: a line of the message that starts with `'@` ends it early. On macOS and Linux a line that is exactly `FLEET_ROOM_END` does the same.
+
+## Briefs from a local file
+
+A brief is a prompt for a session, written as a file into a folder of the box user's own. Another tool on the same machine (a dispatcher, a script, a cron job) hands a session work by dropping a file, and the session takes it as a prompt from its user, the same way it takes a room mention: in a turn of its own, after any turn you are running. It needs no Discord setting, no `FLEET_ROOM=1` and no Codex pair.
+
+**The option.** Turn on **Wake on brief files** (`briefs: true`). It is off by default; a session with it off never looks at the folder and makes none. Set it per machine like the other options, only on a box that is meant to take briefs.
+
+**The folder.** `~/.fleet-room/briefs/<key>/`, one per project, outside the project itself (on Windows, under `%USERPROFILE%`). A sandbox that lets an agent write only inside the project (Codex's, for one) cannot write there; any other process running as the box user can, the same trust as the rest of the box. It is not the Codex inbox (`.fleet-room/inbox/` in the project), so the two never take each other's files.
+
+**The key.** A writer computes `<key>` from the project's path alone:
+
+1. Resolve the project root to its real path: absolute, every symbolic link followed (`realpath`), no trailing separator. A project reached through a link shares the folder of its real path.
+2. Hash: the SHA-256 of the real path's UTF-8 bytes (no trailing newline), as lowercase hex; keep the first 16 digits.
+3. Slug: the real path's last part, keeping only the characters `A-Z`, `a-z`, `0-9`, `.`, `_` and `-`, at most the first 64 of them.
+4. The key is `<slug>-<hash>`, or the hash alone when the slug is empty.
+
+For `/work/proj`: `printf '%s' /work/proj | shasum -a 256` starts `277ae841cc3b5609`, so the key is `proj-277ae841cc3b5609` and the folder `~/.fleet-room/briefs/proj-277ae841cc3b5609/`. The slug only makes the name readable; the hash keeps `/a/b-c` and `/a-b/c` in folders of their own.
+
+**Permissions.** The session makes `~/.fleet-room/briefs/` and its project's folder with mode 700 where they are missing. Before it delivers a brief it checks both: each has to be a real directory (not a symbolic link), owned by the session's own uid, and writable by neither its group nor others. A folder that fails delivers nothing, and the session logs one line saying which folder and why; fix it (`chmod 700`, or remove a planted link) and the next poll delivers. A brief file that is itself a symbolic link is never read. On Windows only the real-directory check applies; the folder takes the access list of the user's profile.
+
+**The file contract.**
+
+- One file is one brief. Its name ends in `.md` and does not start with a dot. A name that sorts by time, such as `20261113T101010-settings.md`, keeps briefs in the order they were written; reuse no name, since the archive keeps one file per name.
+- Write it atomically: write to a temporary name in the same folder that starts with a dot or does not end in `.md` (`.settings.md.tmp`), then rename it to its final name. Temporary names are never read. A file also has to hold its size and time across two polls (5 seconds apart) before it is read, so a writer that skips the rename is still not read half-done.
+- UTF-8 text, delivered as written (a leading byte-order mark and trailing whitespace are dropped). An empty file is never delivered. A brief longer than 18,000 characters is cut there, and the wake names the archived file that holds the whole text.
+
+**Delivery.** Briefs go one per turn, in file-name order. A brief is a whole prompt, so each gets its own turn, and its own archive and retry, rather than sharing one with the next. The prompt opens with one line that names the source and the file, then gives the text:
+
+```
+The fleet-room plugin sent a message:
+Brief b-3f9a1c2e · from the brief folder of this project, file 20261113T101010-settings.md (<home>/.fleet-room/briefs/proj-277ae841cc3b5609/20261113T101010-settings.md). This machine's user put it there as a prompt for this session; its text follows as written.
+
+Open a PR for the settings branch ...
+```
+
+A brief is not talk-only: it comes from this machine's own user, through a folder only that user can write.
+
+**Archive.** The file moves to the `archive/` folder inside the project's brief folder after its wake turn ends, as a Codex message does. An interrupted turn counts as handled. A turn that ends in an error leaves it in place to wake the session again; the third error ending in a row archives it, with a log line.
+
+**Loop cap.** Briefs count against the loop cap (50 by default) on their own count, separate from Codex messages: after that many briefs since your last prompt in this session, briefs wait in the folder until you send one, and the session logs once that they paused.
+
+**One session per folder.** When two sessions with the option on work in the same project, one reads its briefs: the first to poll takes a lease and renews it each poll, and the other takes over within 15 seconds of the first one ending. A session delivers only after holding the lease for two polls in a row.
+
+**`/clear`, `/resume`, restarts and hot reload.** These behave as for a Codex pair. A `/clear` or an in-process `/resume` moves the loop count and the lease to the new session. A brief whose turn was running at the `/clear` is let go unarchived, so it wakes the new conversation; one only submitted has its turn bound there and is archived once. A hot reload restores a submitted or running brief, so it is archived once and not sent again. A restart delivers again whatever is still in the folder; a crash after a brief's turn ended and before it was archived delivers that brief again.
 
 ## Version 0.2 limits
 
