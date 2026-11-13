@@ -211,23 +211,26 @@ export async function codexCompose($: EngineInterface): Promise<{ wake: CodexWak
   }
   return {wake: {marker, files, late}, text: [...head, ...lines].join('\n')}
 }
+/** Copies each file still in `from` into `archive`, then removes the originals; a file already gone is skipped. */
+export async function archiveFiles($: EngineInterface, isWindows: boolean, from: string, archive: string, names: readonly string[]): Promise<void> {
+  const archived: string[] = []
+  for (const name of names) {
+    const path = joined(isWindows, from, name)
+    const text = await $.fs.read(path).catch(() => undefined)
+    if (text === undefined) continue
+    await $.fs.write(joined(isWindows, archive, name), text)
+    archived.push(path)
+  }
+  if (!archived.length) return
+  const run = isWindows
+    ? await $.process.run(powershell("foreach ($p in ($env:FLEET_ROOM_FILES -split \"`n\")) { Remove-Item -LiteralPath $p -Force }"), {env: {FLEET_ROOM_FILES: archived.join('\n')}})
+    : await $.process.run(['rm', '-f', '--', ...archived])
+  if (run.exitCode !== 0) throw new Error('could not remove archived files')
+}
 export async function codexSettle($: EngineInterface, wake: CodexWake): Promise<void> {
   const l = local
   if (!l) return
-  const archived: string[] = []
-  for (const name of wake.files) {
-    const from = joined(l.isWindows, l.inbox, name)
-    const text = await $.fs.read(from).catch(() => undefined)
-    if (text === undefined) continue
-    await $.fs.write(joined(l.isWindows, l.archive, name), text)
-    archived.push(from)
-  }
-  if (archived.length) {
-    const run = l.isWindows
-      ? await $.process.run(powershell("foreach ($p in ($env:FLEET_ROOM_FILES -split \"`n\")) { Remove-Item -LiteralPath $p -Force }"), {env: {FLEET_ROOM_FILES: archived.join('\n')}})
-      : await $.process.run(['rm', '-f', '--', ...archived])
-    if (run.exitCode !== 0) throw new Error('could not remove inbox files')
-  }
+  await archiveFiles($, l.isWindows, l.inbox, l.archive, wake.files)
   const files = new Set(wake.files)
   l.ready = l.ready.filter(name => !files.has(name))
   for (const name of files) l.seen.delete(name)

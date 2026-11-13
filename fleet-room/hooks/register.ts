@@ -1,6 +1,7 @@
 import type { EngineInterface, Register, SessionAppendInput, ToolCallInput } from 'claude-code'
 import { activeThreads, capHistory, DiscordFailure, need, newest, openLink, roomOf, send, startThread, threadOf, whoAmI } from './discord'
 import type { Link } from './discord'
+import { briefsPrompted, resumeBriefs } from './briefs'
 import { chatsTool, humanPrompted, isCodexAvailable, pairTool, resumeLocal, sendTool } from './local'
 import { asSnowflake, capOf, capVerdict, setupOf, tailBots, tokenIn } from './room'
 import type { Conversation, Room, Setup, TokenSource } from './room'
@@ -137,15 +138,21 @@ async function startLocal($: EngineInterface, cap: number, ended?: string): Prom
   for (const tool of CODEX_TOOLS) await $.tool.register({...tool, isDeferred: true})
   try { await resumeLocal($, cap, ended) } catch { $.ui.log('fleet-room: local Codex mode did not start.') }
 }
+/** The brief folder runs only where the `briefs` option is on, so a session never set up for it ignores the folder. */
+async function startBriefs($: EngineInterface, options: Record<string, unknown>, ended?: string): Promise<void> {
+  if (options.briefs !== true) return
+  try { await resumeBriefs($, capOf(options), ended) } catch { $.ui.log('fleet-room: the brief folder did not start.') }
+}
 /**
  * Brings the tools and the watch up again after a /clear or an in-process /resume, which end the session without a
  * `session.start` for the next one. Waits until the session id has moved on; a rejected registration leaves it for the next turn to retry.
  */
-function rebind($: EngineInterface, cap: number, setup: Setup): Promise<void> {
+function rebind($: EngineInterface, options: Record<string, unknown>, setup: Setup): Promise<void> {
   rebinding ??= (async () => {
     const from = clearedFrom
     if (from === undefined || await $.session.id() === from) return
-    await startLocal($, cap, from)
+    await startLocal($, capOf(options), from)
+    await startBriefs($, options, from)
     await startRoom($, setup, from)
     clearedFrom = undefined
   })().catch(() => { $.ui.log('fleet-room: could not start again after the session changed; the next turn retries.', {to: 'debug'}) })
@@ -166,6 +173,7 @@ export const register: Register = (on, options) => {
     const started = await next(e)
     clearedFrom = undefined
     await startLocal($, capOf(options))
+    await startBriefs($, options)
     await startRoom($, setup)
     return started
   }).catch(($, e, next) => next(e))
@@ -177,7 +185,7 @@ export const register: Register = (on, options) => {
       await conversationEnded($)
     } catch { $.ui.log('fleet-room: could not let go of the ended session cleanly.', {to: 'debug'}) }
     const result = await next(e)
-    $.clock.after(0, () => { void rebind($, capOf(options), setup) })
+    $.clock.after(0, () => { void rebind($, options, setup) })
     return result
   }).catch(($, e, next) => next(e))
   on('tool.call', {tool: 'mcp__fleet-room__codex_chats'}, async ($, e) => chatsTool($, e))
@@ -187,11 +195,14 @@ export const register: Register = (on, options) => {
   on('tool.call', {tool: 'mcp__fleet-room__codex_send'}, async ($, e) => sendTool($, e))
     .catch(() => ({deny: 'fleet-room failed while sending to Codex; the message may already be queued. Tell the owner before repeating it.'}))
   on('prompt.submit', async ($, e, next) => {
-    if (HUMAN_ORIGINS.includes(e.origin.kind)) await humanPrompted($)
+    if (HUMAN_ORIGINS.includes(e.origin.kind)) {
+      await humanPrompted($)
+      await briefsPrompted($)
+    }
     return next(e)
   }).catch(($, e, next) => next(e))
   on('turn.start', async ($, e, next) => {
-    if (clearedFrom !== undefined && e.agentId === undefined) await rebind($, capOf(options), setup)
+    if (clearedFrom !== undefined && e.agentId === undefined) await rebind($, options, setup)
     await turnStarted($, e)
     return next(e)
   }).catch(($, e, next) => next(e))

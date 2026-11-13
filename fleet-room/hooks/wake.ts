@@ -1,4 +1,6 @@
 import type { EngineInterface, TurnCompleteInput, TurnStartInput } from 'claude-code'
+import { briefsChanged, briefsCompose, briefsSettle } from './briefs'
+import type { BriefWake } from './briefs'
 import { codexChanged, codexCompose, codexSettle } from './local'
 import type { CodexWake } from './local'
 import type { Batch } from './room'
@@ -6,7 +8,7 @@ import { roomChanged, roomCompose, roomReleased, roomSettle, roomSubmitted } fro
 
 const MAX_ERROR_ENDS = 3
 /** The inputs of the session's single wake slot, asked in this order; the first with something waiting fills it, so wakes never pile up. */
-const SOURCES = ['discord', 'codex'] as const
+const SOURCES = ['discord', 'codex', 'briefs'] as const
 export type SourceName = typeof SOURCES[number]
 /** A batch of input submitted as one plugin turn; `marker` is in its text and binds the turn that starts with it. */
 export type Wake = { marker: string }
@@ -18,6 +20,7 @@ const core: Core = { slot: {kind: 'free'}, main: undefined, errorEnds: 0, compos
 const SETTLE_FAILED: Record<SourceName, string> = {
   discord: 'fleet-room: could not save wake checkpoints; mentions may replay on a later poll.',
   codex: 'fleet-room: could not archive Codex messages; they may wake this session again.',
+  briefs: 'fleet-room: could not archive a brief; it may wake this session again.',
 }
 
 export const slot = (): Slot => core.slot
@@ -46,13 +49,15 @@ export async function conversationEnded($: EngineInterface): Promise<void> {
 async function changed($: EngineInterface): Promise<void> {
   await roomChanged($)
   await codexChanged($)
+  await briefsChanged($)
 }
 async function composeOf($: EngineInterface, source: SourceName): Promise<{ wake: Wake, text: string } | undefined> {
-  return source === 'discord' ? roomCompose($) : codexCompose($)
+  return source === 'discord' ? roomCompose($) : source === 'codex' ? codexCompose($) : briefsCompose($)
 }
 async function settleOf($: EngineInterface, source: SourceName, wake: Wake): Promise<void> {
   if (source === 'discord') await roomSettle($, wake as Batch)
-  else await codexSettle($, wake as CodexWake)
+  else if (source === 'codex') await codexSettle($, wake as CodexWake)
+  else await briefsSettle($, wake as BriefWake)
 }
 function released(source: SourceName): void {
   if (source === 'discord') roomReleased()

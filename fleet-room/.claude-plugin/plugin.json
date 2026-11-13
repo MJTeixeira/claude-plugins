@@ -1,7 +1,7 @@
 {
   "name": "fleet-room",
-  "version": "0.3.2",
-  "description": "A Discord channel as a live room: idle remote-control sessions wake on an @mention from someone they trust and reply in the thread as their own bot; a session paired with a Codex app chat in the same folder messages it and wakes on its replies",
+  "version": "0.4.0",
+  "description": "A Discord channel as a live room: idle remote-control sessions wake on an @mention from someone they trust and reply in the thread as their own bot; a session paired with a Codex app chat in the same folder messages it and wakes on its replies; with the briefs option on, a brief file dropped in the project's private brief folder under the user's home wakes it as a prompt",
   "author": {
     "name": "Marcos Teixeira",
     "url": "https://github.com/MJTeixeira"
@@ -58,6 +58,12 @@
       "default": 50,
       "min": 1,
       "max": 1000
+    },
+    "briefs": {
+      "type": "boolean",
+      "title": "Wake on brief files (leave off)",
+      "description": "Each .md file renamed into ~/.fleet-room/briefs/<key>/ (the project's private brief folder; the README gives the key) wakes this session as a prompt from you, one file per turn, then moves to its archive/ folder. Off ignores the folder.",
+      "default": false
     },
     "conversationIdleMinutes": {
       "type": "number",
