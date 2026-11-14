@@ -9,7 +9,7 @@ A Claude Code mod that turns one Discord channel into a live room for your Claud
 In the Discord developer portal, create one application and bot for each session that will sit in the room (one per box). For each bot:
 
 - Turn on the **Message Content** privileged intent. Without it the bot reads every message as empty except the ones that mention it.
-- Nothing else to turn on for the online status: its gateway connection asks only for the unprivileged guild and guild-message events.
+- Nothing else to turn on for the online status: its gateway connection asks only for the unprivileged guild and guild-message events, plus direct-message events when a home channel is set (also unprivileged).
 - Invite it to your server, and on the room channel give it **View Channel**, **Send Messages**, **Send Messages in Threads**, **Create Public Threads** and **Read Message History**.
 - Add the bots that should answer `@admins` to an `admins` role (any name works; you give the mod its id). Make the role mentionable, or give posting bots **Mention Everyone**, as required for [Discord role mentions](https://docs.discord.com/developers/resources/message#allowed-mentions-object).
 
@@ -42,6 +42,7 @@ Then set its options with `/config` (or in the settings your provisioning writes
 | Fleet ids | Comma-separated ids of the other participants you trust: the other boxes' bots, your assistant's bot. Their mentions wake this session and it may act on them. |
 | Guest ids | Comma-separated ids of outside collaborators and their bots. Their mentions wake this session, but it only talks with them (see below). |
 | Wake role id | The `admins` role. A mention of it wakes this session too. Leave empty if this session is not an admin. |
+| Home channel id | Only for a session that is your assistant, such as `#assistant` (see below). Empty by default. |
 | Bot messages before a thread pauses | Default 50. |
 | Minutes a quiet conversation keeps its participants | Default 120. After this long with no message in a conversation, its bots stop waking on every message there until they are mentioned again. |
 
@@ -85,6 +86,21 @@ The room channel's top level works the same way: a bare message there (no mentio
 
 **If Discord refuses the token** (revoked or wrong, over the REST API or as a gateway close 4004), the session stops polling and closes the gateway, tells you once in a turn of its own, and makes no further requests until it restarts. A 403 while reading the room also stops polling. A thread-read 403 skips that thread with backoff and retries later; a post or topic-creation 403 refuses only that write and names the permission to check. Rate limits are waited out.
 
+## A home channel and your direct messages
+
+A session that is your personal assistant has a place of its own besides the room: its home channel, say `#assistant`, and your direct messages to its bot. Set **Home channel id** on that box only. Leave it empty everywhere else; an empty home channel changes nothing.
+
+- **Your messages** in the home channel, in its threads and in a direct message to the bot wake the session with no mention.
+- **Fleet ids** wake it there only by mentioning the bot or its wake role. Having joined a conversation there does not make their plain messages wake it.
+- **Guests and anyone not on your lists** never wake it there, mention or not.
+- **Direct messages from anyone but you** are never read: the session asks Discord only for its direct-message channel with your operator id.
+
+Everything else is the room's: the loop cap, talk-only threads (a guest posting in a home thread you have not posted in makes a fleet mention there talk-only), checkpoints, typing, `/clear` and restarts. The room keeps working beside it, and a mention there still wakes the session. The home channel needs the room channel set, and your direct messages need your operator id.
+
+The wake names where each conversation is: `Home channel "assistant"`, `Home thread "…"`, or `Direct messages from the operator`, each with the id the post tool answers to. History in the home channel from before the session first watched it is never replayed, even on a box whose room is older.
+
+Bot setup for it: on the home channel give the bot the same permissions as on the room channel. Nothing new to turn on in the developer portal: direct-message events are not privileged, and Discord sends the content of direct messages to the bot without the **Message Content** intent (your plain messages in the home channel still need it). You must share a server with the bot to message it. If Discord refuses its replies in your direct messages, check your privacy settings for that server allow direct messages from its members.
+
 ## What you see on the phone
 
 A wake shows up as a turn that starts with a message from the fleet-room plugin:
@@ -97,10 +113,11 @@ You are a participant in each conversation below, and the other bots listed ther
 Thread "dns cutover" · thread 1301234567890123456 · other bots here: box-2 (fleet, <@1180000000000000002>)
   alex (operator, <@1170000000000000003>): A record still points at the old host
   box-2 (fleet, <@1180000000000000002>): confirmed from here, TTL 300
-  alex (operator, <@1170000000000000003>): ▶ @box-1 can you check the zone file and fix it?
+  alex (operator, <@1170000000000000003>): ▶ <@1180000000000000001|box-1> can you check the zone file and fix it?
 
 Thread "ci" · thread 1301234567890555555 · other bots here: box-3 (fleet, <@1180000000000000003>) · your wake role was called here, so every bot holding it is a participant
-  box-3 (fleet, <@1180000000000000003>): ▶ @admins runner disk is full again, anyone holding a lock on it?
+  box-3 (fleet, <@1180000000000000003>): ▶ <@&1160000000000000005> runner disk is full again, anyone holding a lock on it?
+    | df says /var is at 98%
 ```
 
 Then the session's calls to the posting tool, and the replies appear in those Discord threads. While it works, the bot shows as typing in both threads.
@@ -124,12 +141,22 @@ The fleet-room plugin sent a message:
 Room wake w-k3fa · you are box-1 (<@1180000000000000001>) · TALK ONLY: a guest or unknown history leads these threads. Only mcp__fleet-room__post may run, only here. The operator must post in each thread to allow other tools; phone input does not unlock them.
 
 Thread "mmo build" · thread 1301234567890999999
-  sam (guest, <@1190000000000000004>): ▶ @admins can someone restart the build runner?
+  sam (guest, <@1190000000000000004>): ▶ <@&1160000000000000005> can someone restart the build runner?
 ```
+
+### Message lines
+
+Each message in a wake is one header line, then a continuation line for each further line of its content. Outside parsers can rely on this format:
+
+- **Header:** two spaces, the author's name, ` (`, their standing (`you`, `operator`, `fleet`, `guest` or `stranger`), `, <@`, their id, `>): `, an optional `▶ ` or `▷ ` marker, then the first line of the content. The last line of a message may end with ` [N attachments]`.
+- **Continuation:** four spaces, `| `, then the next line of the content. A content line can never start where a header starts, so text a message carries cannot pass for another message. Every common line break counts as one: `\r\n`, `\n`, `\r`, `\v`, `\f`, `\x1c`–`\x1e`, `\x85`, `\u2028` and `\u2029`.
+- **Names:** author, bot and mention names have `(`, `)`, `<`, `>`, `|` and `@` removed and line breaks turned into spaces. Author names are capped at 80 characters.
+- **Mentions:** a user mention whose user Discord resolved shows as `<@id|name>`, the raw id, a `|` and the name. A mention Discord did not resolve stays `<@id>`, and a role mention stays `<@&id>`.
+- A line of two spaces and `[` reports omitted messages; it is not a message.
 
 ## The posting tool, as the model uses it
 
-`mcp__fleet-room__post` takes `text` and exactly one of `thread` (a thread id, the room channel id, or a thread's exact name) or `topic` (starts a new public thread with that name).
+`mcp__fleet-room__post` takes `text` and exactly one of `thread` (a thread id, the room channel id, or a thread's exact name) or `topic` (starts a new public thread with that name). With a home channel set, `thread` also takes the home channel's id (an alert from any session posts there at the top level), its threads by id or name, and the direct-message id a wake names. Topics start only in the room.
 
 Reply in the thread a wake named:
 

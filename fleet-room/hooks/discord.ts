@@ -1,6 +1,6 @@
 import type { EngineInterface } from 'claude-code'
-import { asSnowflake, isHuman, isNewer } from './room'
-import type { Conversation, Me, Message, Snowflake } from './room'
+import { asSnowflake, isHuman, isNewer, nameLabel } from './room'
+import type { Conversation, Me, Message, Place, Snowflake } from './room'
 
 const API = 'https://discord.com/api/v10'
 const USER_AGENT = 'DiscordBot (https://github.com/MJTeixeira/claude-plugins, 0.2.1)'
@@ -12,8 +12,10 @@ export type Failure =
   | { kind: 'wait', until: number, why: string }
   | { kind: 'error', why: string, status?: number }
 export type Outcome<T> = { kind: 'ok', value: T } | Failure
-export type Link = { readonly token: string, health: { kind: 'ok' } | Failure, denied: Map<string, {until: number, attempts: number}>, channel?: Snowflake }
-export const openLink = (token: string): Link => ({ token, health: { kind: 'ok' }, denied: new Map() })
+/** `channel` is the room channel, whose read refusal stops the link; `channels` holds every channel that is not a thread, for naming a post refusal. */
+export type Link = { readonly token: string, health: { kind: 'ok' } | Failure, denied: Map<string, {until: number, attempts: number}>, channel?: Snowflake,
+  channels: Set<string> }
+export const openLink = (token: string): Link => ({ token, health: { kind: 'ok' }, denied: new Map(), channels: new Set() })
 export class DiscordFailure extends Error {
   constructor(readonly outcome: Failure) { super(outcome.why) }
 }
@@ -47,13 +49,13 @@ const parseMessage = (value: unknown): Message => {
   const bots = new Set(arrayOf(wire.mentions).filter(value => objectOf(value).bot === true).map(value => objectOf(value).id))
   const names = new Map(mentions.map(me => [me.id as string, me.name]))
   return { id: idOf(wire.id), author: { ...meOf(author), isBot: author.bot === true || wire.webhook_id !== undefined },
-    content: nameOf(wire.content).replace(/<@!?(\d+)>/g, (match, id: string) => names.has(id) ? '@' + names.get(id) : match),
+    content: nameOf(wire.content).replace(/<@!?(\d+)>/g, (match, id: string) => names.has(id) ? '<@' + id + '|' + nameLabel(names.get(id)!, 80) + '>' : match),
     mentions: mentions.map(me => me.id), mentionedBots: mentions.filter(me => bots.has(me.id)), roles: arrayOf(wire.mention_roles).map(idOf),
     attachments: wire.attachments === undefined ? 0 : arrayOf(wire.attachments).length }
 }
-const threadInfo = (value: unknown): ThreadInfo => {
+const threadInfo = (value: unknown, place: Place): ThreadInfo => {
   const wire = objectOf(value)
-  return { conversation: { id: idOf(wire.id), name: nameOf(wire.name), isRoomChannel: false }, parent: idOf(wire.parent_id),
+  return { conversation: { id: idOf(wire.id), name: nameOf(wire.name), place, isThread: true }, parent: idOf(wire.parent_id),
     lastMessage: typeof wire.last_message_id === 'string' ? asSnowflake(wire.last_message_id) : undefined }
 }
 async function call<T>($: EngineInterface, link: Link, scope: 'room' | 'conversation', method: 'GET' | 'POST', path: string,
@@ -72,7 +74,7 @@ async function call<T>($: EngineInterface, link: Link, scope: 'room' | 'conversa
       const stopsLink = response.status === 401 || (isRead && (resource === link.channel || scope === 'room'))
       const permission = isRead ? 'View Channel and Read Message History'
         : path.endsWith('/threads') ? 'Create Public Threads'
-        : resource === link.channel ? 'Send Messages' : 'Send Messages in Threads'
+        : resource !== undefined && link.channels.has(resource) ? 'Send Messages' : 'Send Messages in Threads'
       const failure: Failure = stopsLink
         ? {kind: 'halt', scope: 'room', why: response.status === 401 ? 'Discord refused the bot token' : 'Discord room read denied; check ' + permission}
         : isRead ? {kind: 'halt', scope: 'conversation', why: 'Discord thread read denied; check ' + permission + '. Retrying after backoff.'}
@@ -105,24 +107,48 @@ export function whoAmI($: EngineInterface, link: Link): Promise<Outcome<Me>> {
   return call($, link, 'room', 'GET', '/users/@me', meOf)
 }
 
-export function roomOf($: EngineInterface, link: Link, channel: Snowflake): Promise<Outcome<{ guild: Snowflake, conversation: Conversation }>> {
-  return call($, Object.assign(link, {channel}), 'room', 'GET', '/channels/' + channel, value => {
+export type ChannelInfo = { guild: Snowflake, conversation: Conversation }
+const channelInfo = (link: Link, channel: Snowflake, place: Place) => (value: unknown): ChannelInfo => {
+  const wire = objectOf(value)
+  if (idOf(wire.id) !== channel) throw new Error('Wrong channel')
+  link.channels.add(channel)
+  return { guild: idOf(wire.guild_id), conversation: { id: channel, name: nameOf(wire.name), place, isThread: false } }
+}
+export function roomOf($: EngineInterface, link: Link, channel: Snowflake): Promise<Outcome<ChannelInfo>> {
+  return call($, Object.assign(link, {channel}), 'room', 'GET', '/channels/' + channel, channelInfo(link, channel, 'room'))
+}
+/** The home channel. A refusal to read it is the home's alone: it never stops the room. */
+export function homeOf($: EngineInterface, link: Link, channel: Snowflake): Promise<Outcome<ChannelInfo>> {
+  return call($, link, 'conversation', 'GET', '/channels/' + channel, channelInfo(link, channel, 'home'))
+}
+/** The bot's direct-message channel with `user`; Discord returns the one that exists rather than opening another. */
+export function dmWith($: EngineInterface, link: Link, user: Snowflake): Promise<Outcome<Conversation>> {
+  return call($, link, 'conversation', 'POST', '/users/@me/channels', value => {
     const wire = objectOf(value)
-    if (idOf(wire.id) !== channel) throw new Error('Wrong channel')
-    return { guild: idOf(wire.guild_id), conversation: { id: channel, name: nameOf(wire.name), isRoomChannel: true } }
-  })
+    if (Number(wire.type) !== 1) throw new Error('Not a direct-message channel')
+    const id = idOf(wire.id)
+    link.channels.add(id)
+    return { id, name: 'direct messages', place: 'dm', isThread: false }
+  }, { recipient_id: user })
 }
 
-export function activeThreads($: EngineInterface, link: Link, guild: Snowflake, channel: Snowflake): Promise<Outcome<ThreadInfo[]>> {
-  return call($, link, 'room', 'GET', '/guilds/' + guild + '/threads/active', value => arrayOf(objectOf(value).threads)
-    .filter(value => objectOf(value).parent_id === channel).map(threadInfo))
+/** The server's active threads whose parent is one of `parents`; `scope` 'conversation' keeps a refusal from stopping the room. */
+export function activeThreads($: EngineInterface, link: Link, guild: Snowflake, parents: ReadonlyMap<string, Place>,
+  scope: 'room' | 'conversation' = 'room'): Promise<Outcome<ThreadInfo[]>> {
+  return call($, link, scope, 'GET', '/guilds/' + guild + '/threads/active', value => arrayOf(objectOf(value).threads).flatMap(value => {
+    const parent = objectOf(value).parent_id
+    const place = typeof parent === 'string' ? parents.get(parent) : undefined
+    return place ? [threadInfo(value, place)] : []
+  }))
 }
 
-export function threadOf($: EngineInterface, link: Link, id: Snowflake, channel: Snowflake): Promise<Outcome<ThreadInfo | undefined>> {
+/** A thread whose parent is one of `parents`, each mapped to the place its threads belong to. */
+export function threadOf($: EngineInterface, link: Link, id: Snowflake, parents: ReadonlyMap<string, Place>): Promise<Outcome<ThreadInfo | undefined>> {
   return call($, link, 'conversation', 'GET', '/channels/' + id, value => {
     const wire = objectOf(value)
-    if (wire.parent_id !== channel || ![10, 11, 12].includes(Number(wire.type))) return undefined
-    const thread = threadInfo(wire)
+    const place = typeof wire.parent_id === 'string' ? parents.get(wire.parent_id) : undefined
+    if (!place || ![10, 11, 12].includes(Number(wire.type))) return undefined
+    const thread = threadInfo(wire, place)
     if (thread.conversation.id !== id) throw new Error('Wrong thread')
     return thread
   })
@@ -195,7 +221,7 @@ export async function send($: EngineInterface, link: Link, conversation: Snowfla
   return { kind: 'ok', value: ids }
 }
 export function startThread($: EngineInterface, link: Link, channel: Snowflake, name: string): Promise<Outcome<Conversation>> {
-  return call($, link, 'room', 'POST', '/channels/' + channel + '/threads', value => ({ id: idOf(objectOf(value).id), name, isRoomChannel: false }), { name, type: 11 })
+  return call($, link, 'room', 'POST', '/channels/' + channel + '/threads', value => ({ id: idOf(objectOf(value).id), name, place: 'room' as const, isThread: true }), { name, type: 11 })
 }
 /** Shows the bot typing in `conversation` for about ten seconds. Best-effort: it never changes the link's health and reports only whether Discord took it. */
 export async function typing($: EngineInterface, link: Link, conversation: Snowflake): Promise<boolean> {

@@ -27,8 +27,9 @@ const eventOf = (line: string): GatewayEvent | undefined => {
 /**
  * Keeps the gateway helper running under node so the bot shows online, restarting it with backoff when it exits on its own.
  * The helper reconnects by itself; a fatal close or an unsupported runtime ends it for good. Ending the read loop kills the child.
+ * `dms` asks it for direct-message events too.
  */
-export function holdPresence($: EngineInterface, token: string, onEvent: (event: GatewayEvent) => Promise<void>): Presence {
+export function holdPresence($: EngineInterface, token: string, dms: boolean, onEvent: (event: GatewayEvent) => Promise<void>): Presence {
   let stream: AsyncGenerator<ProcessSpawnChunk, ProcessSpawnResult> | undefined
   let timer: Timer | undefined
   const presence: Presence = { isStopped: false, stop: () => {
@@ -41,7 +42,7 @@ export function holdPresence($: EngineInterface, token: string, onEvent: (event:
     let isReady = false
     let buffer = ''
     try {
-      stream = $.process.spawn({ argv: ['node', $.plugin.root + '/bin/gateway.mjs'], input: JSON.stringify({ token }) })
+      stream = $.process.spawn({ argv: ['node', $.plugin.root + '/bin/gateway.mjs'], input: JSON.stringify(dms ? { token, dms } : { token }) })
       for await (const chunk of stream) {
         if (presence.isStopped) break
         if (chunk.stream === 'stderr') { $.ui.log('fleet-room gateway: ' + chunk.text.replaceAll(token, '[redacted]').trim(), { to: 'debug' }); continue }
