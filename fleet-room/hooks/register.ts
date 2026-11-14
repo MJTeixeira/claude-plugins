@@ -1,11 +1,11 @@
 import type { EngineInterface, Register, SessionAppendInput, ToolCallInput } from 'claude-code'
-import { activeThreads, capHistory, DiscordFailure, need, newest, openLink, roomOf, send, startThread, threadOf, whoAmI } from './discord'
+import { activeThreads, capHistory, dmWith, DiscordFailure, homeOf, need, newest, openLink, roomOf, send, startThread, threadOf, whoAmI } from './discord'
 import type { Link } from './discord'
 import { briefsPrompted, resumeBriefs } from './briefs'
 import { chatsTool, humanPrompted, isCodexAvailable, pairTool, resumeLocal, sendTool } from './local'
-import { asSnowflake, capOf, capVerdict, setupOf, tailBots, tokenIn } from './room'
+import { asSnowflake, capOf, capVerdict, isDmOn, setupOf, tailBots, tokenIn } from './room'
 import type { Conversation, Room, Setup, TokenSource } from './room'
-import { answered, guard, postScope, registerPost, roomEnded, startWatch } from './watch'
+import { answered, guard, parentsOf, postScope, registerPost, roomEnded, startWatch } from './watch'
 import { conversationEnded, turnEnded, turnStarted } from './wake'
 
 const TOOL = 'mcp__fleet-room__post'
@@ -51,11 +51,20 @@ const targetOf = async ($: EngineInterface, config: Configured, thread: string):
   const id = asSnowflake(thread)
   const meta = need(await roomOf($, link, room.channel))
   if (id === room.channel) return meta.conversation
-  if (id) return need(await threadOf($, link, id, room.channel))?.conversation ?? {refused: 'That id is not a thread of the room.'}
-  const active = need(await activeThreads($, link, meta.guild, room.channel))
+  const home = room.home && (id === undefined || id === room.home) ? need(await homeOf($, link, room.home)) : undefined
+  if (home && id === room.home) return home.conversation
+  if (id) {
+    const found = need(await threadOf($, link, id, parentsOf(room)))?.conversation
+    if (found) return found
+    if (!isDmOn(room)) return {refused: room.home ? 'That id is not a thread of the room or the home channel.' : 'That id is not a thread of the room.'}
+    const dm = need(await dmWith($, link, room.operator))
+    return dm.id === id ? dm : {refused: 'That id is not a thread of the room or the home channel, nor the operator\'s direct messages.'}
+  }
+  const active = [...need(await activeThreads($, link, meta.guild, parentsOf(room))),
+    ...home && home.guild !== meta.guild ? need(await activeThreads($, link, home.guild, new Map([[home.conversation.id, 'home' as const]]), 'conversation')) : []]
   const matches = active.filter(item => item.conversation.name === thread)
   return matches.length === 1 ? matches[0]!.conversation : {refused: matches.length > 1 ? 'More than one thread has that name; use its id.'
-    : 'No active room thread by that name. Active: ' + (active.map(item => item.conversation.name).join(', ') || 'none')}
+    : 'No active ' + (room.home ? '' : 'room ') + 'thread by that name. Active: ' + (active.map(item => item.conversation.name).join(', ') || 'none')}
 }
 const post = async ($: EngineInterface, config: Configured, raw: Record<string, unknown>): Promise<{result: string} | {deny: string}> => {
   const {link, room} = config
@@ -130,7 +139,7 @@ async function startRoom($: EngineInterface, setup: Setup, ended?: string): Prom
   if (!token) { $.ui.log('fleet-room: idle (no bot token).', {to: 'debug'}); return }
   for (const problem of setup.problems) $.ui.log('fleet-room: ' + problem)
   configured = {link: openLink(token), room: setup.room, tokenPaths: paths}
-  await registerPost($)
+  await registerPost($, setup.room)
   if (await $.env.get('FLEET_ROOM') === '1') await startWatch($, setup.room, configured.link, ended)
 }
 async function startLocal($: EngineInterface, cap: number, ended?: string): Promise<void> {

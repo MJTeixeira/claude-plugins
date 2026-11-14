@@ -1,5 +1,5 @@
 // Holds a Discord gateway (v10) session so the bot shows online while the listening session lives.
-// The fleet-room mod starts it with `node gateway.mjs`, writes {"token": ...} on stdin, and reads one JSON event per stdout line.
+// The fleet-room mod starts it with `node gateway.mjs`, writes {"token": ..., "dms": true?} on stdin, and reads one JSON event per stdout line.
 import { resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -7,6 +7,13 @@ export const GATEWAY_URL = 'wss://gateway.discord.gg'
 const QUERY = '/?v=10&encoding=json'
 /** GUILDS (thread creates) and GUILD_MESSAGES (which channel got a message); neither is privileged. */
 export const INTENTS = 1 | (1 << 9)
+/** DIRECT_MESSAGES adds which direct-message channel got a message; it is not privileged either. */
+export const DM_INTENTS = INTENTS | (1 << 12)
+/**
+ * The intents for the helper's stdin request: direct-message events only when the mod reads the operator's direct messages.
+ * @param {{ token?: string, dms?: boolean }} request
+ */
+export const intentsOf = request => request.dms === true ? DM_INTENTS : INTENTS
 /** Close codes after which Discord refuses any reconnect: authentication failed, invalid shard, sharding required, invalid version or intents. */
 export const FATAL_CODES = new Set([4004, 4010, 4011, 4012, 4013, 4014])
 /** Close codes after which the session cannot resume and must identify again. */
@@ -151,8 +158,8 @@ const main = async () => {
   }
   let input = ''
   for await (const chunk of process.stdin) input += chunk
-  const { token } = JSON.parse(input)
-  runGateway({ token, WebSocket: globalThis.WebSocket, emit: event => {
+  const request = JSON.parse(input)
+  runGateway({ token: request.token, intents: intentsOf(request), WebSocket: globalThis.WebSocket, emit: event => {
     void write(event).then(() => { if (event.event === 'fatal') process.exit(2) })
   } })
 }

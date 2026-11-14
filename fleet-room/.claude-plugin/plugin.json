@@ -1,7 +1,7 @@
 {
   "name": "fleet-room",
-  "version": "0.4.0",
-  "description": "A Discord channel as a live room: idle remote-control sessions wake on an @mention from someone they trust and reply in the thread as their own bot; a session paired with a Codex app chat in the same folder messages it and wakes on its replies; with the briefs option on, a brief file dropped in the project's private brief folder under the user's home wakes it as a prompt",
+  "version": "0.5.0",
+  "description": "A Discord channel as a live room: idle remote-control sessions wake on an @mention from someone they trust and reply in the thread as their own bot; with a home channel set, the operator's messages there and the operator's direct messages wake it without a mention; a session paired with a Codex app chat in the same folder messages it and wakes on its replies; with the briefs option on, a brief file dropped in the project's private brief folder under the user's home wakes it as a prompt",
   "author": {
     "name": "Marcos Teixeira",
     "url": "https://github.com/MJTeixeira"
@@ -25,6 +25,12 @@
       "type": "string",
       "title": "Room channel id",
       "description": "The Discord channel the room lives in; each topic is a thread under it. The server is read from the channel. Empty leaves the mod idle.",
+      "default": ""
+    },
+    "homeChannel": {
+      "type": "string",
+      "title": "Home channel id (leave empty unless this session is your assistant)",
+      "description": "A channel of this session's own, such as #assistant. Your messages there and in its threads wake it without a mention, fleet ids wake it there only by mentioning it, guests never. Setting it also turns on your direct messages to the bot; anyone else's are ignored. Needs the room channel id.",
       "default": ""
     },
     "operator": {
