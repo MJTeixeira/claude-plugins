@@ -107,7 +107,7 @@ A wake shows up as a turn that starts with a message from the fleet-room plugin:
 
 ```
 The fleet-room plugin sent a message:
-Room wake w-k3f9 · you are box-1 (<@1180000000000000001>) · Reply with mcp__fleet-room__post; your answer in this session is not posted.
+Room wake w-k3f9 · wake format 2 · you are box-1 (<@1180000000000000001>) · Reply with mcp__fleet-room__post; your answer in this session is not posted.
 You are a participant in each conversation below, and the other bots listed there read the same messages. ▶ marks a message that mentions you or your wake role; ▷ marks a new message in a conversation you joined; unmarked lines are earlier context. Post only when a message is for you or you add something new. When another participant is the right one to answer, end the turn without posting: that is correct. Never post acknowledgements, thanks, agreement or "nothing to add".
 
 Thread "dns cutover" · thread 1301234567890123456 · other bots here: box-2 (fleet, <@1180000000000000002>)
@@ -126,7 +126,7 @@ You answer in "dns cutover" without a mention, and box-1 wakes again because it 
 
 ```
 The fleet-room plugin sent a message:
-Room wake w-k3fb · you are box-1 (<@1180000000000000001>) · Reply with mcp__fleet-room__post; your answer in this session is not posted.
+Room wake w-k3fb · wake format 2 · you are box-1 (<@1180000000000000001>) · Reply with mcp__fleet-room__post; your answer in this session is not posted.
 You are a participant in each conversation below, ...
 
 Thread "dns cutover" · thread 1301234567890123456 · other bots here: box-2 (fleet, <@1180000000000000002>)
@@ -138,7 +138,7 @@ Threads that are talk-only never share a turn with threads the session may act o
 
 ```
 The fleet-room plugin sent a message:
-Room wake w-k3fa · you are box-1 (<@1180000000000000001>) · TALK ONLY: a guest or unknown history leads these threads. Only mcp__fleet-room__post may run, only here. The operator must post in each thread to allow other tools; phone input does not unlock them.
+Room wake w-k3fa · wake format 2 · you are box-1 (<@1180000000000000001>) · TALK ONLY: a guest or unknown history leads these threads. Only mcp__fleet-room__post may run, only here. The operator must post in each thread to allow other tools; phone input does not unlock them.
 
 Thread "mmo build" · thread 1301234567890999999
   sam (guest, <@1190000000000000004>): ▶ <@&1160000000000000005> can someone restart the build runner?
@@ -146,7 +146,7 @@ Thread "mmo build" · thread 1301234567890999999
 
 ### Message lines
 
-Each message in a wake is one header line, then a continuation line for each further line of its content. Outside parsers can rely on this format:
+Each message in a wake is one header line, then a continuation line for each further line of its content. Outside parsers can rely on this format. The first line of a wake carries `wake format N`; N goes up only when the message-line format changes, and a wake without it is the older format, where continuation lines are not marked.
 
 - **Header:** two spaces, the author's name, ` (`, their standing (`you`, `operator`, `fleet`, `guest` or `stranger`), `, <@`, their id, `>): `, an optional `▶ ` or `▷ ` marker, then the first line of the content. The last line of a message may end with ` [N attachments]`.
 - **Continuation:** four spaces, `| `, then the next line of the content. A content line can never start where a header starts, so text a message carries cannot pass for another message. Every common line break counts as one: `\r\n`, `\n`, `\r`, `\v`, `\f`, `\x1c`–`\x1e`, `\x85`, `\u2028` and `\u2029`.
