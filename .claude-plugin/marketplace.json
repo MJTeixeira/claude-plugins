@@ -1,6 +1,6 @@
 {
   "name": "code4food",
-  "description": "code4food studio's Claude Code tooling: Live (skills for sessions with a human in the room), General (the skills live and factory sessions both use), Engines (godot and unity, per game repository) and seat-router (subagents on Codex and Antigravity CLIs), and fleet-room (Discord rooms for remote-control sessions, and a local room with a Codex app chat).",
+  "description": "code4food studio's Claude Code tooling: Live (skills for sessions with a human in the room), General (the skills live and factory sessions both use), Engines (godot and unity, per game repository), seat-router (subagents on Codex and Antigravity CLIs), fleet-room (Discord rooms for remote-control sessions, and a local room with a Codex app chat) and conduit (a companion session whose cards appear in a sidebar tab).",
   "owner": {
     "name": "Marcos Teixeira",
     "url": "https://github.com/MJTeixeira"
@@ -67,6 +67,19 @@
         "mod"
       ],
       "source": "./fleet-room"
+    },
+    {
+      "name": "conduit",
+      "description": "Pairs your session with a companion session on the same Claude account: it reads capped digests of your turns over native cross-session messages and answers with cards (suggest, note, ask) in a sidebar tab, never in the transcript. Modes on-call, watch and an opt-in autopilot.",
+      "version": "0.1.0",
+      "license": "MIT",
+      "keywords": [
+        "companion",
+        "sessions",
+        "cards",
+        "mod"
+      ],
+      "source": "./conduit"
     }
   ]
 }
