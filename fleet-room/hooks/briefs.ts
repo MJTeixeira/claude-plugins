@@ -2,17 +2,70 @@ import type { EngineInterface, Timer } from 'claude-code'
 import { isWindowsPath, joined } from './codex'
 import { archiveFiles } from './local'
 import { MAX_WAKE_CHARS } from './room'
-import { restore, slot, submitNext } from './wake'
+import { restore, slot, submitNext, trackTargeted } from './wake'
 
 export const BRIEF_POLL_MS = 5_000
 /** A lease another session stopped renewing (a crash, a closed terminal) frees after three polls. */
 const LEASE_MS = 3 * BRIEF_POLL_MS
 /** The most of one brief's text a wake carries; the rest stays readable in the archive. */
 export const MAX_BRIEF_CHARS = MAX_WAKE_CHARS - 2_000
+/** A targeted brief with no taker waits for 1 hour before the lease holder archives it as undelivered. */
+export const BRIEF_EXPIRY_MS = 60 * 60 * 1000
 
 type Waiting = { size: number, mtimeMs: number }
 /** A wake of the brief folder: the one brief file it delivers. */
-export type BriefWake = { marker: string, file: string }
+export type BriefWake = { marker: string, file: string, target?: string }
+export type ParsedBrief =
+  | { kind: 'untargeted', text: string }
+  | { kind: 'targeted', target: string, text: string }
+  | { kind: 'invalid' }
+export type BriefDecision = 'deliver' | 'leave' | 'expire' | 'invalid'
+
+const TARGET_HEADER_RE = /^to: ([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(?:\r?\n\r?\n)/
+
+/**
+ * A brief is targeted when its first line is exactly `to: <session id>` (lowercase UUID form), followed by one empty
+ * line. Both lines are stripped from the delivered text and do not count toward the 18,000-character limit.
+ * A file whose first line starts with `to: ` but does not make a valid header is invalid and never delivered.
+ * Only a file whose first line does not start with `to: ` is untargeted.
+ */
+export const parseBrief = (raw: string): ParsedBrief => {
+  const clean = raw.replace(/^\uFEFF/, '')
+  const match = TARGET_HEADER_RE.exec(clean)
+  if (match && match[1]) {
+    return { kind: 'targeted', target: match[1], text: clean.slice(match[0].length).trimEnd() }
+  }
+  if (clean.startsWith('to: ')) {
+    return { kind: 'invalid' }
+  }
+  return { kind: 'untargeted', text: clean.trimEnd() }
+}
+
+/**
+ * Decides whether to deliver, leave in place, expire or archive an invalid brief file.
+ * An invalid brief is moved to archive by the lease holder.
+ * A targeted brief skips the per-folder lease: only a session matching its target delivers it.
+ * With no taker, after 1 hour the lease holder moves it to archive as undelivered.
+ * Untargeted briefs require holding the folder lease.
+ */
+export const decideBrief = (
+  brief: ParsedBrief,
+  ownIds: string | readonly string[],
+  holdsLease: boolean,
+  ageMs: number,
+): BriefDecision => {
+  if (brief.kind === 'invalid') {
+    return holdsLease ? 'invalid' : 'leave'
+  }
+  if (brief.kind === 'targeted') {
+    const matches = typeof ownIds === 'string' ? ownIds === brief.target : ownIds.includes(brief.target)
+    if (matches) return 'deliver'
+    if (holdsLease && ageMs >= BRIEF_EXPIRY_MS) return 'expire'
+    return 'leave'
+  }
+  return holdsLease ? 'deliver' : 'leave'
+}
+
 type Saved = { v: 1, count: number, wake?: { kind: 'submitted' | 'running', wake: BriefWake, turnId?: string } }
 type Briefs = {
   sessionId: string, key: string, isWindows: boolean, base: string, folder: string, archive: string, cap: number, count: number,
@@ -71,6 +124,22 @@ export async function resumeBriefs($: EngineInterface, cap: number, ended?: stri
     const prior = savedOf(await $.store.get(keyOf(ended)))
     if (!saved && prior) {
       saved = prior
+      if (saved.wake) {
+        const wake = saved.wake.wake as BriefWake
+        if (wake.target !== undefined && wake.target !== sessionId) {
+          saved = { ...saved, wake: undefined }
+        } else if (wake.target === undefined) {
+          const text = await $.fs.read(joined(isWindows, folder, wake.file))
+            .catch(() => $.fs.read(joined(isWindows, folder, 'archive', wake.file)))
+            .catch(() => undefined)
+          if (text) {
+            const parsed = parseBrief(text)
+            if (parsed.kind === 'targeted' && parsed.target !== sessionId) {
+              saved = { ...saved, wake: undefined }
+            }
+          }
+        }
+      }
       await $.store.set(keyOf(sessionId), saved)
     }
     if (prior) await $.store.delete(keyOf(ended))
@@ -83,9 +152,21 @@ export async function resumeBriefs($: EngineInterface, cap: number, ended?: stri
   await isFolderSafe($, b)
   briefs = b
   if (saved?.wake) {
+    const wake = saved.wake.wake as BriefWake
+    if (wake.target !== undefined) {
+      trackTargeted(wake.marker, wake.target)
+    }
     restore(saved.wake.kind === 'running' && saved.wake.turnId !== undefined
       ? {kind: 'running', source: 'briefs', wake: saved.wake.wake, turnId: saved.wake.turnId}
       : {kind: 'submitted', source: 'briefs', wake: saved.wake.wake})
+  } else if (ended !== undefined) {
+    const current = slot()
+    if (current.kind === 'submitted' && current.source === 'briefs') {
+      const wake = current.wake as BriefWake
+      if (wake.target !== undefined && wake.target !== sessionId) {
+        restore({ kind: 'free' })
+      }
+    }
   }
   b.timer = $.clock.every(BRIEF_POLL_MS, () => { void pollBriefs($) })
 }
@@ -144,22 +225,40 @@ export function pollBriefs($: EngineInterface): Promise<void> {
 async function scan($: EngineInterface): Promise<void> {
   const b = briefs
   if (!b) return
-  if (!await holdLease($, b)) {
+  b.sessionId = await $.session.id()
+  const isHolder = await holdLease($, b)
+  if (isHolder) {
+    b.leaseTicks++
+  } else {
     b.leaseTicks = 0
-    b.ready = []
-    return
   }
-  b.leaseTicks++
   const entries = await $.fs.list(b.folder).catch(() => [])
   const seen = new Map<string, Waiting>()
   const ready: string[] = []
+  const now = await $.clock.now()
   for (const entry of entries) {
     // A symbolic link lists as `other`, so a link dropped in the folder is never read.
     if (entry.kind !== 'file' || entry.isLink || !isBriefName(entry.name)) continue
     const prior = b.seen.get(entry.name)
     // Renamed in whole, a brief also holds still across two polls; this keeps a writer that skipped the rename from being read half-done.
-    if (prior && entry.size > 0 && prior.size === entry.size && prior.mtimeMs === entry.mtimeMs) ready.push(entry.name)
+    const holdsStill = prior && entry.size > 0 && prior.size === entry.size && prior.mtimeMs === entry.mtimeMs
     seen.set(entry.name, {size: entry.size, mtimeMs: entry.mtimeMs})
+    if (!holdsStill) continue
+    const raw = await $.fs.read(joined(b.isWindows, b.folder, entry.name)).catch(() => undefined)
+    if (raw === undefined) continue
+    const parsed = parseBrief(raw)
+    const decision = decideBrief(parsed, b.sessionId, b.leaseTicks >= 2, now - entry.mtimeMs)
+    if (decision === 'expire') {
+      await archiveFiles($, b.isWindows, b.folder, b.archive, [entry.name])
+      $.ui.log('fleet-room: brief ' + entry.name + ' for target ' + (parsed.kind === 'targeted' ? parsed.target : '') + ' undelivered; moved to archive.')
+      seen.delete(entry.name)
+    } else if (decision === 'invalid') {
+      await archiveFiles($, b.isWindows, b.folder, b.archive, [entry.name])
+      $.ui.log('fleet-room: brief ' + entry.name + ' invalid target; moved to archive.')
+      seen.delete(entry.name)
+    } else if (decision === 'deliver' && parsed.kind !== 'invalid' && parsed.text.length > 0) {
+      ready.push(entry.name)
+    }
   }
   b.seen = seen
   b.ready = ready.sort()
@@ -167,8 +266,7 @@ async function scan($: EngineInterface): Promise<void> {
 }
 export async function briefsCompose($: EngineInterface): Promise<{ wake: BriefWake, text: string } | undefined> {
   const b = briefs
-  // A second held poll before the first wake keeps two sessions that both just started from delivering the same brief.
-  if (!b || b.leaseTicks < 2 || !b.ready.length) return undefined
+  if (!b || !b.ready.length) return undefined
   if (!await isFolderSafe($, b)) return undefined
   if (b.count >= b.cap) {
     if (!b.isCapLogged) {
@@ -178,17 +276,28 @@ export async function briefsCompose($: EngineInterface): Promise<{ wake: BriefWa
     return undefined
   }
   for (const name of [...b.ready]) {
-    const text = (await $.fs.read(joined(b.isWindows, b.folder, name)).catch(() => undefined))?.replace(/^﻿/, '').trimEnd()
-    if (text === undefined) {
+    const raw = await $.fs.read(joined(b.isWindows, b.folder, name)).catch(() => undefined)
+    if (raw === undefined) {
       b.ready = b.ready.filter(item => item !== name)
       continue
     }
-    const shown = text.length > MAX_BRIEF_CHARS
-      ? text.slice(0, MAX_BRIEF_CHARS) + '\n[cut here; the whole brief is at ' + joined(b.isWindows, b.archive, name) + ']' : text
+    const parsed = parseBrief(raw)
+    if (decideBrief(parsed, b.sessionId, b.leaseTicks >= 2, 0) !== 'deliver' || parsed.kind === 'invalid') {
+      b.ready = b.ready.filter(item => item !== name)
+      continue
+    }
+    const body = parsed.text
+    if (!body.length) {
+      b.ready = b.ready.filter(item => item !== name)
+      continue
+    }
+    const shown = body.length > MAX_BRIEF_CHARS
+      ? body.slice(0, MAX_BRIEF_CHARS) + '\n[cut here; the whole brief is at ' + joined(b.isWindows, b.archive, name) + ']' : body
     const marker = 'b-' + crypto.randomUUID().slice(0, 8)
     const head = 'Brief ' + marker + ' · from the brief folder of this project, file ' + name + ' (' + joined(b.isWindows, b.folder, name) + ').'
       + ' This machine\'s user put it there as a prompt for this session; its text follows as written.'
-    return {wake: {marker, file: name}, text: head + '\n\n' + shown}
+    const target = parsed.kind === 'targeted' ? parsed.target : undefined
+    return {wake: {marker, file: name, ...(target ? {target} : {})}, text: head + '\n\n' + shown}
   }
   return undefined
 }

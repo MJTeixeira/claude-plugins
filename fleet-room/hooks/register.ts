@@ -6,7 +6,7 @@ import { chatsTool, humanPrompted, isCodexAvailable, pairTool, resumeLocal, send
 import { asSnowflake, capOf, capVerdict, isDmOn, setupOf, tailBots, tokenIn } from './room'
 import type { Conversation, Room, Setup, TokenSource } from './room'
 import { answered, guard, parentsOf, postScope, registerPost, roomEnded, startWatch } from './watch'
-import { conversationEnded, turnEnded, turnStarted } from './wake'
+import { conversationEnded, targetedIn, turnEnded, turnStarted } from './wake'
 
 const TOOL = 'mcp__fleet-room__post'
 const CODEX_TOOLS = [
@@ -207,6 +207,13 @@ export const register: Register = (on, options) => {
     if (HUMAN_ORIGINS.includes(e.origin.kind)) {
       await humanPrompted($)
       await briefsPrompted($)
+    }
+    const targeted = targetedIn(e.text)
+    if (targeted) {
+      const sessionId = await $.session.id()
+      if (targeted.target !== sessionId) {
+        return {drop: 'targeted brief for another session'}
+      }
     }
     return next(e)
   }).catch(($, e, next) => next(e))

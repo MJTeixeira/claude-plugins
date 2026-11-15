@@ -7,6 +7,24 @@ import type { Batch } from './room'
 import { roomChanged, roomCompose, roomReleased, roomSettle, roomSubmitted } from './watch'
 
 const MAX_ERROR_ENDS = 3
+const MAX_TARGETED_TRACKED = 50
+const targetedMarkers = new Map<string, string>()
+
+export function trackTargeted(marker: string, target: string): void {
+  if (targetedMarkers.size >= MAX_TARGETED_TRACKED) {
+    const oldest = targetedMarkers.keys().next().value
+    if (oldest !== undefined) targetedMarkers.delete(oldest)
+  }
+  targetedMarkers.set(marker, target)
+}
+
+export function targetedIn(text: string): { marker: string, target: string } | undefined {
+  for (const [marker, target] of targetedMarkers) {
+    if (text.includes(marker)) return { marker, target }
+  }
+  return undefined
+}
+
 /** The inputs of the session's single wake slot, asked in this order; the first with something waiting fills it, so wakes never pile up. */
 const SOURCES = ['discord', 'codex', 'briefs'] as const
 export type SourceName = typeof SOURCES[number]
@@ -38,8 +56,17 @@ export function restore(next: Slot): void {
 export async function conversationEnded($: EngineInterface): Promise<void> {
   const current = core.slot
   if (current.kind === 'running') {
-    released(current.source)
+    if (current.source === 'briefs' && (current.wake as BriefWake).target !== undefined) {
+      await settleOf($, 'briefs', current.wake)
+    } else {
+      released(current.source)
+    }
     core.slot = {kind: 'free'}
+  } else if (current.kind === 'submitted') {
+    if (current.source === 'briefs' && (current.wake as BriefWake).target !== undefined) {
+      await settleOf($, 'briefs', current.wake)
+      core.slot = {kind: 'free'}
+    }
   }
   core.main = undefined
   core.errorEnds = 0
@@ -72,6 +99,12 @@ export async function submitNext($: EngineInterface): Promise<void> {
       core.slot = {kind: 'submitted', source, wake: next.wake}
       await changed($)
       if (source === 'discord') roomSubmitted($, next.wake as Batch)
+      if (source === 'briefs') {
+        const briefWake = next.wake as BriefWake
+        if (briefWake.target !== undefined) {
+          trackTargeted(briefWake.marker, briefWake.target)
+        }
+      }
       const marker = next.wake.marker
       // A submit resolves when its turn starts, which may wait behind the operator's turn.
       void $.prompt.submit({text: next.text})
@@ -92,6 +125,14 @@ async function dropped($: EngineInterface, marker: string): Promise<void> {
 }
 export async function turnStarted($: EngineInterface, e: TurnStartInput): Promise<void> {
   if (e.agentId !== undefined) return
+  const targeted = targetedIn(e.text)
+  if (targeted) {
+    const sessionId = await $.session.id()
+    if (targeted.target !== sessionId) {
+      await $.turn.abort({turnId: e.turnId}).catch(() => undefined)
+      return
+    }
+  }
   core.main = e.turnId
   const current = core.slot
   if (current.kind === 'submitted' && e.text.includes(current.wake.marker)) {
