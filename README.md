@@ -1,6 +1,6 @@
 # code4food plugins for Claude Code
 
-Five plugins, one marketplace:
+Six plugins, one marketplace:
 
 - **`code4food-live`** — skills for sessions with a human in the room:
   [mattpocock/skills](https://github.com/mattpocock/skills) retargeted at a
@@ -27,6 +27,11 @@ Five plugins, one marketplace:
   topic thread as its own bot. It also pairs a session with one Codex app chat
   in the same project folder, so the two message each other. See
   `fleet-room/README.md`.
+- **`conduit`** — pairs your session with a companion: another of your own
+  Claude Code sessions on the same Claude account. The companion reads short
+  digests of your turns and answers with cards (a prompt to send, a note, a
+  yes/no question) in a sidebar tab, never in the transcript. See
+  `conduit/README.md`.
 
 Use any of them. Everything below is the setup path.
 
@@ -39,6 +44,7 @@ Use any of them. Everything below is the setup path.
 /plugin install code4food-engines@code4food      # godot and unity
 /plugin install seat-router@code4food            # subagents on codex and agy
 /plugin install fleet-room@code4food             # Discord room for sessions
+/plugin install conduit@code4food                # a companion session's cards
 ```
 
 Requirements: **Node.js ≥ 18**, **git**, and the **Claude Code CLI** logged in

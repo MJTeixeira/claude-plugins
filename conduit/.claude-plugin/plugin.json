@@ -1,0 +1,47 @@
+{
+  "name": "conduit",
+  "version": "0.1.0",
+  "description": "Pairs this session with a companion session on the same Claude account: the companion reads capped digests of your turns and answers with cards (suggest, note, ask) in a sidebar tab, never in the transcript",
+  "author": {
+    "name": "Marcos Teixeira",
+    "url": "https://github.com/MJTeixeira"
+  },
+  "license": "MIT",
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "peer": {
+      "type": "string",
+      "title": "Companion session (leave empty to name it with /conduit on)",
+      "description": "The companion session's name as the native peer list shows it: another session on this machine, or a Remote Control session on the same Claude account.",
+      "default": ""
+    },
+    "startPaired": {
+      "type": "boolean",
+      "title": "Pair with the companion when a session starts (leave off)",
+      "description": "On: every new session pairs with the companion session above by itself, in the mode below. Off: pair with /conduit on.",
+      "default": false
+    },
+    "mode": {
+      "type": "string",
+      "title": "Mode a pairing starts in: on-call or watch (leave as on-call)",
+      "description": "on-call keeps digests here and sends them only when you press Ask or run /conduit ask; watch sends one on each prompt and each turn end. Autopilot is never started from here: run /conduit autopilot.",
+      "default": "on-call",
+      "options": ["on-call", "watch"]
+    },
+    "autopilotTurns": {
+      "type": "number",
+      "title": "Prompts autopilot may send before it stops (0 for no cap)",
+      "description": "Autopilot stops after the companion has sent this many prompts. 0 never stops it by count.",
+      "default": 20,
+      "min": 0,
+      "max": 10000
+    },
+    "autopilotPermissions": {
+      "type": "string",
+      "title": "Permission dialogs during autopilot: stop or approve (leave as stop)",
+      "description": "stop ends autopilot and leaves the dialog to you; approve allows the tool call and goes on. With approve and no cap, the session runs tools unattended until the companion says done.",
+      "default": "stop",
+      "options": ["stop", "approve"]
+    }
+  }
+}
