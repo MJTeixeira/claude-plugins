@@ -225,6 +225,15 @@ async function setMode($: EngineInterface, mode: Mode): Promise<string> {
   return mode + '.'
 }
 
+const MODES = ['on-call', 'watch', 'autopilot', 'off'] as const satisfies readonly Mode[]
+
+const modeOf = (value: string): Mode | undefined => MODES.find(mode => mode === value)
+
+/** A mode picked in the tab; autopilot entered there sends a digest at once, as `/conduit autopilot` does. */
+async function pickMode($: EngineInterface, mode: Mode): Promise<void> {
+  if (await setMode($, mode) === 'autopilot.') await sendDigest($)
+}
+
 async function tick($: EngineInterface): Promise<void> {
   const s = await read($, conduitState)
   if (s.mode === 'off') return
@@ -250,32 +259,38 @@ const statusLine = (s: Conduit, cap: number): string | undefined => {
 
 type Ui = ReturnType<EngineInterface['ui']['resolve']>
 
-function cardButtons($: EngineInterface, ui: Ui, card: Card, turn: Turn): RenderChildren[] {
-  const { Button, Text } = ui
+/** What closes a card: its one row of buttons while it waits on the person, else what became of it. */
+function cardFooter($: EngineInterface, ui: Ui, card: Card, turn: Turn): RenderChildren[] {
+  const { Box, Button, Text } = ui
+  const row = (buttons: RenderChildren[]) => <Box key={'actions-' + card.id} flexDirection="row" gap={1}>{buttons}</Box>
   if (card.kind === 'suggest' && card.status === 'new') {
+    const isRunning = turn.kind === 'running'
     return [
-      ...(turn.kind === 'running'
-        ? [<Button key={'stop-' + card.id} label="Stop and send" onPress={() => void stopAndSend($, card).catch(() => $.ui.toast('the turn could not be stopped; the suggestion was not sent.'))} />]
-        : []),
-      <Button key={'send-' + card.id} label="Send next" variant="primary" onPress={() => void sendNext($, card)} />,
-      <Button key={'edit-' + card.id} label="Edit" onPress={() => void editCard($, card)} />,
+      row([
+        <Button key={'send-' + card.id} label="Send next" variant="primary" onPress={() => void sendNext($, card)} />,
+        ...(isRunning
+          ? [<Button key={'stop-' + card.id} label="Stop and send" onPress={() => void stopAndSend($, card).catch(() => $.ui.toast('the turn could not be stopped; the suggestion was not sent.'))} />]
+          : []),
+        <Button key={'edit-' + card.id} label="Edit" onPress={() => void editCard($, card)} />,
+      ]),
+      ...(isRunning ? [<Text key={'hint-' + card.id} dimColor>Stop the running turn and send now.</Text>] : []),
     ]
   }
   if (card.kind === 'ask' && card.status === 'new') {
-    return [
+    return [row([
       <Button key={'yes-' + card.id} label="Yes" variant="primary" onPress={() => void answer($, card, true)} />,
       <Button key={'no-' + card.id} label="No" onPress={() => void answer($, card, false)} />,
-    ]
+    ])]
   }
   if (card.kind === 'note' && card.status === 'new') {
-    return [<Button key={'dismiss-' + card.id} label="Dismiss" onPress={() => void dismiss($, card)} />]
+    return [row([<Button key={'dismiss-' + card.id} label="Dismiss" onPress={() => void dismiss($, card)} />])]
   }
   const done = card.kind === 'prompt'
     ? card.status === 'sent' ? 'sent as your prompt' : card.status === 'dropped' ? 'not sent: autopilot stopped' : 'sent when the turn ends'
     : card.status === 'sent' ? 'sent as your next prompt'
       : card.status === 'answered' ? 'answered ' + (card.answer ?? '')
         : ''
-  return done ? [<Text dimColor>{done}</Text>] : []
+  return done ? [<Text key={'done-' + card.id} dimColor>{done}</Text>] : []
 }
 
 export const register: Register = (on, options) => {
@@ -426,12 +441,12 @@ export const register: Register = (on, options) => {
     return (
       <Box flexDirection="column">
         <Box flexDirection="column" borderStyle="round" paddingX={1}>
-          <Text bold>{LABEL[card.kind] + ' · ' + (s.pairing?.peer ?? '')}</Text>
-          <Text wrap="truncate-end">{card.text}</Text>
-          <Box flexDirection="row" gap={1}>
-            {cardButtons($, ui, card, s.turn)}
-            <Button key="open" label={titleOf(s.unread)} plain onPress={() => void openPane($)} />
+          <Box flexDirection="row" justifyContent="space-between" alignItems="center">
+            <Text dimColor bold>{LABEL[card.kind] + ' · ' + (s.pairing?.peer ?? '')}</Text>
+            <Button key="open" label={titleOf(s.unread)} onPress={() => void openPane($)} />
           </Box>
+          <Text wrap="truncate-end">{card.text}</Text>
+          {cardFooter($, ui, card, s.turn)}
         </Box>
         {below}
       </Box>
@@ -453,9 +468,11 @@ export const register: Register = (on, options) => {
     const peer = s.pairing.peer
     const state = stateOf(s.isAwaiting, s.lastSentAt, s.flareAt, now)
     const flare = state === 'flare' && s.flareAt !== undefined ? 1 - (now - s.flareAt) / FLARE_MS : 0
-    const modeLine = s.mode + (s.lastSentAt !== undefined ? ' · last digest ' + clockTime(s.lastSentAt) : '')
     const status = statusLine(s, settings.cap)
     const mood = state === 'thinking' ? 'reading your turn' : state === 'flare' ? 'new card' : 'idle'
+    const moodLine = mood + (s.lastSentAt !== undefined ? ' · last digest ' + clockTime(s.lastSentAt) : '')
+    const unread = s.unread > 0 ? s.unread + ' unread' : undefined
+    const turnLine = s.turn.kind === 'running' ? ['Turn running', ...(unread ? [unread] : [])].join(' · ') : unread
     const isApp = e.surface !== 'terminal' && 'Svg' in ui
     const lens = isApp && 'Svg' in ui
       ? <ui.Svg key="lens" source={lensSvg(peer, state, 96, state === 'flare' ? String(s.flareAt) : '')} alt={peer + ' lens, ' + mood} width={96} height={96} isInteractive />
@@ -465,33 +482,56 @@ export const register: Register = (on, options) => {
           return <ui.Raster key="lens" cells={drawing.cells} columns={drawing.columns} rows={drawing.rows} />
         })()
         : null
-    const modes: Mode[] = ['on-call', 'watch', 'autopilot', 'off']
+    // An app is sent a Select only if it asked for one, and a hook cannot tell: the phone asks in a dialog instead.
+    const modePicker = e.surface === 'mobile'
+      ? <Button key="mode" label={s.mode + ' ▾'} onPress={() => void $.ui.ask('Which mode?', MODES).then(
+        value => {
+          const mode = modeOf(value)
+          if (mode !== undefined && mode !== s.mode) return pickMode($, mode)
+        },
+        // Dismissed: the mode stays.
+        () => undefined,
+      )} />
+      : <ui.Select key="mode" options={MODES.map(mode => ({ value: mode }))} value={s.mode} onSelect={value => {
+        const mode = modeOf(value)
+        if (mode !== undefined && mode !== s.mode) void pickMode($, mode)
+      }} />
     const cards = shown(s.cards)
     return (
       <Box flexDirection="column" gap={1}>
-        <Box flexDirection="row" gap={2} alignItems="center">
+        <Box flexDirection="column" alignItems="center">
           {lens}
-          <Box flexDirection="column" flexShrink={1}>
-            <Text bold>{peer}</Text>
-            <Text dimColor>{modeLine}</Text>
-            <Text dimColor>{mood}</Text>
-            {status !== undefined && <Text>{status}</Text>}
+          <Text bold>{peer}</Text>
+          <Text dimColor>{moodLine}</Text>
+          {status !== undefined && <Text>{status}</Text>}
+        </Box>
+        <Box flexDirection="column" alignItems="center">
+          {/* A long companion name may push Ask past the pane's width. */}
+          <Box flexDirection="row" gap={1} alignItems="center" justifyContent="center" flexWrap="wrap">
+            <Text dimColor bold>Mode</Text>
+            {modePicker}
+            <Button key="ask" label={'Ask ' + peer} onPress={() => void sendDigest($)} />
           </Box>
+          <Text dimColor>Change anytime, including mid-turn.</Text>
         </Box>
-        <Box flexDirection="row" gap={1} flexWrap="wrap">
-          {modes.filter(mode => mode !== s.mode).map(mode => (
-            <Button key={'mode-' + mode} label={mode === 'off' ? 'Off' : mode === 'on-call' ? 'On-call' : mode === 'watch' ? 'Watch' : 'Autopilot'} plain
-              onPress={() => void setMode($, mode).then(text => text === 'autopilot.' ? sendDigest($) : text)} />
-          ))}
-          <Button key="ask" label="Ask" onPress={() => void sendDigest($)} />
-        </Box>
-        {s.plainAt !== undefined && <Text dimColor>{'last reply from ' + peer + ' at ' + clockTime(s.plainAt) + ': no cards, passed to the session'}</Text>}
-        {cards.length === 0 && <Text dimColor>No cards yet. Most turns the companion says nothing.</Text>}
+        <Text key="rule" dimColor wrap="truncate">{'─'.repeat(e.props.bodyColumns)}</Text>
+        {(turnLine !== undefined || s.plainAt !== undefined) && (
+          <Box key="status" flexDirection="column">
+            {turnLine !== undefined && <Text color={s.turn.kind === 'running' ? 'claude' : undefined}>{turnLine}</Text>}
+            {s.plainAt !== undefined && <Text dimColor>{'last reply from ' + peer + ' at ' + clockTime(s.plainAt) + ': no cards, passed to the session'}</Text>}
+          </Box>
+        )}
+        {cards.length === 0 && (
+          <Box key="empty" flexDirection="column">
+            <Text>No cards yet.</Text>
+            <Text dimColor>Most turns the companion says nothing.</Text>
+          </Box>
+        )}
         {cards.map(card => (
-          <Box key={'card-' + card.id} flexDirection="column" borderStyle="round" paddingX={1}>
-            <Text bold>{LABEL[card.kind] + ' · ' + clockTime(card.at)}</Text>
+          <Box key={'card-' + card.id} flexDirection="column" borderStyle="round" paddingX={1} gap={1}>
+            <Text dimColor bold>{LABEL[card.kind] + ' · ' + clockTime(card.at)}</Text>
             {isApp ? <ui.Markdown key={'text-' + card.id} text={card.text} /> : <Text wrap="wrap">{card.text}</Text>}
-            <Box flexDirection="row" gap={1}>{cardButtons($, ui, card, s.turn)}</Box>
+            <Box key={'footer-' + card.id} flexDirection="column">{cardFooter($, ui, card, s.turn)}</Box>
           </Box>
         ))}
       </Box>
