@@ -22,7 +22,11 @@ export type Card = {
   answer?: 'yes' | 'no'
 }
 
-/** The companion: its name in the peer list, the token every card line carries, and the `from` address its first card fixed. */
+/**
+ * The companion: its name in the peer list, which every send goes to; the
+ * token every card line carries; and the sender address its first card fixed,
+ * used only to match its replies.
+ */
 export type Pairing = {
   peer: string
   token: string
@@ -41,6 +45,12 @@ export type Pending = {
   token: string
 }
 
+/**
+ * The main loop's turn: `starting` from conduit's own submission until its
+ * `turn.start`, `running` with the id that aborts it.
+ */
+export type Turn = { kind: 'idle' } | { kind: 'starting' } | { kind: 'running', id: string }
+
 export type Conduit = {
   mode: Mode
   /** The live pairing; after `off`, the last one, its token retired. */
@@ -55,7 +65,9 @@ export type Conduit = {
   isAwaiting: boolean
   lastSentAt?: number
   flareAt?: number
-  isTurnRunning: boolean
+  /** When the companion's latest reply had no card line and went to the session as it came; cleared by cards. */
+  plainAt?: number
+  turn: Turn
 }
 
 /** One line of what happened in the session, before it is cut into a digest. */

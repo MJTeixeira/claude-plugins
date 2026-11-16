@@ -4,7 +4,7 @@ A Claude Code mod that pairs the session you work in with a companion: another o
 
 The companion is any session you already run: a second terminal on this machine, or a Remote Control session on another machine. It needs nothing installed, and no particular project, persona or tool. Each digest tells it how to answer.
 
-conduit is built on Claude Code's native cross-session messages. A digest goes out as an ordinary message to the companion, and the companion's plain reply comes back the same way. conduit catches that reply before your session reads it and draws it as cards.
+conduit is built on Claude Code's native cross-session messages. A digest goes out as an ordinary message to the companion. The companion's turn text does not come back: to answer, it sends a message to your session with its own send tool, and sending nothing is how it stays quiet. conduit catches that message before your session reads it and draws it as cards.
 
 ## One Claude account
 
@@ -32,8 +32,8 @@ To pair with the same companion every time, set **Companion session** in the plu
 | Mode | What is sent | How the companion answers |
 |---|---|---|
 | `on-call` (the default) | Nothing, until you press **Ask** or run `/conduit ask [question]`. Then everything since the last send, with your question. | Cards |
-| `watch` | One digest each time you submit a prompt and one each time a turn ends. | Cards, only when it has something useful to say |
-| `autopilot` | The same digests as `watch`. | A `prompt` line, which conduit holds and submits as your next prompt when the turn ends (at once when the session is idle), with no button; `done` when the work is finished |
+| `watch` | One digest each time a turn ends. With **Send your prompt to the companion while the session works on it** on (the default), also your prompt, 20 seconds into the turn; a turn that ends sooner carries it in its turn-end digest instead. | On the prompt, only when the prompt will mislead the session; at the turn end, cards when it has something useful to say |
+| `autopilot` | One digest each time a turn ends. Never a prompt digest: the companion wrote the prompt. | A `prompt` line, which conduit holds and submits as your next prompt when the turn ends (at once when the session is idle), with no button; `done` when the work is finished |
 | `off` | Nothing. Not paired. | |
 
 Switch with `/conduit on-call`, `/conduit watch`, `/conduit autopilot` or `/conduit off`, or with the buttons in the tab. `/conduit off` stops sending and closes the tab.
@@ -42,7 +42,9 @@ On-call keeps the digests in your session until you ask. It keeps at most 300 ro
 
 ### What a digest carries
 
-Your prompts, the session's replies, each tool call's name with one short argument (a command, a file path, a URL), and errors. Never a tool's output. Each row is cut short and one digest carries at most about 8,000 characters of rows; older rows are dropped first, and the digest says how many. Its closing lines tell the companion the card format.
+Your prompts, the session's replies, each tool call's name with one short argument (a command, a file path, a URL), and errors. Never a tool's output. Each row is cut short and one digest carries at most about 8,000 characters of rows; older rows are dropped first, and the digest says how many.
+
+Its first lines say which digest it is: your prompt while the session works on it, a turn's end, or one you asked for, and whether a turn is still running. Its closing lines tell the companion how to answer: by sending a message back with the send tool the digest's own envelope names, each card a line in the format below.
 
 Everything a digest carries is sent to your other session, which may run on another machine. Do not pair with a session you would not show your work to.
 
@@ -76,7 +78,7 @@ A prompt of your own is one you typed or sent from a phone or web client; a peer
 
 | Card | Buttons |
 |---|---|
-| `suggest` | **Send next** submits its text as your prompt when the running turn ends, or at once when the session is idle. **Edit** puts it in the prompt box instead. |
+| `suggest` | **Send next** submits its text as your prompt when the running turn ends, or at once when the session is idle. **Edit** puts it in the prompt box instead. While a turn runs, **Stop and send** also shows: it stops the turn and submits the text at once. |
 | `ask` | **Yes** / **No** sends your answer back to the companion. |
 | `note` | **Dismiss**. |
 | `prompt` (autopilot) | None: shown as waiting for the turn end, then as sent, or as not sent when autopilot stopped first. |
@@ -85,7 +87,7 @@ A pressed suggestion is your prompt because you chose it. The tab's title carrie
 
 ### How conduit tells the companion's replies apart
 
-A message from another session reaches yours with the sender named only by its session address, not its name. So each pairing carries a random token: the digest asks the companion to start every card line with it, the first reply carrying it fixes the companion's address, and from then on only lines from that address with that token become cards. A card line may start with a list marker, and the token may be in bold or backticks or followed by a colon. A late card carrying the token of an earlier pairing, or arriving after `/conduit off`, is dropped unread. Any other message, from that session or another, reaches your session unchanged. This is routing, not security: the channel is between your own sessions.
+A message from another session reaches yours with the sender named only by its session address, not its name, and how the envelope names it depends on the sender's send tool: the native SendMessage tool gives `from="bridge:session_…"`, the Remote Control MCP `send_message` tool gives `from-session="session_…"`. conduit reads both as one address. So each pairing carries a random token: the digest asks the companion to start every card line with it, the first reply carrying it fixes the companion's address, and from then on only lines from that address with that token become cards. Digests still go to the companion's name, never to that address. A card line may start with a list marker or indentation, and the token may be in bold or backticks or followed by a colon. Card text sent with the Remote Control `send_message` tool arrives HTML-escaped (`&lt;`), so conduit unescapes every card. A late card carrying the token of an earlier pairing, or arriving after `/conduit off`, is dropped unread. Any other message reaches your session unchanged; when it came from the companion, the tab says so in a dim line under its name, so a reply that missed the card format does not go unseen. This is routing, not security: the channel is between your own sessions.
 
 ## The tab
 
@@ -112,6 +114,7 @@ The companion's avatar sits at the top left with its name and mode beside it, an
 | Companion session (`peer`) | empty | The companion's name as the peer list shows it. |
 | Pair when a session starts (`startPaired`) | off | Pairs every new session with `peer`. A reload of the plugin keeps a pairing already live. |
 | Starting mode (`mode`) | `on-call` | `on-call` or `watch`. Never `autopilot`. |
+| Send your prompt to the companion while the session works on it (`promptDigest`) | on | Off sends one digest per turn, at its end: cheaper, but a misleading prompt is caught only after the turn. |
 | Prompts autopilot may send (`autopilotTurns`) | 20 | `0` for no cap. |
 | Permission dialogs during autopilot (`autopilotPermissions`) | `stop` | `stop` or `approve`. |
 

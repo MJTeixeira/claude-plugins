@@ -3,13 +3,22 @@ import type { CardKind, Pairing } from '../types/index'
 export type Parsed =
   | { kind: 'pass' }
   | { kind: 'stale' }
+  | { kind: 'plain' }
   | { kind: 'cards', from: string, cards: { kind: CardKind, text: string }[], isDone: boolean }
 
 const PASS: Parsed = { kind: 'pass' }
 
-// The engine wraps another session's message as <cross-session-message from="…" from-mode="…">…</cross-session-message>.
+// The engine wraps another session's message as <cross-session-message from="…" from-mode="…">…</cross-session-message>;
+// the Remote Control MCP send_message tool writes from-session="…" instead, and its body HTML-escaped.
 const ENVELOPE = /<cross-session-message\b([^>]*)>([\s\S]*?)(?:<\/cross-session-message>|$)/
-const FROM = /\bfrom="([^"]*)"/
+const FROM = /\bfrom(?:-session)?="([^"]*)"/
+
+/** One sender, whichever envelope named it: `bridge:session_X` and `session_X` are the same session. */
+const addressOf = (from: string): string => from.replace(/^bridge:/, '')
+
+const ENTITIES: Record<string, string> = { '&lt;': '<', '&gt;': '>', '&quot;': '"', '&#39;': "'", '&amp;': '&' }
+
+const unescapeHtml = (text: string): string => text.replace(/&(?:lt|gt|quot|#39|amp);/g, entity => ENTITIES[entity] ?? entity)
 
 /** Any token conduit mints: `cd` and six base-36 characters. */
 export const ANY_TOKEN = 'cd[0-9a-z]{6}'
@@ -32,8 +41,8 @@ const cardLine = (token: string): RegExp => new RegExp(
 
 /** The sender's address in a delivery's envelope, if it has one. */
 export const envelopeFrom = (text: string): string | undefined => {
-  const envelope = ENVELOPE.exec(text)
-  return envelope ? FROM.exec(envelope[1] ?? '')?.[1] : undefined
+  const from = FROM.exec(ENVELOPE.exec(text)?.[1] ?? '')?.[1]
+  return from === undefined ? undefined : addressOf(from)
 }
 
 const bodyOf = (text: string): string | undefined => ENVELOPE.exec(text)?.[2]
@@ -48,7 +57,8 @@ export const looksLikeCards = (text: string): boolean => {
  * A delivery read against the pairing: cards when it comes from the paired
  * peer's `from` address (any address until one is fixed) and has lines led by
  * the token; `stale` when a line is led by a token of an earlier pairing;
- * anything else passes through unchanged.
+ * `plain` when the fixed address sent no card line; anything else passes
+ * through unchanged.
  */
 export const parseDelivery = (text: string, pairing: Pairing | undefined, retired: readonly string[] = []): Parsed => {
   const envelope = ENVELOPE.exec(text)
@@ -59,7 +69,7 @@ export const parseDelivery = (text: string, pairing: Pairing | undefined, retire
     if (lines.some(raw => old.test(raw))) return { kind: 'stale' }
   }
   if (!pairing) return PASS
-  const from = FROM.exec(envelope[1] ?? '')?.[1]
+  const from = envelopeFrom(text)
   if (!from || (pairing.from !== undefined && pairing.from !== from)) return PASS
   const line = cardLine(escape(pairing.token))
   const cards: { kind: CardKind, text: string }[] = []
@@ -83,7 +93,7 @@ export const parseDelivery = (text: string, pairing: Pairing | undefined, retire
     open = { kind: kind as CardKind, text: match[1] ? body.replace(/`\s*$/, '') : body }
     cards.push(open)
   }
-  if (!isCard) return PASS
-  const kept = cards.map(card => ({ ...card, text: card.text.trim() })).filter(card => card.text !== '')
+  if (!isCard) return pairing.from === from ? { kind: 'plain' } : PASS
+  const kept = cards.map(card => ({ ...card, text: unescapeHtml(card.text.trim()) })).filter(card => card.text !== '')
   return { kind: 'cards', from, cards: kept, isDone }
 }

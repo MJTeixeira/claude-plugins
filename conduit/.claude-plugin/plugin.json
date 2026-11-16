@@ -1,6 +1,6 @@
 {
   "name": "conduit",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Pairs this session with a companion session on the same Claude account: the companion reads capped digests of your turns and answers with cards (suggest, note, ask) in a sidebar tab, never in the transcript",
   "author": {
     "name": "Marcos Teixeira",
@@ -24,9 +24,15 @@
     "mode": {
       "type": "string",
       "title": "Mode a pairing starts in: on-call or watch (leave as on-call)",
-      "description": "on-call keeps digests here and sends them only when you press Ask or run /conduit ask; watch sends one on each prompt and each turn end. Autopilot is never started from here: run /conduit autopilot.",
+      "description": "on-call keeps digests here and sends them only when you press Ask or run /conduit ask; watch sends one at each turn end, and one for your prompt while the session works on it (see below). Autopilot is never started from here: run /conduit autopilot.",
       "default": "on-call",
       "options": ["on-call", "watch"]
+    },
+    "promptDigest": {
+      "type": "boolean",
+      "title": "Send your prompt to the companion while the session works on it (turn off to send only at turn end, cheaper)",
+      "description": "In watch, your prompt goes to the companion 20 seconds into the turn, so it can correct a prompt that will mislead the session; a turn that ends sooner carries it in its turn-end digest. Off: one digest per turn, at its end.",
+      "default": true
     },
     "autopilotTurns": {
       "type": "number",

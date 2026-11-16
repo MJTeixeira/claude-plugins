@@ -1,13 +1,14 @@
 import { atom, read, update } from 'claude-code'
-import type { EngineInterface, PromptOrigin, Register, RenderChildren } from 'claude-code'
-import type { Card, CardKind, Conduit, Mode, Row } from '../types/index'
+import type { EngineInterface, PromptOrigin, Register, RenderChildren, Timer } from 'claude-code'
+import type { Card, CardKind, Conduit, Mode, Row, Turn } from '../types/index'
 import { IDLE, STOP_WORDS, released, sendsOnTurns, transition } from './machine'
 import type { Event } from './machine'
-import { ack, batchOf, buildDigest, EMPTY, keep, reset, row, toolLine } from './digest'
+import { ack, askedKind, batchOf, buildDigest, EMPTY, keep, reset, row, toolLine } from './digest'
+import type { DigestKind } from './digest'
 import { looksLikeCards, parseDelivery } from './cards'
 import { FLARE_MS, lensRaster, lensSvg, stateOf, THINK_MS } from './lens'
 
-const conduitState = atom({ plugin: 'conduit', key: 'conduit' } as const, IDLE, { shape: 'conduit-2' })
+const conduitState = atom({ plugin: 'conduit', key: 'conduit' } as const, IDLE, { shape: 'conduit-3' })
 const keptState = atom({ plugin: 'conduit', key: 'kept' } as const, EMPTY, { shape: 'kept-2' })
 const tickState = atom({ plugin: 'conduit', key: 'tick' } as const, 0)
 
@@ -16,12 +17,16 @@ const PANE = 'conduit'
 const TICK_MS = 400
 const CONSUMED = { consumed: 'conduit card from the paired companion' }
 
+/** How long a prompt digest waits; a turn that ends sooner carries the prompt in its own digest. */
+const PROMPT_HOLD_MS = 20_000
+
 type Settings = {
   peer: string
   startPaired: boolean
   mode: 'on-call' | 'watch'
   cap: number
   permissions: 'stop' | 'approve'
+  promptDigest: boolean
 }
 
 const settingsOf = (options: Record<string, unknown>): Settings => ({
@@ -30,6 +35,7 @@ const settingsOf = (options: Record<string, unknown>): Settings => ({
   mode: options.mode === 'watch' ? 'watch' : 'on-call',
   cap: typeof options.autopilotTurns === 'number' && options.autopilotTurns >= 0 ? Math.floor(options.autopilotTurns) : 20,
   permissions: options.autopilotPermissions === 'approve' ? 'approve' : 'stop',
+  promptDigest: options.promptDigest !== false,
 })
 
 /** A command's reply; the engine names the plugin before it. */
@@ -120,16 +126,16 @@ async function record($: EngineInterface, rows: Row[]): Promise<void> {
 
 /**
  * Sends what is kept, and the question if any; says how it went. A delivered
- * digest removes only the rows it carried. The digest says the turn still runs
- * when `isTurnRunning` says so, or else the state does.
+ * digest removes only the rows it carried. Without a `kind` it is a send on
+ * request, told by the turn it meets.
  */
-async function sendDigest($: EngineInterface, question?: string, isTurnRunning?: boolean): Promise<string> {
+async function sendDigest($: EngineInterface, kind?: DigestKind, question?: string): Promise<string> {
   const s = await read($, conduitState)
   if (s.mode === 'off' || !s.pairing) return 'not paired. ' + USAGE
   const kept = await read($, keptState)
   const batch = batchOf(kept)
-  const digest = buildDigest({ rows: kept.rows, dropped: kept.dropped, token: s.pairing.token, mode: s.mode, isTurnRunning: isTurnRunning ?? s.isTurnRunning, ...(question ? { question } : {}) })
-  const sent = await $.session.send({ to: s.pairing.from ?? s.pairing.peer, text: digest.text })
+  const digest = buildDigest({ rows: kept.rows, dropped: kept.dropped, token: s.pairing.token, mode: s.mode, kind: kind ?? askedKind(s.turn), ...(question ? { question } : {}) })
+  const sent = await $.session.send({ to: s.pairing.peer, text: digest.text })
   if (!sent.isDelivered) {
     const text = 'the digest did not reach ' + s.pairing.peer + ': ' + sent.reason
     $.ui.toast(text)
@@ -140,10 +146,6 @@ async function sendDigest($: EngineInterface, question?: string, isTurnRunning?:
   $.clock.after(THINK_MS + 50, () => update($, tickState, n => n + 1))
   return 'sent ' + digest.rows + ' rows to ' + s.pairing.peer
     + (digest.dropped > 0 ? ', ' + digest.dropped + ' older dropped.' : '.')
-}
-
-async function sendIfWatching($: EngineInterface, isTurnRunning?: boolean): Promise<void> {
-  if (sendsOnTurns((await read($, conduitState)).mode)) await sendDigest($, undefined, isTurnRunning)
 }
 
 async function stopAutopilot($: EngineInterface, reason: 'stop' | 'typing' | 'prompt' | 'done' | 'permission'): Promise<void> {
@@ -163,7 +165,7 @@ async function release($: EngineInterface, cap: number): Promise<boolean> {
   if (text === undefined) return false
   if (after.autopilot.stop === 'cap') $.ui.toast('autopilot stopped, ' + STOP_WORDS.cap + '.')
   void $.prompt.submit({ text, asUser: true }).then(entered => {
-    if (entered.drop !== undefined) return step($, { type: 'turn', isRunning: false })
+    if (entered.drop !== undefined) return step($, { type: 'turn', turn: { kind: 'idle' } })
   })
   await retitle($)
   return true
@@ -176,6 +178,13 @@ async function sendNext($: EngineInterface, card: Card): Promise<void> {
   void $.prompt.submit({ text: card.text, asUser: true })
 }
 
+/** Cancels the running turn and submits the suggestion as the user's next prompt in its place. */
+async function stopAndSend($: EngineInterface, card: Card): Promise<void> {
+  const { turn } = await read($, conduitState)
+  if (turn.kind === 'running') await $.turn.abort({ turnId: turn.id })
+  await sendNext($, card)
+}
+
 async function editCard($: EngineInterface, card: Card): Promise<void> {
   await $.prompt.fill({ text: card.text, mode: 'replace' })
   await step($, { type: 'read' })
@@ -186,7 +195,7 @@ async function answer($: EngineInterface, card: Card, yes: boolean): Promise<voi
   const s = await read($, conduitState)
   if (!s.pairing) return
   const reply = yes ? 'yes' : 'no'
-  const sent = await $.session.send({ to: s.pairing.from ?? s.pairing.peer, text: 'conduit: the user answered ' + reply + ' to your ask: "' + card.text + '"' })
+  const sent = await $.session.send({ to: s.pairing.peer, text: 'conduit: the user answered ' + reply + ' to your ask: "' + card.text + '"' })
   if (!sent.isDelivered) {
     $.ui.toast('the answer did not reach ' + s.pairing.peer + ': ' + sent.reason)
     return
@@ -241,10 +250,13 @@ const statusLine = (s: Conduit, cap: number): string | undefined => {
 
 type Ui = ReturnType<EngineInterface['ui']['resolve']>
 
-function cardButtons($: EngineInterface, ui: Ui, card: Card): RenderChildren[] {
+function cardButtons($: EngineInterface, ui: Ui, card: Card, turn: Turn): RenderChildren[] {
   const { Button, Text } = ui
   if (card.kind === 'suggest' && card.status === 'new') {
     return [
+      ...(turn.kind === 'running'
+        ? [<Button key={'stop-' + card.id} label="Stop and send" onPress={() => void stopAndSend($, card).catch(() => $.ui.toast('the turn could not be stopped; the suggestion was not sent.'))} />]
+        : []),
       <Button key={'send-' + card.id} label="Send next" variant="primary" onPress={() => void sendNext($, card)} />,
       <Button key={'edit-' + card.id} label="Edit" onPress={() => void editCard($, card)} />,
     ]
@@ -268,6 +280,11 @@ function cardButtons($: EngineInterface, ui: Ui, card: Card): RenderChildren[] {
 
 export const register: Register = (on, options) => {
   const settings = settingsOf(options)
+  let heldPrompt: Timer | undefined
+  const dropHeldPrompt = () => {
+    heldPrompt?.cancel()
+    heldPrompt = undefined
+  }
 
   on('session.start', async ($, e, next) => {
     await $.command.register({ name: 'conduit', description: 'Pair with a companion session: on [peer], off, on-call, watch, autopilot, ask [question]' })
@@ -300,7 +317,7 @@ export const register: Register = (on, options) => {
       if (verb === 'autopilot' && text === 'autopilot.') await sendDigest($)
       return said(text)
     }
-    if (verb === 'ask') return said(await sendDigest($, tail))
+    if (verb === 'ask') return said(await sendDigest($, undefined, tail))
     return said(USAGE)
   }).catch(() => ({ text: 'could not run that command.' }))
 
@@ -310,7 +327,14 @@ export const register: Register = (on, options) => {
     if (e.command !== undefined || e.isMeta || entered.drop !== undefined || !isUsers(e.origin)) return entered
     if ((await read($, conduitState)).mode === 'off') return entered
     await record($, [row('prompt', entered.text)])
-    await sendIfWatching($, true)
+    // Autopilot sends none: the companion wrote the prompt.
+    if (settings.promptDigest && (await read($, conduitState)).mode === 'watch') {
+      dropHeldPrompt()
+      heldPrompt = $.clock.after(PROMPT_HOLD_MS, () => {
+        heldPrompt = undefined
+        void read($, conduitState).then(s => s.mode === 'watch' && s.turn.kind !== 'idle' ? sendDigest($, 'prompt') : undefined)
+      })
+    }
     return entered
   }).catch(($, e, next) => next(e))
 
@@ -340,20 +364,21 @@ export const register: Register = (on, options) => {
   })
 
   on('turn.start', async ($, e, next) => {
-    if (e.agentId === undefined) await step($, { type: 'turn', isRunning: true })
+    if (e.agentId === undefined) await step($, { type: 'turn', turn: { kind: 'running', id: e.turnId } })
     return next(e)
   })
 
   on('turn.complete', async ($, e, next) => {
     const done = await next(e)
     if (e.agentId !== undefined) return done
-    const s = await step($, { type: 'turn', isRunning: false })
+    dropHeldPrompt()
+    const s = await step($, { type: 'turn', turn: { kind: 'idle' } })
     if (s.mode === 'off') return done
     await record($, [row('reply', e.answer), ...(e.reason === 'error' ? [row('error', 'the turn ended on an API error')] : [])])
     if (e.isAborted) await stopAutopilot($, 'stop')
     // A held prompt goes now, so this digest asks for none: its own turn's end will.
-    const isNext = await release($, settings.cap)
-    await sendIfWatching($, isNext)
+    const isHandoff = await release($, settings.cap)
+    if (sendsOnTurns((await read($, conduitState)).mode)) await sendDigest($, isHandoff ? 'handoff' : 'turn-end')
     return done
   })
 
@@ -366,6 +391,11 @@ export const register: Register = (on, options) => {
       return CONSUMED
     }
     if (parsed.kind === 'pass') return next(e)
+    if (parsed.kind === 'plain') {
+      $.ui.log('conduit: a reply from ' + (s.pairing?.peer ?? 'the companion') + ' had no card line; passed to the session', { to: 'debug' })
+      await step($, { type: 'plain', at: await $.clock.now() })
+      return next(e)
+    }
     const at = await $.clock.now()
     const isAutopilot = s.mode === 'autopilot'
     const cards: Card[] = parsed.cards.map((card, index) => ({
@@ -379,7 +409,7 @@ export const register: Register = (on, options) => {
     for (const card of cards) if (card.kind !== 'prompt') $.ui.toast(card.kind + ' from ' + (s.pairing?.peer ?? 'companion'))
     $.clock.after(FLARE_MS + 50, () => update($, tickState, n => n + 1))
     if (isAutopilot && parsed.isDone) await stopAutopilot($, 'done')
-    else if (after.pending && !after.isTurnRunning) await release($, settings.cap)
+    else if (after.pending && after.turn.kind === 'idle') await release($, settings.cap)
     await retitle($)
     return CONSUMED
   }).catch(($, e, next) => next.called || e.origin.kind !== 'peer' || !looksLikeCards(e.text) ? next(e) : CONSUMED)
@@ -399,7 +429,7 @@ export const register: Register = (on, options) => {
           <Text bold>{LABEL[card.kind] + ' · ' + (s.pairing?.peer ?? '')}</Text>
           <Text wrap="truncate-end">{card.text}</Text>
           <Box flexDirection="row" gap={1}>
-            {cardButtons($, ui, card)}
+            {cardButtons($, ui, card, s.turn)}
             <Button key="open" label={titleOf(s.unread)} plain onPress={() => void openPane($)} />
           </Box>
         </Box>
@@ -455,12 +485,13 @@ export const register: Register = (on, options) => {
           ))}
           <Button key="ask" label="Ask" onPress={() => void sendDigest($)} />
         </Box>
+        {s.plainAt !== undefined && <Text dimColor>{'last reply from ' + peer + ' at ' + clockTime(s.plainAt) + ': no cards, passed to the session'}</Text>}
         {cards.length === 0 && <Text dimColor>No cards yet. Most turns the companion says nothing.</Text>}
         {cards.map(card => (
           <Box key={'card-' + card.id} flexDirection="column" borderStyle="round" paddingX={1}>
             <Text bold>{LABEL[card.kind] + ' · ' + clockTime(card.at)}</Text>
             {isApp ? <ui.Markdown key={'text-' + card.id} text={card.text} /> : <Text wrap="wrap">{card.text}</Text>}
-            <Box flexDirection="row" gap={1}>{cardButtons($, ui, card)}</Box>
+            <Box flexDirection="row" gap={1}>{cardButtons($, ui, card, s.turn)}</Box>
           </Box>
         ))}
       </Box>
