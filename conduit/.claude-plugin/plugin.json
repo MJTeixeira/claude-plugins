@@ -1,6 +1,6 @@
 {
   "name": "conduit",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Pairs this session with a companion session on the same Claude account: the companion reads capped digests of your turns and answers with cards (suggest, note, ask) in a sidebar tab, never in the transcript",
   "author": {
     "name": "Marcos Teixeira",

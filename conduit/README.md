@@ -36,7 +36,7 @@ To pair with the same companion every time, set **Companion session** in the plu
 | `autopilot` | One digest each time a turn ends. Never a prompt digest: the companion wrote the prompt. | A `prompt` line, which conduit holds and submits as your next prompt when the turn ends (at once when the session is idle), with no button; `done` when the work is finished |
 | `off` | Nothing. Not paired. | |
 
-Switch with `/conduit on-call`, `/conduit watch`, `/conduit autopilot` or `/conduit off`, or with the buttons in the tab. `/conduit off` stops sending and closes the tab.
+Switch with `/conduit on-call`, `/conduit watch`, `/conduit autopilot` or `/conduit off`, or with the tab's **Mode** selector. `/conduit off` stops sending and closes the tab.
 
 On-call keeps the digests in your session until you ask. It keeps at most 300 rows; past that the oldest go, and the next send says how many were dropped.
 
@@ -50,7 +50,7 @@ Everything a digest carries is sent to your other session, which may run on anot
 
 ### Autopilot
 
-Autopilot hands the prompt box to the companion: it acts as you. It is entered only with `/conduit autopilot` or the tab's button, never from the settings, so no session starts driving itself.
+Autopilot hands the prompt box to the companion: it acts as you. It is entered only with `/conduit autopilot` or the tab's **Mode** selector, never from the settings, so no session starts driving itself.
 
 It stops, and the tab says why, when:
 
@@ -91,11 +91,13 @@ A message from another session reaches yours with the sender named only by its s
 
 ## The tab
 
-The companion's avatar sits at the top left with its name and mode beside it, and the cards fill the space below, scrolling, so long answers get the room. The avatar is a lens drawn from the companion's name: the same name always gives the same colour and ring pattern. It breathes while idle, narrows and turns its ring for a minute after a digest the companion has not answered, and flares when a card arrives.
+From the top: the companion's lens and name, centred, and a dim line with its mood and when the last digest went (`idle · last digest 11:57`), with autopilot's count or why it stopped under it. Then **Mode** with the current mode, which you can change at any time, mid-turn included, and **Ask <name>**, which is `/conduit ask` without a question. Below a rule, "Turn running" while a turn runs, the unread count, and the line saying a companion reply had no cards. The cards come last, newest first, scrolling.
+
+The lens is drawn from the companion's name: the same name always gives the same colour and ring pattern. It breathes while idle, narrows and turns its ring for a minute after a digest the companion has not answered, and flares when a card arrives.
 
 - **Terminal**: the lens as block-cell pixel art, the cards as terminal text.
 - **Desktop app and VS Code**: the lens as a smooth animated drawing, the cards with formatted text.
-- **Phone app**: the phone does not dock panes beside the chat, so the tab opens only when you ask for it (`/conduit`). The newest card and its buttons also show above the prompt, so **Send next**, **Yes** and **No** work from the phone without opening the tab. The phone reaches the session only when it runs under Remote Control.
+- **Phone app**: the phone does not dock panes beside the chat, so the tab opens only when you ask for it (`/conduit`). There **Mode** is a button that asks which mode to switch to. The newest card and its buttons also show above the prompt, so **Send next**, **Yes** and **No** work from the phone without opening the tab. The phone reaches the session only when it runs under Remote Control.
 
 ## Commands
 
