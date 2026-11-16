@@ -1,4 +1,4 @@
-import type { Batch, Kept, Mode, Row } from '../types/index'
+import type { Batch, Kept, Mode, Row, Turn } from '../types/index'
 
 /** Characters one row keeps, by kind. */
 export const ROW_CAP: Record<Row['kind'], number> = { prompt: 1200, reply: 1600, tool: 140, error: 240 }
@@ -54,15 +54,37 @@ const MARK: Record<Row['kind'], string> = { prompt: 'USER', reply: 'ASSISTANT', 
 
 const render = (one: Row): string => MARK[one.kind] + ': ' + one.text
 
+/**
+ * Why a digest goes out. `handoff`: a turn ended and the companion's held
+ * autopilot prompt started the next. `asked-*`: Ask, `/conduit ask` or
+ * entering autopilot, while a turn runs or none does.
+ */
+export type DigestKind = 'prompt' | 'turn-end' | 'handoff' | 'asked-running' | 'asked-idle'
+
+const KINDS: Record<DigestKind, { says: string, isTurnRunning: boolean }> = {
+  prompt: {
+    says: 'This is the user\'s prompt; the session is working on it now. Reply only if the prompt is wrong or will mislead the session (a misread word, a missing detail); otherwise stay quiet, the turn-end digest follows.',
+    isTurnRunning: true,
+  },
+  'turn-end': { says: 'The turn ended: this is what the session did and answered. Any card fits.', isTurnRunning: false },
+  handoff: { says: 'The turn ended: this is what the session did and answered. Your prompt was submitted as the next one and is running now.', isTurnRunning: true },
+  'asked-running': { says: 'The user asked for this digest while a turn is still running.', isTurnRunning: true },
+  'asked-idle': { says: 'The user asked for this digest; no turn is running.', isTurnRunning: false },
+}
+
+/** What a send on request is, by the turn it meets. */
+export const askedKind = (turn: Turn): DigestKind => turn.kind === 'idle' ? 'asked-idle' : 'asked-running'
+
 /** The closing lines: how the companion answers, with the pairing token. */
-export const instructions = (token: string, mode: Mode, isTurnRunning = false): string[] => [
+export const instructions = (token: string, mode: Mode, kind: DigestKind): string[] => [
   '---',
-  'Answer with a plain reply to this sender. A card is a line that starts with the token ' + token + ', then its kind and a colon, as here:',
+  'Your turn\'s plain text never reaches the user. To answer, send a message back to the sender of this digest, with the send tool this message\'s envelope tells you to use. Sending nothing is how you stay quiet.',
+  'A card is a line that starts with the token ' + token + ', then its kind and a colon, as here:',
   token + ' suggest: <a better next prompt; the user can send it with one press>',
   token + ' note: <context the user should know>',
   token + ' ask: <a yes or no question for the user>',
-  ...(mode === 'autopilot' && isTurnRunning
-    ? ['Autopilot is on and this turn is still running: send no prompt line until the digest that ends it.']
+  ...(mode === 'autopilot' && KINDS[kind].isTurnRunning
+    ? ['Autopilot is on and a turn is running: send no prompt line until the digest that ends it.']
     : mode === 'autopilot'
     ? [
       'Autopilot is on: you act as the user. Send the next prompt as',
@@ -70,7 +92,7 @@ export const instructions = (token: string, mode: Mode, isTurnRunning = false): 
       'or, when the work is finished, the line ' + token + ' done',
     ]
     : []),
-  'Lines after a card line, up to the next one, belong to that card. Reply with nothing when there is nothing useful to say.',
+  'Lines after a card line, up to the next one, belong to that card. Send nothing when there is nothing useful to say.',
 ]
 
 export type Digest = { text: string, rows: number, dropped: number }
@@ -85,8 +107,8 @@ export const buildDigest = (args: {
   token: string
   mode: Mode
   question?: string
+  kind: DigestKind
   cap?: number
-  isTurnRunning?: boolean
 }): Digest => {
   const cap = args.cap ?? DIGEST_CAP
   const lines: string[] = []
@@ -101,10 +123,11 @@ export const buildDigest = (args: {
   const question = args.question?.trim()
   const text = [
     'conduit digest from the user\'s session (mode ' + args.mode + '). You are their companion: read, then correct, suggest or stay quiet.',
+    KINDS[args.kind].says,
     ...(dropped > 0 ? ['(' + dropped + ' earlier ' + (dropped === 1 ? 'row was' : 'rows were') + ' dropped to keep this short)'] : []),
     ...(lines.length === 0 ? ['(nothing new since the last digest)'] : lines),
     ...(question ? ['QUESTION: ' + cut(question, ROW_CAP.prompt)] : []),
-    ...instructions(args.token, args.mode, args.isTurnRunning === true),
+    ...instructions(args.token, args.mode, args.kind),
   ].join('\n')
   return { text, rows: lines.length, dropped }
 }

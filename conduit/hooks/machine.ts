@@ -1,6 +1,6 @@
-import type { Card, CardStatus, Conduit, Mode, StopReason } from '../types/index'
+import type { Card, CardStatus, Conduit, Mode, StopReason, Turn } from '../types/index'
 
-export const IDLE: Conduit = { mode: 'off', retired: [], cards: [], unread: 0, autopilot: { sent: 0 }, isAwaiting: false, isTurnRunning: false }
+export const IDLE: Conduit = { mode: 'off', retired: [], cards: [], unread: 0, autopilot: { sent: 0 }, isAwaiting: false, turn: { kind: 'idle' } }
 
 export const CARDS_KEPT = 50
 
@@ -20,7 +20,8 @@ export type Event =
   | { type: 'release', cap: number }
   | { type: 'card', id: string, status: CardStatus, answer?: 'yes' | 'no' }
   | { type: 'read' }
-  | { type: 'turn', isRunning: boolean }
+  | { type: 'plain', at: number }
+  | { type: 'turn', turn: Turn }
 
 type Of<T extends Event['type']> = Extract<Event, { type: T }>
 
@@ -47,7 +48,7 @@ const TRANSITIONS: { [T in Event['type']]: (s: Conduit, e: Of<T>) => Conduit } =
   pair: (s, e) => ({
     ...IDLE,
     retired: retire(s),
-    isTurnRunning: s.isTurnRunning,
+    turn: s.turn,
     mode: e.mode,
     pairing: { peer: e.peer, token: e.token },
   }),
@@ -69,8 +70,9 @@ const TRANSITIONS: { [T in Event['type']]: (s: Conduit, e: Of<T>) => Conduit } =
     const base = held ? drop(s) : s
     const superseded = new Set(prompts.slice(0, -1).map(card => card.id))
     const arrived = e.cards.map(card => superseded.has(card.id) ? { ...card, status: 'dropped' as const } : card)
+    const { plainAt, ...rest } = base
     return {
-      ...base,
+      ...rest,
       pairing: { ...s.pairing, from: s.pairing.from ?? e.from },
       cards: [...base.cards, ...arrived].slice(-CARDS_KEPT),
       unread: s.unread + unread,
@@ -88,7 +90,7 @@ const TRANSITIONS: { [T in Event['type']]: (s: Conduit, e: Of<T>) => Conduit } =
     return {
       ...rest,
       cards: setStatus(s.cards, pending.cardId, 'sent'),
-      isTurnRunning: true,
+      turn: { kind: 'starting' } as const,
       ...(isCapped ? { mode: AFTER_AUTOPILOT, autopilot: { sent, stop: 'cap' as const } } : { autopilot: { sent } }),
     }
   },
@@ -97,7 +99,8 @@ const TRANSITIONS: { [T in Event['type']]: (s: Conduit, e: Of<T>) => Conduit } =
     cards: s.cards.map(card => card.id === e.id ? { ...card, status: e.status, ...(e.answer ? { answer: e.answer } : {}) } : card),
   }),
   read: s => s.unread === 0 ? s : { ...s, unread: 0 },
-  turn: (s, e) => ({ ...s, isTurnRunning: e.isRunning }),
+  plain: (s, e) => s.mode === 'off' ? s : { ...s, plainAt: e.at },
+  turn: (s, e) => ({ ...s, turn: e.turn }),
 }
 
 export const transition = (s: Conduit, e: Event): Conduit =>
