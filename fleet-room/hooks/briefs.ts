@@ -2,7 +2,7 @@ import type { EngineInterface, Timer } from 'claude-code'
 import { isWindowsPath, joined } from './codex'
 import { archiveFiles } from './local'
 import { MAX_WAKE_CHARS } from './room'
-import { restore, slot, submitNext, trackTargeted } from './wake'
+import { isLive, processStamp, restore, slot, submitNext, trackTargeted } from './wake'
 
 export const BRIEF_POLL_MS = 5_000
 /** A lease another session stopped renewing (a crash, a closed terminal) frees after three polls. */
@@ -66,7 +66,7 @@ export const decideBrief = (
   return holdsLease ? 'deliver' : 'leave'
 }
 
-type Saved = { v: 1, count: number, wake?: { kind: 'submitted' | 'running', wake: BriefWake, turnId?: string } }
+type Saved = { v: 1, count: number, wake?: { kind: 'submitted' | 'running', wake: BriefWake, turnId?: string, process?: string } }
 type Briefs = {
   sessionId: string, key: string, isWindows: boolean, base: string, folder: string, archive: string, cap: number, count: number,
   seen: Map<string, Waiting>, ready: string[], timer: Timer | undefined, isCapLogged: boolean, leaseTicks: number, refused: string | undefined,
@@ -98,7 +98,7 @@ const savedOf = (value: unknown): Saved | undefined => {
 async function save($: EngineInterface, b: Briefs): Promise<void> {
   const current = slot()
   const wake = (current.kind === 'submitted' || current.kind === 'running') && current.source === 'briefs'
-    ? {kind: current.kind, wake: current.wake as BriefWake, ...(current.kind === 'running' ? {turnId: current.turnId} : {})} : undefined
+    ? {kind: current.kind, wake: current.wake as BriefWake, ...(current.kind === 'running' ? {turnId: current.turnId} : {}), process: await processStamp($)} : undefined
   const saved: Saved = {v: 1, count: b.count, ...(wake ? {wake} : {})}
   await $.store.set(keyOf(b.sessionId), saved)
 }
@@ -151,7 +151,7 @@ export async function resumeBriefs($: EngineInterface, cap: number, ended?: stri
   await makeFolder($, b)
   await isFolderSafe($, b)
   briefs = b
-  if (saved?.wake) {
+  if (saved?.wake && await isLive($, saved.wake.process, ended !== undefined)) {
     const wake = saved.wake.wake as BriefWake
     if (wake.target !== undefined) {
       trackTargeted(wake.marker, wake.target)

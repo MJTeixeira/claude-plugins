@@ -1,12 +1,13 @@
 {
   "name": "fleet-room",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "description": "A Discord channel as a live room: idle remote-control sessions wake on an @mention from someone they trust and reply in the thread as their own bot; with a home channel set, the operator's messages there and the operator's direct messages wake it without a mention; a session paired with a Codex app chat in the same folder messages it and wakes on its replies; with the briefs option on, a brief file dropped in the project's private brief folder under the user's home wakes it as a prompt",
   "author": {
     "name": "Marcos Teixeira",
     "url": "https://github.com/MJTeixeira"
   },
   "license": "MIT",
+  "types": "./types/index.d.ts",
   "userConfig": {
     "tokenFile": {
       "type": "string",
