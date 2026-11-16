@@ -5,7 +5,7 @@ import { asSnowflake, compose, fold, isDmOn, isNewer, isTalkOnly, mintedAt, PLAC
 import type { Batch, Checkpoint, Conversation, Me, Message, Pending, Place, Room, Snowflake } from './room'
 import { holdPresence } from './presence'
 import type { GatewayEvent, Presence } from './presence'
-import { restore, slot, submitNext } from './wake'
+import { isLive, processStamp, restore, slot, submitNext } from './wake'
 
 export const POLL_MS = 20_000
 // Discord shows a typing indicator for about ten seconds.
@@ -106,7 +106,7 @@ export async function startWatch($: EngineInterface, room: Room, link: Link, end
     if (!key.startsWith('wake/') || !key.endsWith(suffix) || !asSnowflake(key.slice(5, -suffix.length))) continue
     const saved = await $.store.get(key) as {session?: string} | undefined
     if (ended !== undefined && saved?.session === ended) await $.store.set(key, {...saved, session: w.sessionId})
-    await restoreWake($, w, key)
+    await restoreWake($, w, key, ended !== undefined)
   }
   w.restoring = false
   w.timer = $.clock.every(POLL_MS, () => { void tick($) })
@@ -164,13 +164,17 @@ async function saveWake($: EngineInterface, w: Watch): Promise<void> {
     const lease = await $.store.get('lease/' + key.slice(5)) as {session?: string} | undefined
     if (lease?.session !== w.sessionId) return
   }
-  await $.store.set(key, {session: w.sessionId, slot: {...slot, batch: {marker: slot.batch.marker, mode: slot.batch.mode,
+  await $.store.set(key, {session: w.sessionId, process: await processStamp($), slot: {...slot, batch: {marker: slot.batch.marker, mode: slot.batch.mode,
     items: slot.batch.items.map(item => ({conversation: item.conversation, answered: item.answered}))}}})
 }
-async function restoreWake($: EngineInterface, w: Watch, key: string): Promise<void> {
-  const saved = await $.store.get(key) as {session?: string, slot?: Slot} | undefined
+async function restoreWake($: EngineInterface, w: Watch, key: string, isHandedOver: boolean): Promise<void> {
+  const saved = await $.store.get(key) as {session?: string, process?: string, slot?: Slot} | undefined
   const slot = saved?.slot
   if (saved?.session !== w.sessionId) return
+  if (!await isLive($, saved.process, isHandedOver)) {
+    await $.store.delete(key)
+    return
+  }
   if (!slot || (slot.kind !== 'submitted' && slot.kind !== 'running') || !slot.batch
     || typeof slot.batch.marker !== 'string' || !['act', 'talk'].includes(slot.batch.mode) || !Array.isArray(slot.batch.items)
     || (slot.kind === 'running' && typeof slot.turnId !== 'string')) throw new Error('Invalid saved wake')

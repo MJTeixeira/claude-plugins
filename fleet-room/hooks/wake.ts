@@ -41,6 +41,22 @@ const SETTLE_FAILED: Record<SourceName, string> = {
   briefs: 'fleet-room: could not archive a brief; it may wake this session again.',
 }
 
+const PROCESS = {plugin: 'fleet-room', key: 'process'} as const
+/** This process's stamp, saved with every wake: `$.state` outlives a hot reload of the hooks but not their process. */
+export async function processStamp($: EngineInterface): Promise<string> {
+  const held = await $.state.get(PROCESS)
+  if (held.value !== undefined) return held.value
+  const minted = crypto.randomUUID()
+  const set = await $.state.set(PROCESS, minted, {ifVersion: held.version})
+  return set.isSet ? minted : (await $.state.get(PROCESS)).value ?? minted
+}
+/**
+ * Whether a saved wake may be put back. One a gone process left can never bind or end a turn, so it would hold the slot forever.
+ * A wake handed over by a /clear or an in-process /resume is this process's own even if the host began a new `$.state` there.
+ */
+export async function isLive($: EngineInterface, stamp: unknown, isHandedOver: boolean): Promise<boolean> {
+  return isHandedOver || stamp === await processStamp($)
+}
 export const slot = (): Slot => core.slot
 /** Puts back a wake a source saved before a hot reload; a running one also marks its turn as the main turn. */
 export function restore(next: Slot): void {

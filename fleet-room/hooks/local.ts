@@ -1,7 +1,7 @@
 import type { EngineInterface, Timer } from 'claude-code'
 import { chatList, codexCommand, codexHome, footer, introText, isPickedUp, isWindowsPath, joined, linesWith, listChats, powershell, rollouts, UUID } from './codex'
 import { MAX_WAKE_CHARS } from './room'
-import { restore, slot, submitNext } from './wake'
+import { isLive, processStamp, restore, slot, submitNext } from './wake'
 
 export const INBOX_POLL_MS = 5_000
 export const PICKUP_MS = 2 * 60 * 1000
@@ -13,7 +13,7 @@ type Sent = { marker: string, at: number, isLate: boolean }
 type Waiting = { name: string, size: number, mtimeMs: number }
 /** A wake of the local Codex room: the inbox files it delivers and the unanswered sends it reports. */
 export type CodexWake = { marker: string, files: readonly string[], late: readonly string[] }
-type Saved = { v: 1, pair: Pair, sent: Sent[], count: number, wake?: { kind: 'submitted' | 'running', wake: CodexWake, turnId?: string } }
+type Saved = { v: 1, pair: Pair, sent: Sent[], count: number, wake?: { kind: 'submitted' | 'running', wake: CodexWake, turnId?: string, process?: string } }
 type Local = {
   sessionId: string, root: string, isWindows: boolean, inbox: string, archive: string, cap: number, pair: Pair, sent: Sent[], count: number,
   seen: Map<string, Waiting>, ready: string[], timer: Timer | undefined, isCapLogged: boolean, checkedAt: number,
@@ -30,7 +30,7 @@ const savedOf = (value: unknown): Saved | undefined => {
 async function save($: EngineInterface, l: Local): Promise<void> {
   const current = slot()
   const wake = (current.kind === 'submitted' || current.kind === 'running') && current.source === 'codex'
-    ? {kind: current.kind, wake: current.wake as CodexWake, ...(current.kind === 'running' ? {turnId: current.turnId} : {})} : undefined
+    ? {kind: current.kind, wake: current.wake as CodexWake, ...(current.kind === 'running' ? {turnId: current.turnId} : {}), process: await processStamp($)} : undefined
   const saved: Saved = {v: 1, pair: l.pair, sent: l.sent, count: l.count, ...(wake ? {wake} : {})}
   await $.store.set(keyOf(l.sessionId), saved)
 }
@@ -58,7 +58,7 @@ export async function resumeLocal($: EngineInterface, cap: number, ended?: strin
   const l = await activate($, sessionId, cap, saved.pair)
   l.sent = saved.sent
   l.count = saved.count
-  if (saved.wake) {
+  if (saved.wake && await isLive($, saved.wake.process, ended !== undefined)) {
     restore(saved.wake.kind === 'running' && saved.wake.turnId !== undefined
       ? {kind: 'running', source: 'codex', wake: saved.wake.wake, turnId: saved.wake.turnId}
       : {kind: 'submitted', source: 'codex', wake: saved.wake.wake})
