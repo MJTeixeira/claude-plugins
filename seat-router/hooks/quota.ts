@@ -3,19 +3,16 @@ import type { EngineInterface } from 'claude-code'
 import type { SeatQuotaDisplay, SeatVendor } from '../types/index'
 import { ADAPTERS } from '../bin/vendors/index.mjs'
 import { LEDGER_SCHEMA, RULES, composedRecently, due, merge, stateOf } from '../bin/core/ledger.mjs'
+import type { Ledger } from '../bin/core/ledger.mjs'
 import { rank } from '../bin/core/rank.mjs'
 import { firstRank, matchWord, onlyText } from '../bin/core/policy.mjs'
 import { clockTime } from './art'
 import { familyOf } from './chain'
 import type { Candidate } from './chain'
 import { homeDir, join, seatHome, slashed } from './layout'
-import type { CandidateSet, Delegate, ExternalVendor, Initial, Marker, Match, QuotaState } from './router'
+import type { CandidateSet, Delegate, ExternalVendor, Initial, Marker, Match } from './router'
 import { FACTS, durationName } from '../bin/vendors/index.mjs'
 
-type WindowView = { id: string, usedPct: number, state: QuotaState, minutes?: number }
-type ScopeView = { state: QuotaState, why: string, rule?: string, until?: number, at?: number, source?: string, windows: WindowView[] }
-type Ledger = Map<string, ScopeView>
-type Standing = { state: QuotaState, why: string, rule?: string, until?: number, scope?: string }
 type Want = { key: string, vendor: SeatVendor, scopes: string[], optional: string[], dir?: string, accountKey?: string }
 
 const quotasState = atom({ plugin: 'seat-router', key: 'quotas' } as const, {}, { shape: 'quota-states-1' })
@@ -43,7 +40,7 @@ export async function quotaFiles($: EngineInterface): Promise<unknown[]> {
 }
 
 export async function ledgerNow($: EngineInterface, busyAt: number): Promise<Ledger> {
-  return merge(await quotaFiles($), await $.clock.now(), busyAt) as Ledger
+  return merge(await quotaFiles($), await $.clock.now(), busyAt)
 }
 
 async function sessionConfigDir($: EngineInterface): Promise<string> {
@@ -104,7 +101,7 @@ export async function decide($: EngineInterface, marker: Marker, set: Extract<Ca
   const now = await $.clock.now()
   const scopes = await Promise.all(chain.map(candidate => scopesFor($, candidate, settings.accounts)))
   const ledger = await ledgerNow($, settings.busyAt)
-  const standings = scopes.map(list => stateOf(ledger, list) as Standing)
+  const standings = scopes.map(list => stateOf(ledger, list))
   const pinned = ('vendor' in marker || ('account' in marker && marker.account !== undefined)) && chain[0] === listed[0]
   const live = await liveFamilies($)
   const options = chain.map((candidate, index) => ({
@@ -112,7 +109,8 @@ export async function decide($: EngineInterface, marker: Marker, set: Extract<Ca
   }))
   const order = rank(options, { tier: marker.tier, pinned, live })
   const position = order[0]
-  if (position === undefined) {
+  const chosen = position === undefined ? undefined : options[position]
+  if (position === undefined || chosen === undefined) {
     const resets = standings.flatMap(standing => standing.until === undefined ? [] : [standing.until])
     const each = chain.map((candidate, index) => nameOf(candidate) + (standings[index]?.until === undefined ? '' : ' until ' + clockTime(standings[index]?.until ?? 0, now))
       + ' (' + (standings[index]?.why ?? '') + ')')
@@ -120,7 +118,6 @@ export async function decide($: EngineInterface, marker: Marker, set: Extract<Ca
       + (resets.length ? ', the first back at ' + clockTime(Math.min(...resets), now) : '')
       + (set.only.length ? '; ' + onlyText(marker.job, set.only) : '') + ', so nothing runs for this call.'
   }
-  const chosen = options[position]
   for (const [index, candidate] of chain.entries()) {
     if (index === position) break
     const standing = standings[index]
@@ -141,7 +138,7 @@ export async function decide($: EngineInterface, marker: Marker, set: Extract<Ca
 export async function delegateReason($: EngineInterface, setting: Delegate, busyAt: number): Promise<string | undefined> {
   if (setting === 'on') return 'set to on'
   if (setting === 'off') return undefined
-  const state = stateOf(await ledgerNow($, busyAt), ADAPTERS.claude.bandScopes(await sessionAccountKey($))).state as QuotaState
+  const state = stateOf(await ledgerNow($, busyAt), ADAPTERS.claude.bandScopes(await sessionAccountKey($))).state
   return state === 'busy' || state === 'out' ? 'Claude\'s quota is ' + state : undefined
 }
 
@@ -158,12 +155,12 @@ export async function writeSessionQuota($: EngineInterface, rateLimits: Readonly
 
 export async function refreshBand($: EngineInterface, vendors: readonly ExternalVendor[], busyAt: number): Promise<void> {
   const now = await $.clock.now()
-  const ledger = merge(await quotaFiles($), now, busyAt) as Ledger
+  const ledger = merge(await quotaFiles($), now, busyAt)
   const key = await sessionAccountKey($)
   const shown: SeatVendor[] = ['claude', ...vendors]
   const quotas = Object.fromEntries(shown.map(vendor => {
     const scopes = vendor === 'claude' ? ADAPTERS.claude.bandScopes(key) : ADAPTERS[vendor].bandScopes()
-    const standing = stateOf(ledger, scopes) as Standing
+    const standing = stateOf(ledger, scopes)
     // A window is named by its length, as codex and Claude name theirs; agy names its buckets (gemini-weekly) instead.
     const windows = [...ledger.get(scopes[0] ?? '')?.windows ?? []].sort((a, b) => (a.minutes ?? Infinity) - (b.minutes ?? Infinity))
       .map(window => ({ id: window.minutes === undefined ? window.id : durationName(window.minutes), used: window.usedPct, state: window.state }))
@@ -185,7 +182,7 @@ export async function quotaLines($: EngineInterface, busyAt: number): Promise<st
 }
 
 export const quotaLinesOf = (files: readonly unknown[], now: number, busyAt: number): string[] => {
-  const ledger = merge(files, now, busyAt) as Ledger
+  const ledger = merge(files, now, busyAt)
   const lines = ['Quota rules: busy at ' + busyAt + '% (busyAt), out at ' + RULES.outPct + '%; a window of ' + RULES.paceMinutes / 1440
     + ' days or more is busy when its use runs more than ' + RULES.paceMargin + ' points ahead of the time passed; a reading under busyAt counts for '
     + RULES.freshMs / 60_000 + ' minutes, one at or over it until its window resets.']

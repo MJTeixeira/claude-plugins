@@ -227,7 +227,7 @@ export async function turnEnded($: EngineInterface, e: { agentId?: string, isAbo
 }
 
 export async function sighted($: EngineInterface, e: SessionAppendInput): Promise<void> {
-  if (e.door === 'queue' || e.agentId !== undefined || e.origin.kind !== 'plugin' || e.origin.name !== $.plugin.name) return
+  if (e.door === 'queue' || e.agentId !== undefined || e.origin.kind !== 'plugin' || !('name' in e.origin) || e.origin.name !== $.plugin.name) return
   const text = rowText(e.message.content)
   const seen = [...delivering].filter(([, entry]) => text.includes(entry.text.trim()))
   if (!seen.length) return
