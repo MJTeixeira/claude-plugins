@@ -45,7 +45,7 @@
     {
       "name": "seat-router",
       "description": "A mod that runs marked Agent calls on the Codex CLI or the Antigravity CLI (agy) instead of Claude: seat lines by size or exact model, quota-aware choice among candidates, fallback, and a band and /seats pane showing seats and each vendor's quota.",
-      "version": "1.13.21",
+      "version": "1.13.22",
       "license": "MIT",
       "keywords": [
         "subagents",
@@ -58,7 +58,7 @@
     {
       "name": "fleet-room",
       "description": "A Discord room for Claude sessions: trusted mentions wake the listening session; a registered tool replies as its own bot. An optional home channel and the operator's direct messages wake it without a mention. A local room with one Codex app chat in the same project folder, and opt-in brief files that wake a session as a prompt.",
-      "version": "0.6.1",
+      "version": "0.6.2",
       "license": "MIT",
       "keywords": [
         "discord",

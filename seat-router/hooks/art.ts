@@ -108,9 +108,7 @@ export const shortModel = (model: string): string => {
   if (m2) return `${m2[3]} ${m2[1]}.${m2[2]}`
   const m3 = model.match(/^claude-([a-z]+)-(\d+\.\d+)$/i)
   if (m3) return `${m3[1]} ${m3[2]}`
-  const m4 = model.match(/^claude-([a-z]+)$/i)
-  if (m4) return m4[1]
-  return model
+  return model.match(/^claude-([a-z]+)$/i)?.[1] ?? model
 }
 
 // A native agent always runs on Claude, which its model names, so its line leaves the vendor out.
