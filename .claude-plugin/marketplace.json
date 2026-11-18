@@ -58,7 +58,7 @@
     {
       "name": "fleet-room",
       "description": "A Discord room for Claude sessions: trusted mentions wake the listening session; a registered tool replies as its own bot. An optional home channel and the operator's direct messages wake it without a mention. A local room with one Codex app chat in the same project folder, and opt-in brief files that wake a session as a prompt.",
-      "version": "0.6.2",
+      "version": "0.6.3",
       "license": "MIT",
       "keywords": [
         "discord",
@@ -71,7 +71,7 @@
     {
       "name": "conduit",
       "description": "Pairs your session with a companion session on the same Claude account: it reads capped digests of your turns over native cross-session messages and answers with cards (suggest, note, ask) in a sidebar tab, never in the transcript. Modes on-call, watch and an opt-in autopilot.",
-      "version": "0.3.0",
+      "version": "0.3.1",
       "license": "MIT",
       "keywords": [
         "companion",

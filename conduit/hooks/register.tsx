@@ -1,5 +1,5 @@
 import { atom, read, update } from 'claude-code'
-import type { EngineInterface, PromptOrigin, Register, RenderChildren, Timer } from 'claude-code'
+import type { EngineInterface, PromptOrigin, Register, RenderChildren, Timer, UiOpenResult } from 'claude-code'
 import type { Card, CardKind, Conduit, Mode, Row, Turn } from '../types/index'
 import { IDLE, STOP_WORDS, released, sendsOnTurns, transition } from './machine'
 import type { Event } from './machine'
@@ -92,9 +92,9 @@ async function retitle($: EngineInterface): Promise<void> {
   await $.ui.open({ id: PANE, title: titleOf(s.unread) })
 }
 
-async function openPane($: EngineInterface): Promise<void> {
+async function openPane($: EngineInterface): Promise<UiOpenResult> {
   const s = await read($, conduitState)
-  await $.ui.open({ id: PANE, title: titleOf(s.unread) })
+  return $.ui.open({ id: PANE, title: titleOf(s.unread) })
 }
 
 /** The names the native peer list shows. */
@@ -116,8 +116,10 @@ async function pair($: EngineInterface, peer: string, mode: 'on-call' | 'watch',
   await step($, { type: 'pair', peer, token: randomToken(), mode })
   await update($, keptState, reset)
   const surfaces = await $.session.surfaces()
-  if (isAsked || surfaces.some(surface => surface !== 'mobile')) await openPane($)
-  return 'paired with ' + peer + ' in ' + mode + '.'
+  const paired = 'paired with ' + peer + ' in ' + mode + '.'
+  if (!isAsked && !surfaces.some(surface => surface !== 'mobile')) return paired
+  const opened = await openPane($)
+  return opened.isPlaced ? paired : paired + ' The pane is open but not drawn: ' + opened.reason
 }
 
 async function record($: EngineInterface, rows: Row[]): Promise<void> {
@@ -319,8 +321,8 @@ export const register: Register = (on, options) => {
     if (verb === '') {
       const s = await read($, conduitState)
       if (s.mode === 'off') return said('not paired. ' + USAGE)
-      await openPane($)
-      return said('pane opened.')
+      const opened = await openPane($)
+      return said(opened.isPlaced ? 'pane opened.' : 'the pane is open but not drawn: ' + opened.reason)
     }
     if (verb === 'on') {
       const peer = tail || settings.peer

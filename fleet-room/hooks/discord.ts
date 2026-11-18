@@ -51,7 +51,7 @@ const parseMessage = (value: unknown): Message => {
   return { id: idOf(wire.id), author: { ...meOf(author), isBot: author.bot === true || wire.webhook_id !== undefined },
     content: nameOf(wire.content).replace(/<@!?(\d+)>/g, (match, id: string) => names.has(id) ? '<@' + id + '|' + nameLabel(names.get(id)!, 80) + '>' : match),
     mentions: mentions.map(me => me.id), mentionedBots: mentions.filter(me => bots.has(me.id)), roles: arrayOf(wire.mention_roles).map(idOf),
-    attachments: wire.attachments === undefined ? 0 : arrayOf(wire.attachments).length }
+    attachments: wire.attachments === undefined ? 0 : arrayOf(wire.attachments).length, isSystem: ![0, 19].includes(Number(wire.type)) }
 }
 const threadInfo = (value: unknown, place: Place): ThreadInfo => {
   const wire = objectOf(value)
@@ -193,7 +193,10 @@ export async function newest($: EngineInterface, link: Link, conversation: Snowf
   }
   return { kind: 'error', why: 'Discord cap history exceeded its bound.' }
 }
-export const capHistory = (cap: number, messages: readonly Message[]): boolean => messages.length >= cap + 1 || messages.some(message => isHuman(message.author))
+export const capHistory = (cap: number, messages: readonly Message[]): boolean => {
+  const said = messages.filter(message => !message.isSystem)
+  return said.length >= cap + 1 || said.some(message => isHuman(message.author))
+}
 export const chunks = (text: string): string[] => {
   const parts: string[] = []
   let rest = text
