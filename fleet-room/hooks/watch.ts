@@ -86,6 +86,7 @@ const checkpointOf = (value: unknown): Saved | undefined => {
     || typeof cp.operatorPosted !== 'boolean' || typeof cp.guestPosted !== 'boolean' || typeof cp.name !== 'string'
     || (cp.place !== undefined && !PLACES.includes(cp.place as Place))
     || (cp.member !== undefined && typeof cp.member !== 'boolean') || (cp.roleAt !== undefined && (typeof cp.roleAt !== 'string' || !asSnowflake(cp.roleAt)))
+    || (cp.said !== undefined && (typeof cp.said !== 'string' || !asSnowflake(cp.said)))
     || (cp.peers !== undefined && (!Array.isArray(cp.peers) || !cp.peers.every(peer => peer !== null && typeof peer === 'object'
       && typeof peer.id === 'string' && asSnowflake(peer.id) && typeof peer.name === 'string' && typeof peer.at === 'string' && asSnowflake(peer.at))))) return undefined
   return cp as Saved

@@ -62,7 +62,9 @@ export const tokenIn = (fileText: string): string | undefined => {
 }
 export type Me = { id: Snowflake, name: string }
 export type Author = { id: Snowflake, name: string, isBot: boolean }
-export type Message = { id: Snowflake, author: Author, content: string, mentions: readonly Snowflake[], mentionedBots: readonly Me[], roles: readonly Snowflake[], attachments: number }
+export type Message = { id: Snowflake, author: Author, content: string, mentions: readonly Snowflake[], mentionedBots: readonly Me[], roles: readonly Snowflake[], attachments: number,
+  /** A notice Discord posts itself (a thread created, a pin): never a wake, a join, a cap count or a human post. */
+  isSystem: boolean }
 /** The channel a conversation belongs to: the room's, the home channel, or the operator's direct messages with the bot. */
 export type Place = 'room' | 'home' | 'dm'
 export const PLACES: readonly Place[] = ['room', 'home', 'dm']
@@ -78,10 +80,11 @@ export type Peer = { id: Snowflake, name: string, at: Snowflake }
 /**
  * Where this bot stands in one conversation after the message at `cursor`. `member` is true while it participates:
  * it joined by being mentioned (itself or its wake role) or by posting, and no gap between messages has exceeded the idle time.
- * `peers` and `roleAt` (the last wake-role mention) hold only what is within the idle time of `cursor`.
+ * `peers` and `roleAt` (the last wake-role mention) hold only what is within the idle time of `cursor`. `said` is the newest message
+ * that is not a system notice, set only while system notices follow it; the idle time runs from it.
  */
 export type Checkpoint = { v: 1, cursor: Snowflake, bots: number, operatorPosted: boolean, guestPosted: boolean,
-  member?: boolean, peers?: readonly Peer[], roleAt?: Snowflake }
+  member?: boolean, peers?: readonly Peer[], roleAt?: Snowflake, said?: Snowflake }
 /** A message that wakes this bot; `isDirect` when it mentions the bot or its wake role, otherwise it arrived in a conversation the bot is in. */
 export type Pending = { message: Message, before: Checkpoint, isDirect: boolean }
 export type Folded = { head: Checkpoint, pending: readonly Pending[] }
@@ -97,9 +100,13 @@ export const fold = (room: Room, me: Me, from: Checkpoint, messages: readonly Me
   for (const message of messages) {
     if (!isNewer(message.id, head.cursor)) continue
     const before = head
+    if (message.isSystem) {
+      head = { ...before, cursor: message.id, said: before.said ?? before.cursor }
+      continue
+    }
     const standing = standingOf(room, me, message.author)
     const isFresh = (id: Snowflake): boolean => mintedAt(message.id) - mintedAt(id) <= room.idleMs
-    const isMember = before.member === true && isFresh(before.cursor)
+    const isMember = before.member === true && isFresh(before.said ?? before.cursor)
     const isRole = room.wakeRole !== undefined && message.roles.includes(room.wakeRole)
     const isDirect = message.mentions.includes(me.id) || isRole
     const bots = isHuman(message.author) ? 0 : before.bots + 1
@@ -120,8 +127,9 @@ export const fold = (room: Room, me: Me, from: Checkpoint, messages: readonly Me
   return { head, pending }
 }
 export const tailBots = (newestFirst: readonly Message[]): number => {
-  const human = newestFirst.findIndex(message => isHuman(message.author))
-  return human < 0 ? newestFirst.length : human
+  const said = newestFirst.filter(message => !message.isSystem)
+  const human = said.findIndex(message => isHuman(message.author))
+  return human < 0 ? said.length : human
 }
 export const isTalkOnly = (head: Checkpoint): boolean => head.guestPosted && !head.operatorPosted
 export const capVerdict = (room: Room, _me: Me, newestFirst: readonly Message[]): { ok: true } | { ok: false, why: string } => tailBots(newestFirst) < room.cap
@@ -131,7 +139,7 @@ export const seed = (conversationId: Snowflake, since: Snowflake, newestFirst: r
   const cursor = [conversationId, since, pruneFloor].reduce((a, b) => isNewer(a, b) ? a : b)
   const history = newestFirst.filter(message => !isNewer(message.id, cursor))
   return { v: 1, cursor, bots: tailBots(history), guestPosted: cursor !== conversationId,
-    operatorPosted: history.some(message => standingOf(room, me, message.author) === 'operator') }
+    operatorPosted: history.some(message => !message.isSystem && standingOf(room, me, message.author) === 'operator') }
 }
 
 export type Mode = 'act' | 'talk'
