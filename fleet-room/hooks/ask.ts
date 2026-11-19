@@ -93,7 +93,9 @@ async function sessionName($: EngineInterface): Promise<string> {
     const listed = await $.tool.call({tool: 'ListAgents'})
     const result = listed.result as {listing?: string} | undefined
     const listing = typeof listed.result === 'string' ? listed.result : result?.listing
-    const name = listing && /This session is ([^\r\n]+)/.exec(listing)?.[1]?.replace(/[.。]$/, '').trim()
+    const line = listing && /This session is ([^\r\n]+)/.exec(listing)?.[1]
+    // The real line is `<name> [<ref>] — <prose>`; the name ends at the ref or the dash.
+    const name = line && line.split(/ \[| —/)[0]!.replace(/[.。]$/, '').trim()
     if (name) return nameLabel(name, 80)
   } catch { /* A session without ListAgents uses its stable session id. */ }
   return nameLabel(await $.session.id(), 80)
