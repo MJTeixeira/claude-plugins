@@ -13,6 +13,7 @@ export type Room = {
   wakeRole: Snowflake | undefined
   /** The home channel: the operator's messages there, and in the operator's direct messages, wake without a mention. */
   home: Snowflake | undefined
+  chat?: Snowflake
   cap: number
   idleMs: number
 }
@@ -43,12 +44,14 @@ export const setupOf = (options: Record<string, unknown>): Setup => {
   for (const id of guests) if (fleet.delete(id)) problems.push('An id in both lists remains a guest.')
   let home = idOf(textOf(options.homeChannel), 'Home channel')
   if (home === channel) { problems.push('The home channel is the room channel; it stays the room.'); home = undefined }
+  let chat = idOf(textOf(options.chatChannel), 'Chat channel')
+  if (chat === channel || (chat !== undefined && chat === home)) { problems.push('The chat channel must differ from the room and home channels.'); chat = undefined }
   const cap = capOf(options)
   const idle = typeof options.conversationIdleMinutes === 'number' && Number.isInteger(options.conversationIdleMinutes)
     && options.conversationIdleMinutes >= 1 && options.conversationIdleMinutes <= 10_080 ? options.conversationIdleMinutes : 120
   return { kind: 'ready', token: { file, inline }, problems, room: {
     channel, operator: idOf(textOf(options.operator), 'Operator'), fleet, guests,
-    wakeRole: idOf(textOf(options.wakeRole), 'Wake role'), home, cap, idleMs: idle * 60 * 1000,
+    wakeRole: idOf(textOf(options.wakeRole), 'Wake role'), home, chat, cap, idleMs: idle * 60 * 1000,
   } }
 }
 
@@ -65,9 +68,9 @@ export type Author = { id: Snowflake, name: string, isBot: boolean }
 export type Message = { id: Snowflake, author: Author, content: string, mentions: readonly Snowflake[], mentionedBots: readonly Me[], roles: readonly Snowflake[], attachments: number,
   /** A notice Discord posts itself (a thread created, a pin): never a wake, a join, a cap count or a human post. */
   isSystem: boolean }
-/** The channel a conversation belongs to: the room's, the home channel, or the operator's direct messages with the bot. */
-export type Place = 'room' | 'home' | 'dm'
-export const PLACES: readonly Place[] = ['room', 'home', 'dm']
+/** The channel a conversation belongs to: the room, home, fleet-chat, or the operator's direct messages with the bot. */
+export type Place = 'room' | 'home' | 'dm' | 'chat'
+export const PLACES: readonly Place[] = ['room', 'home', 'dm', 'chat']
 export type Conversation = { id: Snowflake, name: string, place: Place, isThread: boolean }
 /** Direct messages are read only with a home channel, and only those with the operator. */
 export const isDmOn = (room: Room): room is Room & { operator: Snowflake, home: Snowflake } => room.home !== undefined && room.operator !== undefined
@@ -93,8 +96,9 @@ const MAX_PEERS = 20
  * Folds new messages into a conversation's checkpoint. In the room a waking id wakes this bot by mentioning it or its wake role, and the
  * operator also wakes a participant without one; at home (`isHome`: the home channel, its threads and the operator's direct messages)
  * the operator wakes without a mention, fleet ids only by mentioning the bot or its wake role, and guests and strangers never.
+ * Suppression keeps history accounting but prevents wakes and joining from posts or mentions.
  */
-export const fold = (room: Room, me: Me, from: Checkpoint, messages: readonly Message[], isHome = false): Folded => {
+export const fold = (room: Room, me: Me, from: Checkpoint, messages: readonly Message[], isHome = false, isSuppressed = false): Folded => {
   let head = from
   const pending: Pending[] = []
   for (const message of messages) {
@@ -119,10 +123,10 @@ export const fold = (room: Room, me: Me, from: Checkpoint, messages: readonly Me
     head = { v: 1, cursor: message.id, bots,
       operatorPosted: before.operatorPosted || standing === 'operator',
       guestPosted: before.guestPosted || standing === 'guest' || standing === 'stranger',
-      member: standing === 'you' || (wakes && isDirect) || isMember, peers: [...peers.values()].slice(-MAX_PEERS),
+      member: (!isSuppressed && (standing === 'you' || (wakes && isDirect))) || isMember, peers: [...peers.values()].slice(-MAX_PEERS),
       ...(roleAt ? { roleAt } : {}) }
     const isCalled = isHome ? standing === 'operator' || (standing === 'fleet' && isDirect) : isDirect || (isMember && standing === 'operator')
-    if (wakes && isCalled) pending.push({ message, before, isDirect })
+    if (!isSuppressed && wakes && isCalled) pending.push({ message, before, isDirect })
   }
   return { head, pending }
 }
@@ -222,13 +226,15 @@ const bodyOf = (content: string): string => {
   return body
 }
 const headingOf = (conversation: Conversation): string => conversation.place === 'dm' ? 'Direct messages from the operator'
-  : (conversation.place === 'home' ? (conversation.isThread ? 'Home thread "' : 'Home channel "') : 'Thread "') + label(conversation.name, 100) + '"'
+  : (conversation.place === 'chat' ? (conversation.isThread ? 'Chat thread "' : 'Chat channel "')
+    : conversation.place === 'home' ? (conversation.isThread ? 'Home thread "' : 'Home channel "') : 'Thread "') + label(conversation.name, 100) + '"'
 export const wakeText = (room: Room, me: Me, batch: Batch): string => {
   const rule = batch.mode === 'talk'
     ? 'TALK ONLY: a guest or unknown history leads these threads. Only mcp__fleet-room__post may run, only here. The operator must post in each thread to allow other tools; phone input does not unlock them.'
     : 'Reply with mcp__fleet-room__post; your answer in this session is not posted.'
   const lines = ['Room wake ' + batch.marker + ' · wake format ' + WAKE_FORMAT + ' · you are ' + nameLabel(me.name, 80) + ' (<@' + me.id + '>) · ' + rule, CONVERSATION_RULE]
-  if (batch.items.some(item => item.conversation.place !== 'room')) lines.push(HOME_RULE)
+  if (batch.items.some(item => item.conversation.place === 'home' || item.conversation.place === 'dm')) lines.push(HOME_RULE)
+  if (batch.items.some(item => item.conversation.place === 'chat')) lines.push('In fleet-chat only a mention of your bot wakes you; role mentions do not. The operator also wakes participants without a mention.')
   for (const item of batch.items) {
     const others = item.peers.slice(-MAX_SHOWN_PEERS).reverse()
       .map(peer => nameLabel(peer.name, 40) + ' (' + standingOf(room, me, { ...peer, isBot: true }) + ', <@' + peer.id + '>)')

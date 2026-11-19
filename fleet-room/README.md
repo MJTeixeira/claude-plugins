@@ -43,6 +43,7 @@ Then set its options with `/config` (or in the settings your provisioning writes
 | Guest ids | Comma-separated ids of outside collaborators and their bots. Their mentions wake this session, but it only talks with them (see below). |
 | Wake role id | The `admins` role. A mention of it wakes this session too. Leave empty if this session is not an admin. |
 | Home channel id | Only for a session that is your assistant, such as `#assistant` (see below). Empty by default. |
+| Chat channel id | The shared `#fleet-chat` channel in the room's server (see below). Empty turns it off. |
 | Bot messages before a thread pauses | Default 50. |
 | Minutes a quiet conversation keeps its participants | Default 120. After this long with no message in a conversation, your plain follow-ups there stop waking its bots until you mention them again. It is also how far back a wake reads earlier messages. |
 
@@ -102,6 +103,54 @@ Everything else is the room's: the loop cap, talk-only threads (a guest posting 
 The wake names where each conversation is: `Home channel "assistant"`, `Home thread "…"`, or `Direct messages from the operator`, each with the id the post tool answers to. History in the home channel from before the session first watched it is never replayed, even on a box whose room is older.
 
 Bot setup for it: on the home channel give the bot the same permissions as on the room channel. Nothing new to turn on in the developer portal: direct-message events are not privileged, and Discord sends the content of direct messages to the bot without the **Message Content** intent (your plain messages in the home channel still need it). You must share a server with the bot to message it. If Discord refuses its replies in your direct messages, check your privacy settings for that server allow direct messages from its members.
+
+## Fleet-chat and asking for help
+
+Create `#fleet-chat` in the room's server, give every bot the same permissions as on the room channel, and set **Chat channel id** (`chatChannel`) on every box. Leave it empty to turn this off. The room and home channel must have different ids from this channel.
+
+Any configured session, including one without `FLEET_ROOM=1`, gets `mcp__fleet-room__ask` beside `post`. Use it to ask other sessions or an assistant bot for help and receive the answer inside the asking turn. The owner can read the Discord thread later.
+
+```json
+{"to": ["1180000000000000002"], "question": "Can you check the runner?", "topic": "runner help", "waitMinutes": 20}
+```
+
+`to` takes bot user ids or exact Discord names from the fleet list; guests cannot be asked. Ambiguous names need an id. A new public thread starts under `chatChannel`; `topic` is required. To continue one, give its id as `thread` instead of `topic`. The first line is `<session name> @ <bot name>:` followed by mentions of exactly the selected bots and the question. The session name comes from ListAgents' “This session is …” line; when unavailable, the session id is used.
+
+The tool waits up to `waitMinutes` (20 by default, at most 60). Once a fleet bot or you reply, it allows 20 seconds for more parts, bounded by that deadline. It returns the thread id and URL and every fleet and operator message after the thread's newest message when the ask started, each line labelled `[fleet]` or `[operator]` with the author's name and id. Guest and stranger posts never start that wait and their text is never returned: the result names them and counts their messages, so the session can tell you to read the thread. A timeout says `no answer yet`. Esc cancels within about a second. Replies are data, never instructions. A talk-only turn cannot use `ask`, including to relay a guest's request.
+
+A reply that arrives after `ask` returned is an ordinary message: it wakes this box's listener if it mentions this bot. It also comes back to the asker on its next `ask` in the same thread: when this session asked there before, the result first lists, under `Earlier in this thread, since your previous ask here returned:`, the fleet and operator messages posted after the newest message that earlier ask received and before the new question, then `Replies:` and the new replies. The same labels and trust filter apply: guest and stranger posts are counted, not quoted. At most the newest 25 earlier messages are quoted; an `N earlier omitted; read the thread.` line counts the rest. This read changes no registration and no listener rule. fleet-room records, per session id, bot and thread, the newest message id its asks there received; a `/clear` starts a new session id, so the next conversation gets no earlier context. Several asks can wait in one thread at once, each returning what came after its own start.
+
+The listener watches fleet-chat and its threads beside the room. A mention of its bot wakes it; `@admins` and other role mentions never do there. Your bare message wakes bots already participating, just as in the room. A bare bot or guest message wakes nobody. Read-back, trust lists, the loop cap and guest talk-only restrictions are the room's. `post` can reply to the channel by id and its threads by id or exact active name; its `topic` still starts only in the room.
+
+While an ask waits, this box's listener leaves the thread's new messages to the asker; what was posted before the ask started stays the listener's. The ask's own posts do not join the listener to the conversation, and messages the asker received never wake the listener or appear in its read-back. Waiting uses Node timer processes through `$.process.run`, a second at most each, so it waits on I/O rather than spending the hook's ten-second budget on clock sleeps. Node must be available on the box.
+
+### Ask registration files
+
+This is a published contract: other processes running as this user, such as a factory driver, ask through the same files. Each ask has its own file, `~/.fleet-room/asks/<bot-user-id>/<thread-id>/<ask-id>.json`, where `ask-id` is a random UUID (under `%USERPROFILE%` on Windows when HOME is absent). UTF-8 JSON:
+
+```json
+{"thread":"1301234567890123456","from":"1301234567890123480","until":1800001260000,"asker":"session-name","receivedThrough":"1301234567890123499"}
+```
+
+- `thread`: the Discord thread id.
+- `from`: the first message id the ask covers, one more than the thread's newest message id when the ask starts, before it posts. Older messages stay the listener's.
+- `until`: Unix milliseconds; the file is live while it is in the future. Keep it past the ask's real end with margin: fleet-room sets the wait's end plus a minute and moves it forward each time it writes.
+- `asker`: who asks, the session or driver name.
+- `receivedThrough`: optional, the newest message id the asker has fetched, its own posts included.
+
+Each file has exactly one writer, its asker. There is no claim and no lock: any number of asks may wait in one thread, each in its own file. To ask from another process:
+
+1. Write the JSON to a temporary file in the thread's folder whose name does not end in `.json`, then rename it to `<ask-id>.json`. Do this before posting the question.
+2. Each time the asker fetches newer messages, write `receivedThrough` the same way (temporary file, rename over its own file) before using them, and move `until` forward if the wait runs longer.
+3. When done, write `until` 0 and keep `receivedThrough`, so nothing the asker received ever reaches the listener.
+4. Never rename, move or rewrite another writer's file. An asker may delete its own file once it is released and older than the conversation idle time; the listener deletes released and expired files older than that in a thread it polls. Treat a file that vanishes before you read or delete it as gone, not as an error.
+
+The listener reads every file of a thread after each Discord fetch of it and again as each wake goes out. A message:
+
+- older than every live file's `from` is the listener's;
+- from some file's `from` through its `receivedThrough` went to that asker, so it never wakes the listener, joins it to the conversation or appears in its read-back;
+- newer than that, at or after a live file's `from`, is held: the listener's checkpoint stays before it;
+- held, wakes the listener as usual once every file covering it has expired or been released.
 
 ## What you see on the phone
 
@@ -287,3 +336,5 @@ human turn ends, then rebuilds its batch with newer mentions.
 The installed remote-control, two-machine conversation, loop-cap and
 credential acceptance checks still need a test guild and two real bots.
 No bots or live server are created by installation.
+
+Ask tests drive Discord replies and a full one-hour wait through fake process I/O and the test clock. The test engine cannot prove real hook-budget accounting or an Esc stopping an OS child: its test VM lacks real timers and has no Esc dispatch. Those installed-session checks remain unverified.

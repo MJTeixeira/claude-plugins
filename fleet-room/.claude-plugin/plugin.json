@@ -1,6 +1,6 @@
 {
   "name": "fleet-room",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "description": "A Discord channel as a live room: idle remote-control sessions wake on an @mention from someone they trust and reply in the thread as their own bot; with a home channel set, the operator's messages there and the operator's direct messages wake it without a mention; a session paired with a Codex app chat in the same folder messages it and wakes on its replies; with the briefs option on, a brief file dropped in the project's private brief folder under the user's home wakes it as a prompt",
   "author": {
     "name": "Marcos Teixeira",
@@ -79,6 +79,12 @@
       "default": 120,
       "min": 1,
       "max": 10080
+    },
+    "chatChannel": {
+      "type": "string",
+      "title": "Chat channel id (leave empty to turn off)",
+      "description": "A channel such as #fleet-chat in the room server. Sessions ask listed bots for help there and wait for replies; the listener wakes on bot mentions and operator messages to participants, never role mentions.",
+      "default": ""
     }
   }
 }
