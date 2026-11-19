@@ -106,6 +106,9 @@ async function call<T>($: EngineInterface, link: Link, scope: 'room' | 'conversa
 export function whoAmI($: EngineInterface, link: Link): Promise<Outcome<Me>> {
   return call($, link, 'room', 'GET', '/users/@me', meOf)
 }
+export function botOf($: EngineInterface, link: Link, id: Snowflake): Promise<Outcome<Me | undefined>> {
+  return call($, link, 'conversation', 'GET', '/users/' + id, value => objectOf(value).bot === true ? meOf(value) : undefined)
+}
 
 export type ChannelInfo = { guild: Snowflake, conversation: Conversation }
 const channelInfo = (link: Link, channel: Snowflake, place: Place) => (value: unknown): ChannelInfo => {
@@ -120,6 +123,9 @@ export function roomOf($: EngineInterface, link: Link, channel: Snowflake): Prom
 /** The home channel. A refusal to read it is the home's alone: it never stops the room. */
 export function homeOf($: EngineInterface, link: Link, channel: Snowflake): Promise<Outcome<ChannelInfo>> {
   return call($, link, 'conversation', 'GET', '/channels/' + channel, channelInfo(link, channel, 'home'))
+}
+export function chatOf($: EngineInterface, link: Link, channel: Snowflake): Promise<Outcome<ChannelInfo>> {
+  return call($, link, 'conversation', 'GET', '/channels/' + channel, channelInfo(link, channel, 'chat'))
 }
 /** The bot's direct-message channel with `user`; Discord returns the one that exists rather than opening another. */
 export function dmWith($: EngineInterface, link: Link, user: Snowflake): Promise<Outcome<Conversation>> {
@@ -211,20 +217,20 @@ export const chunks = (text: string): string[] => {
   if (rest.trim()) parts.push(rest)
   return parts
 }
-export async function send($: EngineInterface, link: Link, conversation: Snowflake, text: string, maxMessages = Infinity): Promise<Outcome<Snowflake[]>> {
+export async function send($: EngineInterface, link: Link, conversation: Snowflake, text: string, maxMessages = Infinity, users?: readonly Snowflake[]): Promise<Outcome<Snowflake[]>> {
   const ids: Snowflake[] = []
   const parts = chunks(text)
   if (parts.length > maxMessages) return {kind: 'error', why: 'This reply exceeds the remaining bot message cap; shorten it or wait for a human post.'}
   for (const content of parts) {
     const result = await call($, link, 'conversation', 'POST', '/channels/' + conversation + '/messages', value => idOf(objectOf(value).id),
-      { content, allowed_mentions: { parse: ['users', 'roles'] } })
+      { content, allowed_mentions: users ? {parse: [], users} : { parse: ['users', 'roles'] } })
     if (result.kind !== 'ok') return { ...result, why: result.why + (ids.length ? ' Some chunks were posted; do not repeat the whole message.' : '') }
     ids.push(result.value)
   }
   return { kind: 'ok', value: ids }
 }
-export function startThread($: EngineInterface, link: Link, channel: Snowflake, name: string): Promise<Outcome<Conversation>> {
-  return call($, link, 'room', 'POST', '/channels/' + channel + '/threads', value => ({ id: idOf(objectOf(value).id), name, place: 'room' as const, isThread: true }), { name, type: 11 })
+export function startThread($: EngineInterface, link: Link, channel: Snowflake, name: string, place: Place = 'room'): Promise<Outcome<Conversation>> {
+  return call($, link, 'room', 'POST', '/channels/' + channel + '/threads', value => ({ id: idOf(objectOf(value).id), name, place, isThread: true }), { name, type: 11 })
 }
 /** Shows the bot typing in `conversation` for about ten seconds. Best-effort: it never changes the link's health and reports only whether Discord took it. */
 export async function typing($: EngineInterface, link: Link, conversation: Snowflake): Promise<boolean> {

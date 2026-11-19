@@ -1,11 +1,13 @@
 import type { EngineInterface, Timer, ToolCallInput } from 'claude-code'
-import { activeThreads, capHistory, dmWith, DiscordFailure, homeOf, messagesAfter, need, newest, roomOf, threadOf, typing, whoAmI } from './discord'
+import { activeThreads, capHistory, chatOf, dmWith, DiscordFailure, homeOf, messagesAfter, need, newest, roomOf, threadOf, typing, whoAmI } from './discord'
 import type { ChannelInfo, Link, Outcome } from './discord'
 import { asSnowflake, compose, fold, isDmOn, isNewer, isTalkOnly, mintedAt, PLACES, savedTarget, seed, stoppedText, wakeText } from './room'
-import type { Batch, Checkpoint, Conversation, Me, Message, Pending, Place, Room, Snowflake } from './room'
+import type { Batch, Candidate, Checkpoint, Conversation, Me, Message, Pending, Place, Room, Snowflake } from './room'
 import { holdPresence } from './presence'
 import type { GatewayEvent, Presence } from './presence'
 import { isLive, processStamp, restore, slot, submitNext } from './wake'
+import {ASK_TOOL, askRegistrations, coverageOf, removeRegistration, SEEN_PREFIX} from './ask'
+import type {Coverage} from './ask'
 
 export const POLL_MS = 20_000
 // Discord shows a typing indicator for about ten seconds.
@@ -17,18 +19,19 @@ const TOOL = 'mcp__fleet-room__post'
 const postSchema = (room: Room) => ({
   type: 'object', properties: {
     text: {type: 'string', minLength: 1, maxLength: 8_000, description: 'What to say. <@id> mentions a participant; <@&id> mentions a role.'},
-    thread: {type: 'string', minLength: 1, maxLength: 100, description: room.home
-      ? 'A thread id of the room or the home channel, the room or home channel id, the direct-message id a wake names, or an exact active thread name.'
+    thread: {type: 'string', minLength: 1, maxLength: 100, description: room.home || room.chat
+      ? 'A configured channel id, its thread id or exact active thread name, or the operator direct-message id a wake names.'
       : 'A room thread id, room channel id, or exact active thread name.'},
     topic: {type: 'string', minLength: 1, maxLength: 100, description: 'Start a public topic thread. Give thread or topic, not both.'},
   }, required: ['text'], additionalProperties: false,
 } as const)
 /** Lists the post tool; a name registered again replaces the tool, so this also brings back one the engine dropped. */
 export async function registerPost($: EngineInterface, room: Room): Promise<void> {
-  await $.tool.register({name: 'post', description: room.home
-    ? 'Post in the fleet-room Discord room, the home channel or the operator\'s direct messages as this machine\'s bot. Reply where a wake names, use an existing thread id or exact name, or start a room topic. Only this tool posts your reply.'
+  await $.tool.register({name: 'post', description: room.home || room.chat
+    ? 'Post in the configured fleet-room Discord channels or the operator\'s direct messages as this machine\'s bot. Reply where a wake names, use an existing thread id or exact name, or start a room topic. Only this tool posts your reply.'
     : 'Post in the fleet-room Discord room as this machine\'s bot. Reply in a wake\'s thread, use an existing room thread id or exact name, or start a topic. Only this tool posts your reply.',
   inputSchema: postSchema(room), isDeferred: false})
+  await $.tool.register(ASK_TOOL)
 }
 /** Set when the post tool went missing; a wake turn that saw it missing does not settle. Cleared as the next wake goes out. */
 let isPostLost = false
@@ -52,11 +55,11 @@ const TALK_DENY = 'fleet-room talk-only wake: only its post tool may run, includ
 type Conv = { conversation: Conversation, head: Checkpoint, pending: Pending[], read: Snowflake | undefined }
 type Slot = { kind: 'submitted', batch: Batch } | { kind: 'running', batch: Batch, turnId: string }
 /**
- * `homeSince` is where conversations at home first seen start, from when this bot first watched the home channel, so adding one
- * to an old install never replays its history. `home` and `dm` are resolved once and tried again each poll until they are.
+ * `homeSince` and `chatSince` are where conversations at home and in fleet-chat first seen start, from when this bot first watched
+ * that channel, so adding one to an old install never replays its history. `home` and `dm` are resolved once and tried again each poll until they are.
  */
 type Phase = { kind: 'starting' } | { kind: 'watching', me: Me, guild: Snowflake, roomChannel: Conversation, since: Snowflake, isSwept: boolean,
-  homeSince: Snowflake, home?: ChannelInfo, dm?: Conversation } | { kind: 'stopped' }
+  homeSince: Snowflake, chatSince: Snowflake, home?: ChannelInfo, dm?: Conversation } | { kind: 'stopped' }
 type Watch = {
   room: Room, link: Link, timer: Timer | undefined, phase: Phase, convs: Map<Snowflake, Conv>,
   restoring: boolean, wakeKey: string | undefined, leaseTicks: number, sessionId: string, isEnded: boolean,
@@ -211,9 +214,9 @@ async function onGateway($: EngineInterface, event: GatewayEvent): Promise<void>
   if (event.event === 'ready') $.ui.log('fleet-room: online on the Discord gateway.', {to: 'debug'})
   else if (event.event === 'message') {
     const id = asSnowflake(event.channel)
-    if (id && (id === w.room.channel || id === w.room.home || w.convs.has(id))) void tick($, false)
+    if (id && (id === w.room.channel || id === w.room.home || id === w.room.chat || w.convs.has(id))) void tick($, false)
   } else if (event.event === 'thread') {
-    if (event.parent === w.room.channel || (w.room.home !== undefined && event.parent === w.room.home)) void tick($, false)
+    if (parentsOf(w.room).has(event.parent)) void tick($, false)
   } else if (event.event === 'fatal') {
     if (event.code === 4004) {
       w.link.health = {kind: 'halt', scope: 'room', why: 'Discord refused the bot token'}
@@ -258,7 +261,7 @@ async function load($: EngineInterface, w: Watch, conversation: Conversation): P
   const cp = checkpointOf(await $.store.get(checkpointKey(w, w.phase.me.id, conversation.id)))
   const storedFloor = await $.store.get(pruneKey(w, w.phase.me.id))
   const floor = typeof storedFloor === 'string' ? asSnowflake(storedFloor) : undefined
-  const since = conversation.place === 'room' ? w.phase.since : w.phase.homeSince
+  const since = conversation.place === 'home' || conversation.place === 'dm' ? w.phase.homeSince : conversation.place === 'chat' ? w.phase.chatSince : w.phase.since
   const head = cp ?? seed(conversation.id, since,
     need(await newest($, w.link, conversation.id, messages => capHistory(w.room.cap, messages))), w.room, w.phase.me, floor)
   const conv: Conv = {conversation, head, pending: [], read: cp ? cp.read : head.cursor}
@@ -266,10 +269,12 @@ async function load($: EngineInterface, w: Watch, conversation: Conversation): P
   if (!cp) await $.store.set(checkpointKey(w, w.phase.me.id, conversation.id), {...head, name: conversation.name, place: conversation.place, read: head.cursor})
   return conv
 }
-const absorb = (w: Watch, conv: Conv, messages: readonly Message[], gap: boolean): void => {
+const absorb = (w: Watch, conv: Conv, messages: readonly Message[], gap: boolean, isSuppressed = false): void => {
   if (w.phase.kind !== 'watching') return
   const from = gap ? {...conv.head, guestPosted: true} : conv.head
-  const folded = fold(w.room, w.phase.me, from, messages, conv.conversation.place !== 'room')
+  const isChat = conv.conversation.place === 'chat'
+  const folded = fold(isChat ? {...w.room, wakeRole: undefined} : w.room, w.phase.me, from, messages,
+    conv.conversation.place === 'home' || conv.conversation.place === 'dm', isSuppressed)
   conv.head = folded.head
   conv.pending.push(...folded.pending)
 }
@@ -282,14 +287,58 @@ async function persist($: EngineInterface, w: Watch, conv: Conv): Promise<void> 
     ...(conv.read ? {read: conv.read} : {})})
 }
 /**
+ * Whose each message of a fleet-chat conversation is under this box's ask registrations for it, read fresh; every message elsewhere
+ * is the listener's. With `isPruning`, registrations released longer ago than the idle time are deleted.
+ */
+async function coverageIn($: EngineInterface, w: Watch, conversation: Conversation, isPruning = false): Promise<(id: Snowflake) => Coverage> {
+  if (w.phase.kind !== 'watching' || conversation.place !== 'chat') return () => 'listener'
+  const found = await askRegistrations($, w.phase.me.id, conversation.id)
+  const now = await $.clock.now()
+  if (isPruning) {
+    for (const file of found) if (file.value.until <= now && now - file.mtimeMs > w.room.idleMs) await removeRegistration($, file.path)
+  }
+  return coverageOf(found.map(file => file.value), now)
+}
+/**
+ * Applies the registrations again to what already waits for the listener, since an ask may have registered after a message was
+ * queued: a message an asker received leaves the queue, and the wake stops before the first message a live ask holds.
+ */
+async function screen($: EngineInterface, w: Watch, conv: Conv): Promise<Candidate> {
+  if (!conv.pending.length || conv.conversation.place !== 'chat') return {...conv, unread: []}
+  const coverage = await coverageIn($, w, conv.conversation)
+  conv.pending = conv.pending.filter(pending => coverage(pending.message.id) !== 'delivered')
+  const held = conv.pending.findIndex(pending => coverage(pending.message.id) === 'held')
+  return held < 0 ? {...conv, unread: []} : {...conv, head: conv.pending[held]!.before, pending: conv.pending.slice(0, held), unread: []}
+}
+/**
+ * Splits fetched messages, oldest first, into runs the listener folds as usual and runs delivered to an asker, folded without
+ * waking or joining. It stops at the first held message, so the checkpoint stays before it and a later poll reads it again.
+ */
+const runsOf = (messages: readonly Message[], coverage: (id: Snowflake) => Coverage): Array<{messages: Message[], isDelivered: boolean}> => {
+  const runs: Array<{messages: Message[], isDelivered: boolean}> = []
+  for (const message of messages) {
+    const covered = coverage(message.id)
+    if (covered === 'held') break
+    const isDelivered = covered === 'delivered'
+    const last = runs.at(-1)
+    if (last?.isDelivered === isDelivered) last.messages.push(message)
+    else runs.push({messages: [message], isDelivered})
+  }
+  return runs
+}
+/**
  * What was posted in a conversation since this bot's last wake there, read from Discord as the wake goes out. It reaches back no
- * further than the idle time before the first waking message, since older messages belong to another conversation.
+ * further than the idle time before the first waking message, since older messages belong to another conversation, and leaves
+ * out what an ask received or holds.
  */
 async function readBack($: EngineInterface, w: Watch, conv: Conv): Promise<Message[]> {
   const floor = timeSnowflake(mintedAt(conv.pending[0]!.message.id) - w.room.idleMs)
   const after = conv.read && isNewer(conv.read, floor) ? conv.read : floor
   const result = await messagesAfter($, w.link, conv.conversation.id, after)
-  if (result.kind === 'ok') return result.value.messages
+  if (result.kind === 'ok') {
+    const coverage = await coverageIn($, w, conv.conversation)
+    return result.value.messages.filter(message => coverage(message.id) === 'listener')
+  }
   $.ui.log('fleet-room: could not read back thread ' + conv.conversation.id + ' (' + result.why + '); the wake shows only its new messages.', {to: 'debug'})
   return []
 }
@@ -302,7 +351,7 @@ async function sinceOf($: EngineInterface, key: string): Promise<Snowflake> {
   return start
 }
 /** The channels whose threads are conversations, and the place each one's threads belong to. */
-export const parentsOf = (room: Room): ReadonlyMap<string, Place> => new Map<string, Place>([[room.channel, 'room'], ...(room.home ? [[room.home, 'home'] as const] : [])])
+export const parentsOf = (room: Room): ReadonlyMap<string, Place> => new Map<string, Place>([[room.channel, 'room'], ...(room.home ? [[room.home, 'home'] as const] : []), ...(room.chat ? [[room.chat, 'chat'] as const] : [])])
 /** A home outcome that stops the link or waits it out throws as the room's would; any other failure only skips that place this poll. */
 function homeNeed<T>($: EngineInterface, outcome: Outcome<T>, what: string): T | undefined {
   if (outcome.kind === 'ok') return outcome.value
@@ -332,7 +381,8 @@ async function poll($: EngineInterface, isScheduled: boolean): Promise<void> {
       const {guild, conversation} = need(await roomOf($, w.link, w.room.channel))
       const since = await sinceOf($, 'since/' + prefix(w, me.id))
       const homeSince = w.room.home ? await sinceOf($, 'since/' + prefix(w, me.id) + '/home/' + w.room.home) : since
-      w.phase = {kind: 'watching', me, guild, roomChannel: conversation, since, isSwept: false, homeSince}
+      const chatSince = w.room.chat ? await sinceOf($, 'since/' + prefix(w, me.id) + '/chat/' + w.room.chat) : since
+      w.phase = {kind: 'watching', me, guild, roomChannel: conversation, since, isSwept: false, homeSince, chatSince}
     }
     if (!await holdLease($, w, w.phase.me)) {
       w.leaseTicks = 0
@@ -347,7 +397,9 @@ async function poll($: EngineInterface, isScheduled: boolean): Promise<void> {
     }
     if (w.leaseTicks >= 2 && !w.presence) w.presence = holdPresence($, w.link.token, isDmOn(w.room), event => onGateway($, event))
     const active = need(await activeThreads($, w.link, w.phase.guild, parentsOf(w.room)))
-    const conversations = [...new Map([w.phase.roomChannel, ...active.map(thread => thread.conversation), ...await homePlaces($, w),
+    const chat = w.room.chat ? homeNeed($, await chatOf($, w.link, w.room.chat), 'the chat channel') : undefined
+    const chatPlaces = chat?.guild === w.phase.guild ? [chat.conversation] : []
+    const conversations = [...new Map([w.phase.roomChannel, ...active.map(thread => thread.conversation), ...chatPlaces, ...await homePlaces($, w),
       ...[...w.convs.values()].map(conv => conv.conversation)].map(conv => [conv.id, conv])).values()]
     const held = roomSlot()
     if (held) {
@@ -357,6 +409,11 @@ async function poll($: EngineInterface, isScheduled: boolean): Promise<void> {
       const root = 'cp/' + prefix(w, w.phase.me.id) + '/'
       const now = await $.clock.now()
       for (const key of await $.store.keys()) {
+        if (key.startsWith(SEEN_PREFIX)) {
+          const at = ((await $.store.get(key)) as {at?: unknown} | undefined)?.at
+          if (typeof at !== 'number' || now - at > FORGET_MS) await $.store.delete(key)
+          continue
+        }
         if (!key.startsWith(root)) continue
         const cp = checkpointOf(await $.store.get(key))
         if (!cp) continue
@@ -393,7 +450,13 @@ async function poll($: EngineInterface, isScheduled: boolean): Promise<void> {
       try {
         conv ??= await load($, w, conversation)
         const result = need(await messagesAfter($, w.link, conversation.id, conv.head.cursor))
-        absorb(w, conv, result.messages, result.gap)
+        // Read after the fetch: an ask that registered while Discord answered still covers what the answer holds.
+        const coverage = await coverageIn($, w, conversation, true)
+        let isGap = result.gap
+        for (const run of runsOf(result.messages, coverage)) {
+          absorb(w, conv, run.messages, isGap, run.isDelivered)
+          isGap = false
+        }
         if (result.gap) $.ui.log('fleet-room: history gap in thread ' + conversation.id + '; older mentions omitted'
           + (isTalkOnly(conv.head) ? ', thread is talk-only.' : '.'))
         await persist($, w, conv)
@@ -426,8 +489,12 @@ export async function roomCompose($: EngineInterface): Promise<{ wake: Batch, te
   const w = watch
   if (!w || w.phase.kind !== 'watching' || w.leaseTicks < 2) return undefined
   if (![...w.convs.values()].some(conv => conv.pending.length > 0) || !await canReply($, w.room)) return undefined
-  const candidates = []
-  for (const conv of w.convs.values()) candidates.push({...conv, unread: conv.pending.length ? await readBack($, w, conv) : []})
+  const candidates: Candidate[] = []
+  for (const conv of w.convs.values()) {
+    const candidate = await screen($, w, conv)
+    await persist($, w, conv)
+    candidates.push({...candidate, unread: candidate.pending.length ? await readBack($, w, conv) : []})
+  }
   const batch = compose(candidates, 'w-' + crypto.randomUUID())
   if (batch) isPostLost = false
   return batch && {wake: batch, text: wakeText(w.room, w.phase.me, batch).replaceAll(w.link.token, '[redacted]')}
@@ -437,11 +504,13 @@ async function settle($: EngineInterface, w: Watch, batch: Batch, only?: Snowfla
     if (only !== undefined && item.conversation.id !== only) continue
     const conv = w.convs.get(item.conversation.id)
     if (!conv) continue
-    const remaining = conv.pending.filter(pending => isNewer(pending.message.id, item.answered.cursor))
     const prior = {pending: conv.pending, read: conv.read}
-    conv.pending = remaining
+    conv.pending = conv.pending.filter(pending => isNewer(pending.message.id, item.answered.cursor))
     if (!conv.read || isNewer(item.answered.cursor, conv.read)) conv.read = item.answered.cursor
-    try { await persist($, w, conv) } catch (error) { Object.assign(conv, prior); throw error }
+    try {
+      await screen($, w, conv)
+      await persist($, w, conv)
+    } catch (error) { Object.assign(conv, prior); throw error }
   }
 }
 export async function answered($: EngineInterface, conversation: Snowflake): Promise<void> {

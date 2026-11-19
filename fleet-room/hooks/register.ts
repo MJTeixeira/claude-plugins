@@ -1,5 +1,5 @@
 import type { EngineInterface, Register, SessionAppendInput, ToolCallInput } from 'claude-code'
-import { activeThreads, capHistory, dmWith, DiscordFailure, homeOf, need, newest, openLink, roomOf, send, startThread, threadOf, whoAmI } from './discord'
+import { activeThreads, capHistory, chatOf, dmWith, DiscordFailure, homeOf, need, newest, openLink, roomOf, send, startThread, threadOf, whoAmI } from './discord'
 import type { Link } from './discord'
 import { briefsPrompted, resumeBriefs } from './briefs'
 import { chatsTool, humanPrompted, isCodexAvailable, pairTool, resumeLocal, sendTool } from './local'
@@ -7,6 +7,7 @@ import { asSnowflake, capOf, capVerdict, isDmOn, setupOf, tailBots, tokenIn } fr
 import type { Conversation, Room, Setup, TokenSource } from './room'
 import { answered, guard, parentsOf, postScope, registerPost, roomEnded, startWatch } from './watch'
 import { conversationEnded, targetedIn, turnEnded, turnStarted } from './wake'
+import {ask} from './ask'
 
 const TOOL = 'mcp__fleet-room__post'
 const CODEX_TOOLS = [
@@ -46,25 +47,34 @@ const tokenOf = async ($: EngineInterface, source: TokenSource): Promise<{token?
   }
   return {token: source.inline, paths}
 }
+/** The configured places a thread lookup searches, as a refusal names them. */
+const placesOf = (room: Room): string => {
+  const places = ['the room', ...room.home ? ['the home channel'] : [], ...room.chat ? ['fleet-chat'] : []]
+  return places.length > 1 ? places.slice(0, -1).join(', ') + ' or ' + places.at(-1) : places[0]!
+}
 const targetOf = async ($: EngineInterface, config: Configured, thread: string): Promise<Conversation | {refused: string}> => {
   const {link, room} = config
   const id = asSnowflake(thread)
   const meta = need(await roomOf($, link, room.channel))
   if (id === room.channel) return meta.conversation
+  if (room.chat && id === room.chat) {
+    const chat = need(await chatOf($, link, room.chat))
+    return chat.guild === meta.guild ? chat.conversation : {refused: 'The chat channel must share the room server.'}
+  }
   const home = room.home && (id === undefined || id === room.home) ? need(await homeOf($, link, room.home)) : undefined
   if (home && id === room.home) return home.conversation
   if (id) {
     const found = need(await threadOf($, link, id, parentsOf(room)))?.conversation
     if (found) return found
-    if (!isDmOn(room)) return {refused: room.home ? 'That id is not a thread of the room or the home channel.' : 'That id is not a thread of the room.'}
+    if (!isDmOn(room)) return {refused: 'That id is not a thread of ' + placesOf(room) + '.'}
     const dm = need(await dmWith($, link, room.operator))
-    return dm.id === id ? dm : {refused: 'That id is not a thread of the room or the home channel, nor the operator\'s direct messages.'}
+    return dm.id === id ? dm : {refused: 'That id is not a thread of ' + placesOf(room) + ', nor the operator\'s direct messages.'}
   }
   const active = [...need(await activeThreads($, link, meta.guild, parentsOf(room))),
     ...home && home.guild !== meta.guild ? need(await activeThreads($, link, home.guild, new Map([[home.conversation.id, 'home' as const]]), 'conversation')) : []]
   const matches = active.filter(item => item.conversation.name === thread)
   return matches.length === 1 ? matches[0]!.conversation : {refused: matches.length > 1 ? 'More than one thread has that name; use its id.'
-    : 'No active ' + (room.home ? '' : 'room ') + 'thread by that name. Active: ' + (active.map(item => item.conversation.name).join(', ') || 'none')}
+    : 'No active thread by that name in ' + placesOf(room) + '. Active: ' + (active.map(item => item.conversation.name).join(', ') || 'none')}
 }
 const post = async ($: EngineInterface, config: Configured, raw: Record<string, unknown>): Promise<{result: string} | {deny: string}> => {
   const {link, room} = config
@@ -177,6 +187,8 @@ export const register: Register = (on, options) => {
 
   on('tool.call', {tool: TOOL}, async ($, e) => configured ? post($, configured, e) : {deny: 'fleet-room is not configured.'})
     .catch(() => ({deny: 'fleet-room failed while posting; text may already be posted. Tell the operator before repeating it.'}))
+  on('tool.call', {tool: 'mcp__fleet-room__ask'}, async ($, e, next) => configured ? ask($, configured.room, configured.link, e, next.signal) : {deny: 'fleet-room is not configured.'})
+    .catch(() => ({deny: 'fleet-room ask failed; check the thread before repeating.'}))
 
   on('session.start', async ($, e, next) => {
     const started = await next(e)
