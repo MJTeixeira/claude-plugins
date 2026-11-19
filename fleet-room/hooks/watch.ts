@@ -13,7 +13,6 @@ export const TYPING_MS = 8_000
 const LEASE_MS = 3 * POLL_MS
 const SWEEP_MS = 7 * 24 * 60 * 60 * 1000
 const FORGET_MS = 30 * 24 * 60 * 60 * 1000
-const UNREAD_KEPT = 100
 const TOOL = 'mcp__fleet-room__post'
 const postSchema = (room: Room) => ({
   type: 'object', properties: {
@@ -49,7 +48,8 @@ async function canReply($: EngineInterface, room: Room): Promise<boolean> {
 }
 const TALK_DENY = 'fleet-room talk-only wake: only its post tool may run, including in subagents. The operator must post in the Discord thread to unlock other tools; phone input does not unlock them.'
 
-type Conv = { conversation: Conversation, head: Checkpoint, pending: Pending[], unread: Message[] }
+/** `read` is the newest message a settled wake showed this bot in the conversation: the next wake's read-back starts after it. */
+type Conv = { conversation: Conversation, head: Checkpoint, pending: Pending[], read: Snowflake | undefined }
 type Slot = { kind: 'submitted', batch: Batch } | { kind: 'running', batch: Batch, turnId: string }
 /**
  * `homeSince` is where conversations at home first seen start, from when this bot first watched the home channel, so adding one
@@ -77,8 +77,8 @@ const prefix = (w: Watch, me: Snowflake): string => me + '/' + w.room.channel
 const pruneKey = (w: Watch, me: Snowflake): string => 'prune/' + prefix(w, me)
 const timeSnowflake = (now: number): Snowflake => String(BigInt(Math.max(0, now - 1_420_070_400_000)) << 22n) as Snowflake
 const checkpointKey = (w: Watch, me: Snowflake, id: Snowflake): string => 'cp/' + prefix(w, me) + '/' + id
-/** A saved checkpoint carries its conversation's name and place; one saved before places existed belongs to the room. */
-type Saved = Checkpoint & { name: string, place?: Place }
+/** A saved checkpoint carries its conversation's name, place and `read` (see `Conv`); one saved before places existed belongs to the room. */
+type Saved = Checkpoint & { name: string, place?: Place, read?: Snowflake }
 const checkpointOf = (value: unknown): Saved | undefined => {
   if (value === null || typeof value !== 'object') return undefined
   const cp = value as Record<string, unknown>
@@ -87,6 +87,7 @@ const checkpointOf = (value: unknown): Saved | undefined => {
     || (cp.place !== undefined && !PLACES.includes(cp.place as Place))
     || (cp.member !== undefined && typeof cp.member !== 'boolean') || (cp.roleAt !== undefined && (typeof cp.roleAt !== 'string' || !asSnowflake(cp.roleAt)))
     || (cp.said !== undefined && (typeof cp.said !== 'string' || !asSnowflake(cp.said)))
+    || (cp.read !== undefined && (typeof cp.read !== 'string' || !asSnowflake(cp.read)))
     || (cp.peers !== undefined && (!Array.isArray(cp.peers) || !cp.peers.every(peer => peer !== null && typeof peer === 'object'
       && typeof peer.id === 'string' && asSnowflake(peer.id) && typeof peer.name === 'string' && typeof peer.at === 'string' && asSnowflake(peer.at))))) return undefined
   return cp as Saved
@@ -260,9 +261,9 @@ async function load($: EngineInterface, w: Watch, conversation: Conversation): P
   const since = conversation.place === 'room' ? w.phase.since : w.phase.homeSince
   const head = cp ?? seed(conversation.id, since,
     need(await newest($, w.link, conversation.id, messages => capHistory(w.room.cap, messages))), w.room, w.phase.me, floor)
-  const conv: Conv = {conversation, head, pending: [], unread: []}
+  const conv: Conv = {conversation, head, pending: [], read: cp ? cp.read : head.cursor}
   w.convs.set(conversation.id, conv)
-  if (!cp) await $.store.set(checkpointKey(w, w.phase.me.id, conversation.id), {...head, name: conversation.name, place: conversation.place})
+  if (!cp) await $.store.set(checkpointKey(w, w.phase.me.id, conversation.id), {...head, name: conversation.name, place: conversation.place, read: head.cursor})
   return conv
 }
 const absorb = (w: Watch, conv: Conv, messages: readonly Message[], gap: boolean): void => {
@@ -271,15 +272,26 @@ const absorb = (w: Watch, conv: Conv, messages: readonly Message[], gap: boolean
   const folded = fold(w.room, w.phase.me, from, messages, conv.conversation.place !== 'room')
   conv.head = folded.head
   conv.pending.push(...folded.pending)
-  conv.unread = [...conv.unread, ...messages].slice(-UNREAD_KEPT)
 }
 async function persist($: EngineInterface, w: Watch, conv: Conv): Promise<void> {
   if (w.phase.kind !== 'watching') return
   const target = savedTarget(conv.head, conv.pending)
   const key = checkpointKey(w, w.phase.me.id, conv.conversation.id)
   const current = checkpointOf(await $.store.get(key))
-  if (!current || isNewer(target.cursor, current.cursor)) await $.store.set(key, {...target, name: conv.conversation.name, place: conv.conversation.place})
-  conv.unread = conv.unread.filter(message => isNewer(message.id, target.cursor))
+  if (!current || isNewer(target.cursor, current.cursor)) await $.store.set(key, {...target, name: conv.conversation.name, place: conv.conversation.place,
+    ...(conv.read ? {read: conv.read} : {})})
+}
+/**
+ * What was posted in a conversation since this bot's last wake there, read from Discord as the wake goes out. It reaches back no
+ * further than the idle time before the first waking message, since older messages belong to another conversation.
+ */
+async function readBack($: EngineInterface, w: Watch, conv: Conv): Promise<Message[]> {
+  const floor = timeSnowflake(mintedAt(conv.pending[0]!.message.id) - w.room.idleMs)
+  const after = conv.read && isNewer(conv.read, floor) ? conv.read : floor
+  const result = await messagesAfter($, w.link, conv.conversation.id, after)
+  if (result.kind === 'ok') return result.value.messages
+  $.ui.log('fleet-room: could not read back thread ' + conv.conversation.id + ' (' + result.why + '); the wake shows only its new messages.', {to: 'debug'})
+  return []
 }
 async function sinceOf($: EngineInterface, key: string): Promise<Snowflake> {
   const stored = await $.store.get(key)
@@ -414,7 +426,9 @@ export async function roomCompose($: EngineInterface): Promise<{ wake: Batch, te
   const w = watch
   if (!w || w.phase.kind !== 'watching' || w.leaseTicks < 2) return undefined
   if (![...w.convs.values()].some(conv => conv.pending.length > 0) || !await canReply($, w.room)) return undefined
-  const batch = compose([...w.convs.values()], 'w-' + crypto.randomUUID())
+  const candidates = []
+  for (const conv of w.convs.values()) candidates.push({...conv, unread: conv.pending.length ? await readBack($, w, conv) : []})
+  const batch = compose(candidates, 'w-' + crypto.randomUUID())
   if (batch) isPostLost = false
   return batch && {wake: batch, text: wakeText(w.room, w.phase.me, batch).replaceAll(w.link.token, '[redacted]')}
 }
@@ -424,9 +438,10 @@ async function settle($: EngineInterface, w: Watch, batch: Batch, only?: Snowfla
     const conv = w.convs.get(item.conversation.id)
     if (!conv) continue
     const remaining = conv.pending.filter(pending => isNewer(pending.message.id, item.answered.cursor))
-    const prior = conv.pending
+    const prior = {pending: conv.pending, read: conv.read}
     conv.pending = remaining
-    try { await persist($, w, conv) } catch (error) { conv.pending = prior; throw error }
+    if (!conv.read || isNewer(item.answered.cursor, conv.read)) conv.read = item.answered.cursor
+    try { await persist($, w, conv) } catch (error) { Object.assign(conv, prior); throw error }
   }
 }
 export async function answered($: EngineInterface, conversation: Snowflake): Promise<void> {

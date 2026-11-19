@@ -58,7 +58,7 @@
     {
       "name": "fleet-room",
       "description": "A Discord room for Claude sessions: trusted mentions wake the listening session; a registered tool replies as its own bot. An optional home channel and the operator's direct messages wake it without a mention. A local room with one Codex app chat in the same project folder, and opt-in brief files that wake a session as a prompt.",
-      "version": "0.6.3",
+      "version": "0.7.0",
       "license": "MIT",
       "keywords": [
         "discord",
