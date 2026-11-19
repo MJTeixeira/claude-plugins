@@ -85,14 +85,14 @@ export type Peer = { id: Snowflake, name: string, at: Snowflake }
  */
 export type Checkpoint = { v: 1, cursor: Snowflake, bots: number, operatorPosted: boolean, guestPosted: boolean,
   member?: boolean, peers?: readonly Peer[], roleAt?: Snowflake, said?: Snowflake }
-/** A message that wakes this bot; `isDirect` when it mentions the bot or its wake role, otherwise it arrived in a conversation the bot is in. */
+/** A message that wakes this bot; `isDirect` when it mentions the bot or its wake role, otherwise it is the operator's in a conversation the bot is in. */
 export type Pending = { message: Message, before: Checkpoint, isDirect: boolean }
 export type Folded = { head: Checkpoint, pending: readonly Pending[] }
 const MAX_PEERS = 20
 /**
- * Folds new messages into a conversation's checkpoint. In the room every waking id wakes a participant; at home (`isHome`: the home
- * channel, its threads and the operator's direct messages) only the operator wakes without a mention, fleet ids only by mentioning
- * the bot or its wake role, and guests and strangers never.
+ * Folds new messages into a conversation's checkpoint. In the room a waking id wakes this bot by mentioning it or its wake role, and the
+ * operator also wakes a participant without one; at home (`isHome`: the home channel, its threads and the operator's direct messages)
+ * the operator wakes without a mention, fleet ids only by mentioning the bot or its wake role, and guests and strangers never.
  */
 export const fold = (room: Room, me: Me, from: Checkpoint, messages: readonly Message[], isHome = false): Folded => {
   let head = from
@@ -121,7 +121,7 @@ export const fold = (room: Room, me: Me, from: Checkpoint, messages: readonly Me
       guestPosted: before.guestPosted || standing === 'guest' || standing === 'stranger',
       member: standing === 'you' || (wakes && isDirect) || isMember, peers: [...peers.values()].slice(-MAX_PEERS),
       ...(roleAt ? { roleAt } : {}) }
-    const isCalled = isHome ? standing === 'operator' || (standing === 'fleet' && isDirect) : isDirect || isMember
+    const isCalled = isHome ? standing === 'operator' || (standing === 'fleet' && isDirect) : isDirect || (isMember && standing === 'operator')
     if (wakes && isCalled) pending.push({ message, before, isDirect })
   }
   return { head, pending }
@@ -143,6 +143,7 @@ export const seed = (conversationId: Snowflake, since: Snowflake, newestFirst: r
 }
 
 export type Mode = 'act' | 'talk'
+/** `unread` is the read-back: what was posted in the conversation since this bot's last wake there, oldest first. */
 export type Candidate = { conversation: Conversation, head: Checkpoint, pending: readonly Pending[], unread: readonly Message[] }
 /** One conversation of a wake: `wakes` the pending messages it answers, `direct` those that mention the bot or its role, `peers` the other bots seen there. */
 export type BatchItem = { conversation: Conversation, shown: readonly Message[], omitted: number, wakes: ReadonlySet<Snowflake>,
@@ -152,10 +153,12 @@ export const MAX_PER_THREAD = 25
 export const MAX_MESSAGE_CHARS = 1_500
 export const MAX_WAKE_CHARS = 20_000
 export const WAKE_FORMAT = 2
-const ROW_BUDGET = MAX_MESSAGE_CHARS + 250
+// A message line's header, marker and attachments note.
+const ROW_HEADER = 250
 // A thread's heading, its omitted-messages line and up to MAX_SHOWN_PEERS names.
 const ITEM_BUDGET = 750
 const MAX_SHOWN_PEERS = 5
+const rowCost = (message: Message): number => ROW_HEADER + bodyOf(message.content).length
 export const compose = (candidates: readonly Candidate[], marker: string): Batch | undefined => {
   const pending = candidates.filter(candidate => candidate.pending.length > 0)
   if (!pending.length) return undefined
@@ -163,25 +166,38 @@ export const compose = (candidates: readonly Candidate[], marker: string): Batch
   let budget = MAX_WAKE_CHARS - 2_000
   const items: BatchItem[] = []
   for (const candidate of pending.filter(candidate => isTalkOnly(candidate.head) === (mode === 'talk'))) {
-    const count = Math.min(MAX_PER_THREAD, Math.floor((budget - ITEM_BUDGET) / ROW_BUDGET))
-    if (count < 1) break
-    const selected = candidate.pending.slice(0, count)
+    let left = budget - ITEM_BUDGET
+    const fits = (message: Message, count: number): boolean => count < MAX_PER_THREAD && rowCost(message) <= left
+    const selected: Pending[] = []
+    for (const next of candidate.pending) {
+      if (!fits(next.message, selected.length)) break
+      selected.push(next)
+      left -= rowCost(next.message)
+    }
+    if (!selected.length) break
     const answered = candidate.pending[selected.length]?.before ?? candidate.head
     const wakes = new Set(selected.map(pending => pending.message.id))
     const direct = new Set(selected.filter(pending => pending.isDirect).map(pending => pending.message.id))
-    const context = candidate.unread.filter(message => !isNewer(message.id, answered.cursor) && !wakes.has(message.id)).slice(-(count - selected.length || 0))
-    const shown = [...selected.map(pending => pending.message), ...(selected.length < count ? context : [])]
-      .sort((a, b) => isNewer(a.id, b.id) ? 1 : -1)
+    const context: Message[] = []
+    if (selected.length === candidate.pending.length) {
+      for (const message of candidate.unread.filter(message => !message.isSystem && !isNewer(message.id, answered.cursor) && !wakes.has(message.id)).reverse()) {
+        if (!fits(message, selected.length + context.length)) break
+        context.push(message)
+        left -= rowCost(message)
+      }
+    }
+    const shown = [...selected.map(pending => pending.message), ...context].sort((a, b) => isNewer(a.id, b.id) ? 1 : -1)
     const shownIds = new Set(shown.map(message => message.id))
-    const omitted = candidate.unread.filter(message => !shownIds.has(message.id)).length
+    const omitted = candidate.unread.filter(message => !message.isSystem && !shownIds.has(message.id)).length
     items.push({ conversation: candidate.conversation, shown, omitted, wakes, direct, answered,
       peers: candidate.head.peers ?? [], isRoleCalled: candidate.head.roleAt !== undefined })
-    budget -= ITEM_BUDGET + shown.length * ROW_BUDGET
+    budget = left
   }
   return { marker, mode, items }
 }
-const CONVERSATION_RULE = 'You are a participant in each conversation below, and the other bots listed there read the same messages. '
-  + '▶ marks a message that mentions you or your wake role; ▷ marks a new message in a conversation you joined; unmarked lines are earlier context. '
+const CONVERSATION_RULE = 'You are a participant in each conversation below. '
+  + '▶ marks a message that mentions you or your wake role; ▷ marks an operator message without a mention in a conversation you joined; unmarked lines are earlier context. '
+  + 'Other bots wake only when mentioned or on such operator messages: mention one to bring it in. '
   + 'Post only when a message is for you or you add something new. When another participant is the right one to answer, end the turn without posting: that is correct. '
   + 'Never post acknowledgements, thanks, agreement or "nothing to add".'
 const HOME_RULE = 'In your home channel and the operator\'s direct messages, every operator message is for you, mention or not; other bots wake you there only by mentioning you or your wake role.'
