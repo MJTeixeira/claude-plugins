@@ -7,7 +7,7 @@ import { asSnowflake, capOf, capVerdict, isDmOn, setupOf, tailBots, tokenIn } fr
 import type { Conversation, Room, Setup, TokenSource } from './room'
 import { answered, guard, parentsOf, postScope, registerPost, roomEnded, startWatch } from './watch'
 import { conversationEnded, targetedIn, turnEnded, turnStarted } from './wake'
-import {ask} from './ask'
+import {ask, asksEnded, asksPrompted, loadReachable, resumeAsks} from './ask'
 
 const TOOL = 'mcp__fleet-room__post'
 const CODEX_TOOLS = [
@@ -149,6 +149,10 @@ async function startRoom($: EngineInterface, setup: Setup, ended?: string): Prom
   if (!token) { $.ui.log('fleet-room: idle (no bot token).', {to: 'debug'}); return }
   for (const problem of setup.problems) $.ui.log('fleet-room: ' + problem)
   configured = {link: openLink(token), room: setup.room, tokenPaths: paths}
+  if (setup.room.chat) {
+    try { await loadReachable($, setup.room, configured.link) } catch { $.ui.log('fleet-room: could not name the fleet bots; ask lists them by id.', {to: 'debug'}) }
+  }
+  try { await resumeAsks($, setup.room, configured.link) } catch { $.ui.log('fleet-room: could not resume open asks; their replies go to the listener.') }
   await registerPost($, setup.room)
   if (await $.env.get('FLEET_ROOM') === '1') await startWatch($, setup.room, configured.link, ended)
 }
@@ -187,7 +191,7 @@ export const register: Register = (on, options) => {
 
   on('tool.call', {tool: TOOL}, async ($, e) => configured ? post($, configured, e) : {deny: 'fleet-room is not configured.'})
     .catch(() => ({deny: 'fleet-room failed while posting; text may already be posted. Tell the operator before repeating it.'}))
-  on('tool.call', {tool: 'mcp__fleet-room__ask'}, async ($, e, next) => configured ? ask($, configured.room, configured.link, e, next.signal) : {deny: 'fleet-room is not configured.'})
+  on('tool.call', {tool: 'mcp__fleet-room__ask'}, async ($, e) => configured ? ask($, configured.room, configured.link, e) : {deny: 'fleet-room is not configured.'})
     .catch(() => ({deny: 'fleet-room ask failed; check the thread before repeating.'}))
 
   on('session.start', async ($, e, next) => {
@@ -199,12 +203,16 @@ export const register: Register = (on, options) => {
     return started
   }).catch(($, e, next) => next(e))
   on('session.end', async ($, e, next) => {
-    if (e.reason !== 'clear' && e.reason !== 'resume') return next(e)
+    if (e.reason !== 'clear' && e.reason !== 'resume') {
+      try { await asksEnded($) } catch { $.ui.log('fleet-room: could not end open asks cleanly; a file left live expires on its own.', {to: 'debug'}) }
+      return next(e)
+    }
     clearedFrom = e.sessionId
     try {
       await roomEnded($)
       await conversationEnded($)
     } catch { $.ui.log('fleet-room: could not let go of the ended session cleanly.', {to: 'debug'}) }
+    try { await asksEnded($) } catch { $.ui.log('fleet-room: could not end open asks cleanly; a file left live expires on its own.', {to: 'debug'}) }
     const result = await next(e)
     $.clock.after(0, () => { void rebind($, options, setup) })
     return result
@@ -219,6 +227,7 @@ export const register: Register = (on, options) => {
     if (HUMAN_ORIGINS.includes(e.origin.kind)) {
       await humanPrompted($)
       await briefsPrompted($)
+      await asksPrompted($)
     }
     const targeted = targetedIn(e.text)
     if (targeted) {
