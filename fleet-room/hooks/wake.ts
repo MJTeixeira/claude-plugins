@@ -1,4 +1,6 @@
 import type { EngineInterface, TurnCompleteInput, TurnStartInput } from 'claude-code'
+import { asksChanged, asksCompose, asksSettle } from './ask'
+import type { AskWake } from './ask'
 import { briefsChanged, briefsCompose, briefsSettle } from './briefs'
 import type { BriefWake } from './briefs'
 import { codexChanged, codexCompose, codexSettle } from './local'
@@ -26,7 +28,7 @@ export function targetedIn(text: string): { marker: string, target: string } | u
 }
 
 /** The inputs of the session's single wake slot, asked in this order; the first with something waiting fills it, so wakes never pile up. */
-const SOURCES = ['discord', 'codex', 'briefs'] as const
+const SOURCES = ['discord', 'asks', 'codex', 'briefs'] as const
 export type SourceName = typeof SOURCES[number]
 /** A batch of input submitted as one plugin turn; `marker` is in its text and binds the turn that starts with it. */
 export type Wake = { marker: string }
@@ -37,6 +39,7 @@ type Core = { slot: Slot, main: string | undefined, errorEnds: number, composing
 const core: Core = { slot: {kind: 'free'}, main: undefined, errorEnds: 0, composing: false }
 const SETTLE_FAILED: Record<SourceName, string> = {
   discord: 'fleet-room: could not save wake checkpoints; mentions may replay on a later poll.',
+  asks: 'fleet-room: could not record delivered ask replies; they may wake this session again.',
   codex: 'fleet-room: could not archive Codex messages; they may wake this session again.',
   briefs: 'fleet-room: could not archive a brief; it may wake this session again.',
 }
@@ -58,6 +61,8 @@ export async function isLive($: EngineInterface, stamp: unknown, isHandedOver: b
   return isHandedOver || stamp === await processStamp($)
 }
 export const slot = (): Slot => core.slot
+/** Whether the session is in a main turn or has a wake out: it is live and will take the next wake when that ends. */
+export const isBusy = (): boolean => core.main !== undefined || core.slot.kind === 'submitted' || core.slot.kind === 'running'
 /** Puts back a wake a source saved before a hot reload; a running one also marks its turn as the main turn. */
 export function restore(next: Slot): void {
   const prior = core.slot
@@ -67,38 +72,43 @@ export function restore(next: Slot): void {
 }
 /**
  * A /clear or an in-process /resume ends the conversation a running turn belonged to, so its wake is let go unsettled and its messages wake the
- * next conversation. A submitted or held wake stays: its prompt may still enter the next conversation, guarded.
+ * next conversation. A submitted or held wake stays: its prompt may still enter the next conversation, guarded. Ask replies belong to
+ * the conversation that asked: a running ask wake settles, since it showed them, and a submitted one is let go, its prompt dropped as targeted.
  */
 export async function conversationEnded($: EngineInterface): Promise<void> {
   const current = core.slot
-  if (current.kind === 'running') {
-    if (current.source === 'briefs' && (current.wake as BriefWake).target !== undefined) {
-      await settleOf($, 'briefs', current.wake)
-    } else {
-      released(current.source)
+  const owned = current.kind === 'running' || current.kind === 'submitted' ? current : undefined
+  const bound = owned !== undefined && (owned.source === 'asks' || (owned.source === 'briefs' && (owned.wake as BriefWake).target !== undefined))
+  try {
+    if (owned?.kind === 'running') {
+      if (bound) await settleOf($, owned.source, owned.wake)
+      else released(owned.source)
+    } else if (owned?.kind === 'submitted' && bound && owned.source === 'briefs') {
+      await settleOf($, 'briefs', owned.wake)
     }
-    core.slot = {kind: 'free'}
-  } else if (current.kind === 'submitted') {
-    if (current.source === 'briefs' && (current.wake as BriefWake).target !== undefined) {
-      await settleOf($, 'briefs', current.wake)
-      core.slot = {kind: 'free'}
-    }
+  } catch {
+    $.ui.log(SETTLE_FAILED[owned!.source])
+  } finally {
+    // A failed settle must not leave the ended conversation's wake holding the slot.
+    if (owned?.kind === 'running' || (owned?.kind === 'submitted' && bound)) core.slot = {kind: 'free'}
+    core.main = undefined
+    core.errorEnds = 0
   }
-  core.main = undefined
-  core.errorEnds = 0
   await changed($)
 }
 // The mod scanner refuses `$` passed through a value, so each source's functions are named here.
 async function changed($: EngineInterface): Promise<void> {
   await roomChanged($)
+  await asksChanged($)
   await codexChanged($)
   await briefsChanged($)
 }
 async function composeOf($: EngineInterface, source: SourceName): Promise<{ wake: Wake, text: string } | undefined> {
-  return source === 'discord' ? roomCompose($) : source === 'codex' ? codexCompose($) : briefsCompose($)
+  return source === 'discord' ? roomCompose($) : source === 'asks' ? asksCompose($) : source === 'codex' ? codexCompose($) : briefsCompose($)
 }
 async function settleOf($: EngineInterface, source: SourceName, wake: Wake): Promise<void> {
   if (source === 'discord') await roomSettle($, wake as Batch)
+  else if (source === 'asks') await asksSettle($, wake as AskWake)
   else if (source === 'codex') await codexSettle($, wake as CodexWake)
   else await briefsSettle($, wake as BriefWake)
 }
@@ -115,6 +125,7 @@ export async function submitNext($: EngineInterface): Promise<void> {
       core.slot = {kind: 'submitted', source, wake: next.wake}
       await changed($)
       if (source === 'discord') roomSubmitted($, next.wake as Batch)
+      if (source === 'asks') trackTargeted(next.wake.marker, (next.wake as AskWake).target)
       if (source === 'briefs') {
         const briefWake = next.wake as BriefWake
         if (briefWake.target !== undefined) {

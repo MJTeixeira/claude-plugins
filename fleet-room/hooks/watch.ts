@@ -6,7 +6,7 @@ import type { Batch, Candidate, Checkpoint, Conversation, Me, Message, Pending, 
 import { holdPresence } from './presence'
 import type { GatewayEvent, Presence } from './presence'
 import { isLive, processStamp, restore, slot, submitNext } from './wake'
-import {ASK_TOOL, askRegistrations, coverageOf, removeRegistration, SEEN_PREFIX} from './ask'
+import {askRegistrations, askTool, coverageOf, removeRegistration} from './ask'
 import type {Coverage} from './ask'
 
 export const POLL_MS = 20_000
@@ -31,7 +31,7 @@ export async function registerPost($: EngineInterface, room: Room): Promise<void
     ? 'Post in the configured fleet-room Discord channels or the operator\'s direct messages as this machine\'s bot. Reply where a wake names, use an existing thread id or exact name, or start a room topic. Only this tool posts your reply.'
     : 'Post in the fleet-room Discord room as this machine\'s bot. Reply in a wake\'s thread, use an existing room thread id or exact name, or start a topic. Only this tool posts your reply.',
   inputSchema: postSchema(room), isDeferred: false})
-  await $.tool.register(ASK_TOOL)
+  await $.tool.register(askTool())
 }
 /** Set when the post tool went missing; a wake turn that saw it missing does not settle. Cleared as the next wake goes out. */
 let isPostLost = false
@@ -409,9 +409,9 @@ async function poll($: EngineInterface, isScheduled: boolean): Promise<void> {
       const root = 'cp/' + prefix(w, w.phase.me.id) + '/'
       const now = await $.clock.now()
       for (const key of await $.store.keys()) {
-        if (key.startsWith(SEEN_PREFIX)) {
-          const at = ((await $.store.get(key)) as {at?: unknown} | undefined)?.at
-          if (typeof at !== 'number' || now - at > FORGET_MS) await $.store.delete(key)
+        // Late-reply records an older ask kept; nothing reads them now.
+        if (key.startsWith('ask-seen/')) {
+          await $.store.delete(key)
           continue
         }
         if (!key.startsWith(root)) continue

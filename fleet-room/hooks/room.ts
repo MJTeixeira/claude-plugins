@@ -162,7 +162,7 @@ const ROW_HEADER = 250
 // A thread's heading, its omitted-messages line and up to MAX_SHOWN_PEERS names.
 const ITEM_BUDGET = 750
 const MAX_SHOWN_PEERS = 5
-const rowCost = (message: Message): number => ROW_HEADER + bodyOf(message.content).length
+export const rowCost = (message: Message): number => ROW_HEADER + bodyOf(message.content).length
 export const compose = (candidates: readonly Candidate[], marker: string): Batch | undefined => {
   const pending = candidates.filter(candidate => candidate.pending.length > 0)
   if (!pending.length) return undefined
@@ -216,7 +216,7 @@ export const nameLabel = (name: string, max: number): string =>
   label(name.replace(/[()<>|@]/g, '').trim(), max).trim() || 'unnamed'
 /** Continuation lines start deeper than any message header, which starts with two spaces and a non-space. */
 const CONTINUATION = '\n    | '
-const bodyOf = (content: string): string => {
+export const bodyOf = (content: string): string => {
   const [first = '', ...rest] = content.split(LINE_BREAK)
   let body = first.slice(0, MAX_MESSAGE_CHARS)
   for (const line of rest) {
