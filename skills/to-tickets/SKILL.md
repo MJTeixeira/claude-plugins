@@ -8,7 +8,7 @@ disable-model-invocation: true
 
 Break a plan, spec, or conversation into a set of **tickets**: tracer-bullet vertical slices, each declaring the tickets that **block** it.
 
-This repository has exactly one linked GitHub Project board, titled `factory: <repo>`. Every issue on that board is a task the factory will run, and a board issue whose body fails the factory's parser is refused and parked. Each ticket is one such task: one unattended session of roughly 150k to 200k tokens of context. That session reads the ticket's own issue body and nothing else: it has no GitHub login, so it cannot open the spec or any other issue.
+This repository has exactly one linked GitHub Project board, titled `factory: <repo>`. Every issue on that board is a task the factory will run, and a board issue whose body fails the factory's parser is treated as a request: the factory's triage writes its spec in place, so it is not built as written. Each ticket is one such task: one unattended session of roughly 150k to 200k tokens of context. That session reads the ticket's own issue body and nothing else: it has no GitHub login, so it cannot open the spec or any other issue.
 
 ## Process
 

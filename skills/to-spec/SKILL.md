@@ -6,7 +6,7 @@ disable-model-invocation: true
 
 This skill takes the current conversation context and codebase understanding and produces a spec. Do NOT interview the user; just synthesize what you already know.
 
-This repository has exactly one linked GitHub Project board, titled `factory: <repo>`. Every issue on that board is a task the factory will run, and a board issue whose body fails the factory's parser is refused and parked. The spec is not a task: it is a GitHub issue in this repository, the epic, and it stays off the board. Its body ends with a `## Tasks` checklist, one line per task issue, `- [ ] #41`, which `/to-tickets` fills as it publishes them.
+This repository has exactly one linked GitHub Project board, titled `factory: <repo>`. Every issue on that board is a task the factory will run, and a board issue whose body fails the factory's parser is treated as a request: the factory's triage writes its spec in place, so it is not built as written. The spec is not a task: it is a GitHub issue in this repository, the epic, and it stays off the board. Its body ends with a `## Tasks` checklist, one line per task issue, `- [ ] #41`, which `/to-tickets` fills as it publishes them.
 
 ## Process
 

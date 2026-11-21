@@ -22,7 +22,7 @@ The map is a single issue on this repo's issue tracker, labelled `wayfinder:map`
 
 The map is an **index**, not a store. It lists the decisions made and points at the tickets that hold their detail; a decision lives in exactly one place, its ticket, so the map never restates it, only gists it and links.
 
-**The map, its child tickets, blocking, and frontier queries live on this repo's GitHub issues, off the board.** This repository has exactly one linked GitHub Project board, titled `factory: <repo>`. Every issue on that board is a task the factory will run, and a board issue whose body fails the factory's parser is refused and parked. A map or a decision ticket is not a task, so none of them goes on the board. Create each with `gh issue create`, make a ticket a child of the map with `gh issue edit <ticket> --parent <map>`, and block with `gh issue edit <n> --add-blocked-by <m>`. If the board's auto-add workflow put it on the board, remove the board item, never the issue.
+**The map, its child tickets, blocking, and frontier queries live on this repo's GitHub issues, off the board.** This repository has exactly one linked GitHub Project board, titled `factory: <repo>`. Every issue on that board is a task the factory will run, and a board issue whose body fails the factory's parser is treated as a request: the factory's triage writes its spec in place, so it is not built as written. A map or a decision ticket is not a task, so none of them goes on the board. Create each with `gh issue create`, make a ticket a child of the map with `gh issue edit <ticket> --parent <map>`, and block with `gh issue edit <n> --add-blocked-by <m>`. If the board's auto-add workflow put it on the board, remove the board item, never the issue.
 
 ### The map body
 
