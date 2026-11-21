@@ -304,6 +304,10 @@ keymaker only checks that the key's rc unit is active, so fleet-room owns livene
 
 **`/clear`, `/resume`, restarts and hot reload.** A `/clear` or an in-process `/resume` moves the loop count and the lease to the new session. Do not follow ids across that hand-over: the task's conversation is gone, and a brief for the old id must never reach the next session. fleet-room matches only the current `$.session.id()`, read fresh at each poll. A targeted brief whose turn was running at `/clear` was delivered to that conversation and is archived once. A targeted brief submitted before `/clear` has its file archived once; when its queued prompt arrives in the next conversation, its turn is aborted at `turn.start` (or dropped at `prompt.submit`), so it never runs in the new conversation. One that was not yet submitted remains in the folder and is expired to `archive/` by the lease holder after 1 hour as undelivered. An untargeted brief whose turn was running at the `/clear` is let go unarchived, so it wakes the new conversation; one only submitted has its turn bound there and is archived once. A hot reload restores a submitted or running brief, so it is archived once and not sent again. A restart delivers again whatever is still in the folder; a crash after a brief's turn ended and before it was archived delivers that brief again.
 
+## Stale version notice
+
+When `claude plugin update` installs a newer fleet-room on disk while a session is already running, the session still holds the version it loaded at startup. At the start of each main turn, fleet-room reads the installed manifest from disk (`$.plugin.root` for a directory marketplace or `--plugin-dir`, and `installed_plugins.json` when loaded from a versioned cache folder) and compares its version with the loaded one. On a mismatch it logs one notice per newly installed version—`fleet-room <installed> is installed; this session runs <loaded>. Run /reload-plugins to load it.`—without spending a model turn or submitting a prompt. Missing or unreadable files are ignored.
+
 ## Version 0.2 limits
 
 - A crash after posting or turn completion but before a checkpoint write can

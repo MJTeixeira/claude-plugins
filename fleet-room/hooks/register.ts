@@ -10,6 +10,8 @@ import { conversationEnded, targetedIn, turnEnded, turnStarted } from './wake'
 import {ask, asksEnded, asksPrompted, loadReachable, resumeAsks} from './ask'
 
 const TOOL = 'mcp__fleet-room__post'
+export const LOADED_VERSION = '0.9.2'
+const CACHE_ROOT = /^(.*)[/\\]cache[/\\]([^/\\]+)[/\\]([^/\\]+)[/\\][^/\\]+$/
 const CODEX_TOOLS = [
   {name: 'codex_chats', description: 'List the Codex app chats on this machine that work in this session’s project folder (all: true lists every folder): UUID, title, folder, last activity, last user message. Propose one to the owner; pair only after the owner confirms.',
     inputSchema: {type: 'object', properties: {all: {type: 'boolean', description: 'List chats in every folder, codex exec runs included.'}}, additionalProperties: false}},
@@ -182,8 +184,51 @@ function rebind($: EngineInterface, options: Record<string, unknown>, setup: Set
     .finally(() => { rebinding = undefined })
   return rebinding
 }
+const versionIn = (text: string): string | undefined => {
+  try {
+    const parsed = JSON.parse(text) as {version?: unknown}
+    return parsed !== null && typeof parsed === 'object' && typeof parsed.version === 'string' && parsed.version.trim() !== ''
+      ? parsed.version.trim() : undefined
+  } catch {
+    return undefined
+  }
+}
+export const cachedInstall = (root: string, recordText: string): {installPath?: string, version?: string} | undefined => {
+  const cached = CACHE_ROOT.exec(root.replace(/[/\\]+$/, ''))
+  if (!cached) return undefined
+  try {
+    const record = JSON.parse(recordText) as {plugins?: Record<string, Array<{installPath?: unknown, version?: unknown}>>}
+    const entry = record?.plugins?.[cached[3]! + '@' + cached[2]!]?.[0]
+    if (!entry || typeof entry !== 'object') return undefined
+    const installPath = typeof entry.installPath === 'string' && entry.installPath.trim() !== '' ? entry.installPath.trim().replace(/[/\\]+$/, '') : undefined
+    const version = typeof entry.version === 'string' && entry.version.trim() !== '' ? entry.version.trim() : undefined
+    return {installPath, version}
+  } catch {
+    return undefined
+  }
+}
+async function installedVersion($: EngineInterface): Promise<string | undefined> {
+  const dir = $.plugin.root.replace(/[/\\]+$/, '')
+  let own: string | undefined
+  try { own = versionIn(await $.fs.read(dir + '/.claude-plugin/plugin.json')) } catch {}
+  if (own !== undefined && own !== LOADED_VERSION) return own
+  // Git marketplaces copy each update into a new cache/<marketplace>/<plugin>/<version> folder while $.plugin.root stays on the loaded one.
+  const cached = CACHE_ROOT.exec(dir)
+  if (cached) {
+    try {
+      const entry = cachedInstall(dir, await $.fs.read(cached[1]! + '/installed_plugins.json'))
+      if (entry?.installPath) {
+        const fromInstall = versionIn(await $.fs.read(entry.installPath + '/.claude-plugin/plugin.json').catch(() => ''))
+        if (fromInstall !== undefined) return fromInstall
+      }
+      if (entry?.version) return entry.version
+    } catch {}
+  }
+  return own
+}
 export const register: Register = (on, options) => {
   const setup = setupOf(options)
+  let noticedVersion: string | undefined
   on('tool.call', async ($, e, next) => {
     const reason = guard(e) ?? (configured && credentialGuard(e, configured.tokenPaths))
     return reason ? {deny: reason} : next(e)
@@ -239,7 +284,14 @@ export const register: Register = (on, options) => {
     return next(e)
   }).catch(($, e, next) => next(e))
   on('turn.start', async ($, e, next) => {
-    if (clearedFrom !== undefined && e.agentId === undefined) await rebind($, options, setup)
+    if (e.agentId === undefined) {
+      if (clearedFrom !== undefined) await rebind($, options, setup)
+      const installed = await installedVersion($)
+      if (installed !== undefined && installed !== LOADED_VERSION && installed !== noticedVersion) {
+        noticedVersion = installed
+        $.ui.log('fleet-room ' + installed + ' is installed; this session runs ' + LOADED_VERSION + '. Run /reload-plugins to load it.')
+      }
+    }
     await turnStarted($, e)
     return next(e)
   }).catch(($, e, next) => next(e))
